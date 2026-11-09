@@ -1,0 +1,2427 @@
+{
+  "baseline": "697dd33d9ccb2a2573031be0ad15c9e1b0f1875a",
+  "selection": "Development only. Reject any delivered-fact/rank loss or negative returned/rendered/full identity change. Score reserved only after safe improvement and historical development checks. Do not relax comparator.",
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803"
+  },
+  "trials": [
+    {
+      "id": "distinctive-query",
+      "hypothesis": "Supplement free slots with an embedding of distinctive words already present in the task, without aliases or added terms.",
+      "decision": "discarded: no additional complete answer",
+      "development_gains": 0,
+      "changed_negative_cases": [],
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..39e01c9 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -454,6 +454,24 @@ impl SemanticIndex {\n                 }\n             }\n         }\n+        if found.len() < query.limit && !exact_title && query.files.is_empty() && failure.is_none()\n+            && embedder.input_character_limit().is_some_and(|n| n > 0 && query.task.chars().count() < n) {\n+            let words: Vec<_> = query.task.split_whitespace().filter(|word|\n+                crate::retrieval::is_distinctive(&word.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())).collect();\n+            let view = words.join(\" \");\n+            if words.len() >= 2 && view != query.task.trim() {\n+                let extra = embedder.embed(&view).and_then(|vector| self.search_filtered(query, &vector, minimum, |record|\n+                    accept(record) && !found.iter().any(|hit| hit.record.same_context_claim(record))));\n+                match extra {\n+                    Ok(hits) => { let last = found.last().map_or(1.0 / 61.0, |h| h.score);\n+                        for (i, (record, similarity)) in hits.into_iter().take(query.limit - found.len()).enumerate() {\n+                            found.push(RetrievedMemory {record, score: last / (i + 2) as f32, reason: format!(\"distinctive query cosine {similarity:.3}\"), components: Default::default()});\n+                        }\n+                    }\n+                    Err(error) => eprintln!(\"memory: distinctive view unavailable: {error}\"),\n+                }\n+            }\n+        }\n         // A terse request can name one exact compound symbol while broad\n         // context fills the pool. Preserve the leaders and broader requests.\n         if found.len() == query.limit\n",
+      "groups": [
+        {
+          "key": "original",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 58,
+            "total": 70
+          },
+          "after": {
+            "complete": 58,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.8285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.8285714285714286,
+            "mrr": 0.8285714285714286,
+            "ndcg_at_8": 0.8285714285714286,
+            "no_match_injection_rate": 0.05,
+            "recall_at_8": 0.8285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "a095ec3bbc2d3ac0739afde17d4d2c96156c63e6c6354b3cf4c4c4b8b9316b57",
+            "candidate": "d406cac041dc60d326b624ad96562a6fa3fc86a9af0ae0a6a37101b8ac2d4914"
+          }
+        },
+        {
+          "key": "original",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 65,
+            "total": 70
+          },
+          "after": {
+            "complete": 65,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.9285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.9285714285714286,
+            "mrr": 0.9214285714285714,
+            "ndcg_at_8": 0.9232989964795921,
+            "no_match_injection_rate": 0.075,
+            "recall_at_8": 0.9285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 2,
+          "changes": [
+            {
+              "id": "worktree-implicit",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000009"],
+                "id": "worktree-implicit",
+                "incident": "worktree",
+                "packet_tokens": 62,
+                "primary_claim_hash": "0129d47feee828a9",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000015",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000009"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000009"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000009",
+                  "00000000-0000-0000-0000-000000000012"
+                ],
+                "id": "worktree-implicit",
+                "incident": "worktree",
+                "packet_tokens": 116,
+                "primary_claim_hash": "0129d47feee828a9",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000015",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000009",
+                  "00000000-0000-0000-0000-000000000012"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000009",
+                  "00000000-0000-0000-0000-000000000012"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            },
+            {
+              "id": "verification-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 123,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 178,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            }
+          ],
+          "artifact_sha256": {
+            "baseline": "07c50555a4dad18286773529b6216721e32188f8666fb2cbe3a6ecdc650637f3",
+            "candidate": "e73f04f559533b20c63962ba08c267b7474c581edb9d3668a086099e9147a963"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 24,
+            "total": 30
+          },
+          "after": {
+            "complete": 24,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.8,
+            "cases": 45,
+            "delivered_recall": 0.8,
+            "mrr": 0.8,
+            "ndcg_at_8": 0.8,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.8
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "365410da069e156944c6a690040dac781bfccfaa94c93b82378ccd5a2cd664a6",
+            "candidate": "939c4b676a6bf699accef74b31f3b92cfebaee24bb9641ff5d9e7826bb99f258"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 27,
+            "total": 30
+          },
+          "after": {
+            "complete": 27,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.9,
+            "cases": 45,
+            "delivered_recall": 0.9,
+            "mrr": 0.85,
+            "ndcg_at_8": 0.8630929753571458,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.9
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "b7819391418f15ccf138e7b52e5df7d09d63a41efe60d5d020fdbb28e5a62674",
+            "candidate": "f73f914bc6e381e52f10a30358a07dd755afe070987accc42b39646f5c1e35e9"
+          }
+        }
+      ]
+    },
+    {
+      "id": "short-title-view",
+      "hypothesis": "For short records only, append title-only semantic matches using a claim-bound derived vector while preserving primary representations.",
+      "decision": "rejected: negative regressions",
+      "development_gains": 2,
+      "changed_negative_cases": [
+        "control-tls",
+        "short-negative-development-1",
+        "short-negative-development-11"
+      ],
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..00acd08 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -119,7 +119,9 @@ impl SemanticIndex {\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vectors WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n             let document = format!(\"{}\\n{}\", record.title, record.content);\n-            let conclusion = overflow_conclusion(&document, embedder.input_character_limit());\n+            let conclusion = overflow_conclusion(&document, embedder.input_character_limit()).or_else(|| {\n+                embedder.input_character_limit().filter(|n| *n > 0 && document.chars().count() <= *n).map(|_| record.title.clone())\n+            });\n             let conclusion_current: bool = conclusion.is_none() || self.store.lock()?.connection.query_row(\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vector_conclusions WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n",
+      "groups": [
+        {
+          "key": "original",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 58,
+            "total": 70
+          },
+          "after": {
+            "complete": 58,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.8285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.8285714285714286,
+            "mrr": 0.8285714285714286,
+            "ndcg_at_8": 0.8285714285714286,
+            "no_match_injection_rate": 0.05,
+            "recall_at_8": 0.8285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "a095ec3bbc2d3ac0739afde17d4d2c96156c63e6c6354b3cf4c4c4b8b9316b57",
+            "candidate": "d740e099103d3ac589b6486decd9ba239405575d067afc4520d7c89f940b217c"
+          }
+        },
+        {
+          "key": "original",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 65,
+            "total": 70
+          },
+          "after": {
+            "complete": 67,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.9571428571428572,
+            "cases": 110,
+            "delivered_recall": 0.9571428571428572,
+            "mrr": 0.9333333333333335,
+            "ndcg_at_8": 0.9394551358163273,
+            "no_match_injection_rate": 0.125,
+            "recall_at_8": 0.9571428571428572
+          },
+          "audit": {
+            "safe": false,
+            "cases": 110,
+            "gains": ["pagination-implicit", "provenance-implicit"],
+            "errors": [
+              {
+                "id": "control-tls",
+                "kind": "negative-returned_ids"
+              },
+              {
+                "id": "control-tls",
+                "kind": "negative-rendered_ids"
+              },
+              {
+                "id": "control-tls",
+                "kind": "negative-full_text_ids"
+              },
+              {
+                "id": "short-negative-development-1",
+                "kind": "negative-returned_ids"
+              },
+              {
+                "id": "short-negative-development-1",
+                "kind": "negative-rendered_ids"
+              },
+              {
+                "id": "short-negative-development-1",
+                "kind": "negative-full_text_ids"
+              },
+              {
+                "id": "short-negative-development-11",
+                "kind": "negative-returned_ids"
+              },
+              {
+                "id": "short-negative-development-11",
+                "kind": "negative-rendered_ids"
+              },
+              {
+                "id": "short-negative-development-11",
+                "kind": "negative-full_text_ids"
+              }
+            ]
+          },
+          "changed_case_count": 11,
+          "changes": [
+            {
+              "id": "retry-implicit",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "id": "retry-implicit",
+                "incident": "retry",
+                "packet_tokens": 126,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "id": "retry-implicit",
+                "incident": "retry",
+                "packet_tokens": 180,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "retry-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-000000000013"
+                ],
+                "id": "retry-composition",
+                "incident": "retry",
+                "packet_tokens": 182,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-000000000013"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-000000000013"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-000000000013",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "id": "retry-composition",
+                "incident": "retry",
+                "packet_tokens": 237,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-000000000013",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 4,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-000000000013",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "credentials-implicit",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000004"],
+                "id": "credentials-implicit",
+                "incident": "credentials",
+                "packet_tokens": 61,
+                "primary_claim_hash": "29d0ff49be693ea4",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000004",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000004"],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000004"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "id": "credentials-implicit",
+                "incident": "credentials",
+                "packet_tokens": 116,
+                "primary_claim_hash": "29d0ff49be693ea4",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000004",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            },
+            {
+              "id": "pagination-implicit",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [],
+                "id": "pagination-implicit",
+                "incident": "pagination",
+                "packet_tokens": 16,
+                "primary_claim_hash": "fe82f485f2bc6cf5",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-00000000000d",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": [],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 0,
+                "returned_ids": [],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000010",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "id": "pagination-implicit",
+                "incident": "pagination",
+                "packet_tokens": 113,
+                "primary_claim_hash": "fe82f485f2bc6cf5",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-00000000000d",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000010",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000010",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            },
+            {
+              "id": "cache-implicit",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "id": "cache-implicit",
+                "incident": "cache",
+                "packet_tokens": 121,
+                "primary_claim_hash": "4765376bcfd4bf37",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000002",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000012"
+                ],
+                "id": "cache-implicit",
+                "incident": "cache",
+                "packet_tokens": 174,
+                "primary_claim_hash": "4765376bcfd4bf37",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000002",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000012"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000012"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "provenance-implicit",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000005"],
+                "id": "provenance-implicit",
+                "incident": "provenance",
+                "packet_tokens": 67,
+                "primary_claim_hash": "42488383c7c34319",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-00000000000f",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000005"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000005"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 3,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "id": "provenance-implicit",
+                "incident": "provenance",
+                "packet_tokens": 174,
+                "primary_claim_hash": "42488383c7c34319",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-00000000000f",
+                "prohibited": false,
+                "rank": 3,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "verification-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 123,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 176,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "fallback-implicit",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-00000000000b"],
+                "id": "fallback-implicit",
+                "incident": "fallback",
+                "packet_tokens": 65,
+                "primary_claim_hash": "9b032bccd634eb64",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000007",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-00000000000b"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-00000000000b"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-00000000000b",
+                  "00000000-0000-0000-0000-000000000013"
+                ],
+                "id": "fallback-implicit",
+                "incident": "fallback",
+                "packet_tokens": 122,
+                "primary_claim_hash": "9b032bccd634eb64",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000007",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-00000000000b",
+                  "00000000-0000-0000-0000-000000000013"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-00000000000b",
+                  "00000000-0000-0000-0000-000000000013"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "control-tls",
+              "before": {
+                "answer_delivered": false,
+                "answerable": false,
+                "candidate_rank": null,
+                "category": "hard-negative",
+                "embedding_fallback": false,
+                "full_text_ids": [],
+                "id": "control-tls",
+                "incident": "tls-renewal",
+                "packet_tokens": 16,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": [],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 0,
+                "returned_ids": [],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": false,
+                "candidate_rank": 1,
+                "category": "hard-negative",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000012"],
+                "id": "control-tls",
+                "incident": "tls-renewal",
+                "packet_tokens": 57,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000012"],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000012"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            },
+            {
+              "id": "short-negative-development-1",
+              "before": {
+                "answer_delivered": false,
+                "answerable": false,
+                "candidate_rank": null,
+                "category": "hard-negative",
+                "embedding_fallback": false,
+                "full_text_ids": [],
+                "id": "short-negative-development-1",
+                "incident": "short-negative-development-1",
+                "packet_tokens": 16,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": [],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 0,
+                "returned_ids": [],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": false,
+                "candidate_rank": 1,
+                "category": "hard-negative",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000012"],
+                "id": "short-negative-development-1",
+                "incident": "short-negative-development-1",
+                "packet_tokens": 57,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000012"],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000012"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            },
+            {
+              "id": "short-negative-development-11",
+              "before": {
+                "answer_delivered": false,
+                "answerable": false,
+                "candidate_rank": null,
+                "category": "hard-negative",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000010"],
+                "id": "short-negative-development-11",
+                "incident": "short-negative-development-11",
+                "packet_tokens": 57,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000010"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000010"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": false,
+                "candidate_rank": null,
+                "category": "hard-negative",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000010",
+                  "00000000-0000-0000-0000-000000000015"
+                ],
+                "id": "short-negative-development-11",
+                "incident": "short-negative-development-11",
+                "packet_tokens": 112,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000010",
+                  "00000000-0000-0000-0000-000000000015"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000010",
+                  "00000000-0000-0000-0000-000000000015"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            }
+          ],
+          "artifact_sha256": {
+            "baseline": "07c50555a4dad18286773529b6216721e32188f8666fb2cbe3a6ecdc650637f3",
+            "candidate": "cf475123cd22f2de22033e03abdd259fd2738279fa476ffb7160d58722278524"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 24,
+            "total": 30
+          },
+          "after": {
+            "complete": 24,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.8,
+            "cases": 45,
+            "delivered_recall": 0.8,
+            "mrr": 0.8,
+            "ndcg_at_8": 0.8,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.8
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "365410da069e156944c6a690040dac781bfccfaa94c93b82378ccd5a2cd664a6",
+            "candidate": "29b579f7b797d7a397dbb8bb910c1f0a32c4136e5bbb30e1daf981258edcb047"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 27,
+            "total": 30
+          },
+          "after": {
+            "complete": 27,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.9,
+            "cases": 45,
+            "delivered_recall": 0.9,
+            "mrr": 0.85,
+            "ndcg_at_8": 0.8630929753571458,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.9
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "b7819391418f15ccf138e7b52e5df7d09d63a41efe60d5d020fdbb28e5a62674",
+            "candidate": "00b76b8781141ec65240fd56ec8b59919155c1a3a6581f29bd0e2e52c4780c92"
+          }
+        }
+      ]
+    },
+    {
+      "id": "short-remedy-view",
+      "hypothesis": "For short records only, append claim-only semantic matches using a claim-bound derived vector while preserving primary representations.",
+      "decision": "discarded: no additional complete answer",
+      "development_gains": 0,
+      "changed_negative_cases": [],
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..bfcf9dc 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -119,7 +119,9 @@ impl SemanticIndex {\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vectors WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n             let document = format!(\"{}\\n{}\", record.title, record.content);\n-            let conclusion = overflow_conclusion(&document, embedder.input_character_limit());\n+            let conclusion = overflow_conclusion(&document, embedder.input_character_limit()).or_else(|| {\n+                embedder.input_character_limit().filter(|n| *n > 0 && document.chars().count() <= *n).map(|_| record.content.clone())\n+            });\n             let conclusion_current: bool = conclusion.is_none() || self.store.lock()?.connection.query_row(\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vector_conclusions WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n",
+      "groups": [
+        {
+          "key": "original",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 58,
+            "total": 70
+          },
+          "after": {
+            "complete": 58,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.8285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.8285714285714286,
+            "mrr": 0.8285714285714286,
+            "ndcg_at_8": 0.8285714285714286,
+            "no_match_injection_rate": 0.05,
+            "recall_at_8": 0.8285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "a095ec3bbc2d3ac0739afde17d4d2c96156c63e6c6354b3cf4c4c4b8b9316b57",
+            "candidate": "50d3dd4958a7ed1234aa1cb6d052b6723334362259e04a6fb7f8a4df12ea56d4"
+          }
+        },
+        {
+          "key": "original",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 65,
+            "total": 70
+          },
+          "after": {
+            "complete": 65,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.9285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.9285714285714286,
+            "mrr": 0.9214285714285714,
+            "ndcg_at_8": 0.9232989964795921,
+            "no_match_injection_rate": 0.075,
+            "recall_at_8": 0.9285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 4,
+          "changes": [
+            {
+              "id": "cache-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000011"
+                ],
+                "id": "cache-composition",
+                "incident": "cache",
+                "packet_tokens": 126,
+                "primary_claim_hash": "4765376bcfd4bf37",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000002",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000011"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000011"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "id": "cache-composition",
+                "incident": "cache",
+                "packet_tokens": 182,
+                "primary_claim_hash": "4765376bcfd4bf37",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000002",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000011",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "privacy-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-00000000000e",
+                  "00000000-0000-0000-0000-00000000000a"
+                ],
+                "id": "privacy-composition",
+                "incident": "privacy",
+                "packet_tokens": 123,
+                "primary_claim_hash": "32d38b9ee04c4523",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-00000000000e",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-00000000000e",
+                  "00000000-0000-0000-0000-00000000000a"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-00000000000e",
+                  "00000000-0000-0000-0000-00000000000a"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-00000000000e",
+                  "00000000-0000-0000-0000-00000000000a",
+                  "00000000-0000-0000-0000-000000000015"
+                ],
+                "id": "privacy-composition",
+                "incident": "privacy",
+                "packet_tokens": 179,
+                "primary_claim_hash": "32d38b9ee04c4523",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-00000000000e",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-00000000000e",
+                  "00000000-0000-0000-0000-00000000000a",
+                  "00000000-0000-0000-0000-000000000015"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-00000000000e",
+                  "00000000-0000-0000-0000-00000000000a",
+                  "00000000-0000-0000-0000-000000000015"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "verification-implicit",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-00000000000f",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "id": "verification-implicit",
+                "incident": "verification",
+                "packet_tokens": 167,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-00000000000f",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-00000000000f",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-00000000000f",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "id": "verification-implicit",
+                "incident": "verification",
+                "packet_tokens": 224,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-00000000000f",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 4,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-00000000000f",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 0,
+                  "file_matches": 0,
+                  "fts_matches": 0,
+                  "rejected": 0,
+                  "returned": 0,
+                  "used_full_text_search": false
+                }
+              }
+            },
+            {
+              "id": "verification-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 123,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 179,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            }
+          ],
+          "artifact_sha256": {
+            "baseline": "07c50555a4dad18286773529b6216721e32188f8666fb2cbe3a6ecdc650637f3",
+            "candidate": "372756dbac890e96ce387011d51bd5eb9d4bc4947ed8f374a07f3c1c44deb5d9"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 24,
+            "total": 30
+          },
+          "after": {
+            "complete": 24,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.8,
+            "cases": 45,
+            "delivered_recall": 0.8,
+            "mrr": 0.8,
+            "ndcg_at_8": 0.8,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.8
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "365410da069e156944c6a690040dac781bfccfaa94c93b82378ccd5a2cd664a6",
+            "candidate": "3502484216538a9ffc9afa2d75889201db9f9fa0275c2de56d96c74ccc435282"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 27,
+            "total": 30
+          },
+          "after": {
+            "complete": 27,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.9,
+            "cases": 45,
+            "delivered_recall": 0.9,
+            "mrr": 0.85,
+            "ndcg_at_8": 0.8630929753571458,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.9
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "b7819391418f15ccf138e7b52e5df7d09d63a41efe60d5d020fdbb28e5a62674",
+            "candidate": "1f148fd249641cde0eef9fd7632654cb8777e51448236af4f1526d9b704c624c"
+          }
+        }
+      ]
+    },
+    {
+      "id": "corroborated-title-view",
+      "hypothesis": "Require a normal-cutoff title match AND primary title/claim similarity at least minimum*11/12 for short records, while preserving existing long conclusions. Motivated by title-only development gains and negative regressions; no reserved candidate has been scored.",
+      "decision": "discarded: no additional complete answer",
+      "development_gains": 0,
+      "changed_negative_cases": [],
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..e16f79e 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -119,7 +119,9 @@ impl SemanticIndex {\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vectors WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n             let document = format!(\"{}\\n{}\", record.title, record.content);\n-            let conclusion = overflow_conclusion(&document, embedder.input_character_limit());\n+            let conclusion = overflow_conclusion(&document, embedder.input_character_limit()).or_else(|| {\n+                embedder.input_character_limit().filter(|n| *n > 0 && document.chars().count() <= *n).map(|_| record.title.clone())\n+            });\n             let conclusion_current: bool = conclusion.is_none() || self.store.lock()?.connection.query_row(\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vector_conclusions WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n@@ -413,6 +415,7 @@ impl SemanticIndex {\n                 .input_character_limit()\n                 .is_some_and(|limit| limit > 0)\n         {\n+            let support = self.search_filtered(query, &vector, minimum * (11.0 / 12.0), &accept)?;\n             // Preserve ordinary conclusion matches before trying a diagnostic\n             // that was hidden by the task window. Its inference already ran.\n             for (view, reason) in std::iter::once((&vector, \"conclusion\")).chain(\n@@ -429,9 +432,9 @@ impl SemanticIndex {\n                     minimum,\n                     |record| {\n                         accept(record)\n-                            && !found\n-                                .iter()\n-                                .any(|hit| hit.record.same_context_claim(record))\n+                            && !found.iter().any(|hit| hit.record.same_context_claim(record))\n+                            && (format!(\"{}\\n{}\", record.title, record.content).chars().count() > embedder.input_character_limit().unwrap_or(0)\n+                                || support.iter().any(|(r, _)| r.same_context_claim(record)))\n                     },\n                     true,\n                 ) {\n",
+      "groups": [
+        {
+          "key": "original",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 58,
+            "total": 70
+          },
+          "after": {
+            "complete": 58,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.8285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.8285714285714286,
+            "mrr": 0.8285714285714286,
+            "ndcg_at_8": 0.8285714285714286,
+            "no_match_injection_rate": 0.05,
+            "recall_at_8": 0.8285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "a095ec3bbc2d3ac0739afde17d4d2c96156c63e6c6354b3cf4c4c4b8b9316b57",
+            "candidate": "48928494a824eebc968890a8ca03c07bc055969b9b13139ce3c2edda2d7c14ba"
+          }
+        },
+        {
+          "key": "original",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 65,
+            "total": 70
+          },
+          "after": {
+            "complete": 65,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.9285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.9285714285714286,
+            "mrr": 0.9214285714285714,
+            "ndcg_at_8": 0.9232989964795921,
+            "no_match_injection_rate": 0.075,
+            "recall_at_8": 0.9285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 1,
+          "changes": [
+            {
+              "id": "verification-composition",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 123,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "composition",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "id": "verification-composition",
+                "incident": "verification",
+                "packet_tokens": 176,
+                "primary_claim_hash": "729081cf01c63bc0",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000014",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000014",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-00000000000f"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            }
+          ],
+          "artifact_sha256": {
+            "baseline": "07c50555a4dad18286773529b6216721e32188f8666fb2cbe3a6ecdc650637f3",
+            "candidate": "7c01e72fcd2fde986fa30e1ceb43a4c391d70576bbc1c5ef5bad16f983b44f91"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 24,
+            "total": 30
+          },
+          "after": {
+            "complete": 24,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.8,
+            "cases": 45,
+            "delivered_recall": 0.8,
+            "mrr": 0.8,
+            "ndcg_at_8": 0.8,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.8
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "365410da069e156944c6a690040dac781bfccfaa94c93b82378ccd5a2cd664a6",
+            "candidate": "0342211e769cc94f927e6ad1c58652718842f25ad475cba925044081950c9a38"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 27,
+            "total": 30
+          },
+          "after": {
+            "complete": 27,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.9,
+            "cases": 45,
+            "delivered_recall": 0.9,
+            "mrr": 0.85,
+            "ndcg_at_8": 0.8630929753571458,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.9
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "b7819391418f15ccf138e7b52e5df7d09d63a41efe60d5d020fdbb28e5a62674",
+            "candidate": "0745344ac464e60eda790323d0e0ba5931f3d0fa1971dc19ce173a6edca1409e"
+          }
+        }
+      ]
+    },
+    {
+      "id": "strict-title-view",
+      "hypothesis": "Increase short-title admission to minimum*4/3 (.4 at the fixed .3 normal cutoff), retain normal cutoff for existing long conclusions. Title-only was useful but primary corroboration removed gains; test stricter independent evidence before rejecting the view. Development only.",
+      "decision": "discarded: no additional complete answer",
+      "development_gains": 0,
+      "changed_negative_cases": [],
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..8b84550 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -119,7 +119,9 @@ impl SemanticIndex {\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vectors WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n             let document = format!(\"{}\\n{}\", record.title, record.content);\n-            let conclusion = overflow_conclusion(&document, embedder.input_character_limit());\n+            let conclusion = overflow_conclusion(&document, embedder.input_character_limit()).or_else(|| {\n+                embedder.input_character_limit().filter(|n| *n > 0 && document.chars().count() <= *n).map(|_| record.title.clone())\n+            });\n             let conclusion_current: bool = conclusion.is_none() || self.store.lock()?.connection.query_row(\n                 \"SELECT EXISTS(SELECT 1 FROM memory_vector_conclusions WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)\",\n                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;\n@@ -438,7 +440,7 @@ impl SemanticIndex {\n                     Ok(hits) => {\n                         let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);\n                         for (rank, (record, similarity)) in\n-                            hits.into_iter().take(query.limit - found.len()).enumerate()\n+                            hits.into_iter().filter(|(record, similarity)| format!(\"{}\\n{}\", record.title, record.content).chars().count() > embedder.input_character_limit().unwrap_or(0) || *similarity >= minimum * (4.0 / 3.0)).take(query.limit - found.len()).enumerate()\n                         {\n                             found.push(RetrievedMemory {\n                                 record,\n",
+      "groups": [
+        {
+          "key": "original",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 58,
+            "total": 70
+          },
+          "after": {
+            "complete": 58,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.8285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.8285714285714286,
+            "mrr": 0.8285714285714286,
+            "ndcg_at_8": 0.8285714285714286,
+            "no_match_injection_rate": 0.05,
+            "recall_at_8": 0.8285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "a095ec3bbc2d3ac0739afde17d4d2c96156c63e6c6354b3cf4c4c4b8b9316b57",
+            "candidate": "4895d8afd72d4aed67ab495354fcfe290bd8158f1c5dae1d83c261944e4fa89f"
+          }
+        },
+        {
+          "key": "original",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 110,
+          "before": {
+            "complete": 65,
+            "total": 70
+          },
+          "after": {
+            "complete": 65,
+            "total": 70
+          },
+          "metrics": {
+            "candidate_recall": 0.9285714285714286,
+            "cases": 110,
+            "delivered_recall": 0.9285714285714286,
+            "mrr": 0.9214285714285714,
+            "ndcg_at_8": 0.9232989964795921,
+            "no_match_injection_rate": 0.075,
+            "recall_at_8": 0.9285714285714286
+          },
+          "audit": {
+            "safe": true,
+            "cases": 110,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 1,
+          "changes": [
+            {
+              "id": "retry-implicit",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "id": "retry-implicit",
+                "incident": "retry",
+                "packet_tokens": 126,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 1,
+                "category": "implicit",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "id": "retry-implicit",
+                "incident": "retry",
+                "packet_tokens": 180,
+                "primary_claim_hash": "abe1a9296dcd5787",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000012",
+                "prohibited": false,
+                "rank": 1,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 3,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000012",
+                  "00000000-0000-0000-0000-00000000000d",
+                  "00000000-0000-0000-0000-00000000000b"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            }
+          ],
+          "artifact_sha256": {
+            "baseline": "07c50555a4dad18286773529b6216721e32188f8666fb2cbe3a6ecdc650637f3",
+            "candidate": "fa2c3de449188958d912b55692eeccec3f17d7cba7edb13cd55686392a9cb19d"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 24,
+            "total": 30
+          },
+          "after": {
+            "complete": 24,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.8,
+            "cases": 45,
+            "delivered_recall": 0.8,
+            "mrr": 0.8,
+            "ndcg_at_8": 0.8,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.8
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "365410da069e156944c6a690040dac781bfccfaa94c93b82378ccd5a2cd664a6",
+            "candidate": "039d0a722f4b4e7a5d114bbb71f8c2fb3d6917e3d38af1f82ddf2a7019fc1cc0"
+          }
+        },
+        {
+          "key": "fresh",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 45,
+          "before": {
+            "complete": 27,
+            "total": 30
+          },
+          "after": {
+            "complete": 27,
+            "total": 30
+          },
+          "metrics": {
+            "candidate_recall": 0.9,
+            "cases": 45,
+            "delivered_recall": 0.9,
+            "mrr": 0.85,
+            "ndcg_at_8": 0.8630929753571458,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.9
+          },
+          "audit": {
+            "safe": true,
+            "cases": 45,
+            "gains": [],
+            "errors": []
+          },
+          "changed_case_count": 0,
+          "changes": [],
+          "artifact_sha256": {
+            "baseline": "b7819391418f15ccf138e7b52e5df7d09d63a41efe60d5d020fdbb28e5a62674",
+            "candidate": "e71ec1e6e23450c6337788270d809e2966fa71718e8f0c44955ad13fbd8b3c1b"
+          }
+        }
+      ]
+    }
+  ],
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "limit": 8,
+    "budget": 1000,
+    "model_revision": "chroma-minilm-l6-v2-913d7300-title-claim-native-v1"
+  },
+  "method": "Native pinned 384-dimensional MiniLM, existing model/revision, normal threshold .3, short-query scale 11/12, limit eight, 1000 estimated-token budget, deterministic 36-hour claim age. Existing cases and expected facts unchanged. Only development was scored for candidate prototypes. Baseline is the preceding accepted output, verified against its artifact and binary hashes.",
+  "trial_policy_views": 1550,
+  "candidate_reserved_evaluations": 0,
+  "accepted_runtime_changes": 0,
+  "semantic_source_restored": true,
+  "restoration": [
+    {
+      "key": "original",
+      "policy": "lexical",
+      "cases": 110,
+      "exact_except_latency_and_telemetry": true
+    },
+    {
+      "key": "original",
+      "policy": "hybrid",
+      "cases": 110,
+      "exact_except_latency_and_telemetry": true
+    },
+    {
+      "key": "fresh",
+      "policy": "lexical",
+      "cases": 45,
+      "exact_except_latency_and_telemetry": true
+    },
+    {
+      "key": "fresh",
+      "policy": "hybrid",
+      "cases": 45,
+      "exact_except_latency_and_telemetry": true
+    }
+  ],
+  "limitations": [
+    "Existing exposed synthetic incidents, no independent generalization or live-agent claim.",
+    "Title/remedy trials temporarily reuse the existing supplementary-vector table for proof of concept. They are not a production migration or a measured runtime deployment.",
+    "The original primary vector, claim, evidence, admission cutoff and result/budget limits remain controls. Derived views can still distort relevance; negative and per-fact gates decide acceptance.",
+    "No runtime candidate survived development; no full historical matrix, oversized corpus, reserved candidate or broader tests were run. Restored source is byte-for-byte identical to the accepted baseline.",
+    "Corroborated and stricter title refinements were registered after inspecting preceding development failures. No reserved outcome selected them."
+  ],
+  "validation": "All rejected runtime prototypes removed. Original/fresh lexical and hybrid development outputs replayed after restoration, matching every case field except latency/timed telemetry. Broader tests remain skipped under user instruction."
+}

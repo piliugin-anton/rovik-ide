@@ -2124,6 +2124,10 @@ message's matching metadata and searches with the typed intent. Active-editor
 context alone does not become a file hint. Stale or unsupported message envelopes
 retain the original query.
 
+The [experiment directions and implicit-view trials](docs/design/long-term-memory-directions-nov10-2026.md)
+summarize the evidence, remaining implicit-query failures, rejected retrieval views
+and priorities for grounded context and application-level evaluation.
+
 Native evaluation reports each required record's ID, claim hash, rank and full
 delivery, distinguishing complete claims from fetch hints. Compare two saved
 native results with `node scripts/eval/memory-regressions.mjs baseline.json candidate.json`
