@@ -234,7 +234,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Settings → Permissions & approval says otherwise. See
   [MCP servers](#mcp-servers).
 - The agent follows your project's own instructions in `AGENTS.md`,
-  `CLAUDE.md` and similar files.
+  `CLAUDE.md` and similar files. Subagents inherit the lead's project
+  instructions in their system prompt on initial runs and follow-ups,
+  alongside their role and tools.
 - The agent can search the web and read pages, in a headless Chrome for
   Testing that Rovik downloads into its data folder when it first starts.
 - Attach images, PDFs and text files to a message: paste them (Ctrl+V, or

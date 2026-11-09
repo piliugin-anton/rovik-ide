@@ -103,6 +103,129 @@ fn requests_with(seen: &Arc<Mutex<Vec<Value>>>, marker: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Exercise the shared launch and request path for every role, including
+/// IDE-started helpers, then relaunch each chat with a follow-up brief.
+#[tokio::test]
+async fn every_subagent_receives_project_instructions_on_launch_and_follow_up() {
+    use crate::agent_run::run::Run;
+    use crate::agent_run::subagent::SubagentSettings;
+
+    const INSTRUCTIONS: &str = "Follow the repository's coding and testing conventions.";
+    let h = harness(&[("AGENTS.md", INSTRUCTIONS)]).await;
+    let (url, seen) = model(
+        (0..subagent::Kind::ALL.len() * 2)
+            .map(|_| Reply::Text("Answer."))
+            .collect(),
+    )
+    .await;
+    let core = h.core.clone();
+    let request = h.request(
+        &url,
+        Harness::send("Inspect the project"),
+        quiet_permissions(),
+    );
+    core.agents.set_config(request.config.clone().unwrap());
+    let controls = core.agents.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = core.agents.registered(&h.dialog_id, &controls.run_id);
+    let (parent, _) = Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
+    let config = parent.config().subagents;
+    let expected = format!(
+        "The project's instructions for agents (AGENTS.md); follow them:\n\n{INSTRUCTIONS}"
+    );
+    for &kind in subagent::Kind::ALL {
+        let child_id = uuid::Uuid::new_v4().to_string();
+        parent
+            .store_child(
+                &child_id,
+                kind.id(),
+                kind,
+                "Inspect",
+                "Initial brief".into(),
+            )
+            .await
+            .unwrap();
+        for follow_up in [false, true] {
+            if follow_up {
+                parent
+                    .append_follow_up(&child_id, kind, "follow-up", "Follow-up brief", false)
+                    .await
+                    .unwrap();
+            }
+            let sub = parent
+                .new_sub(kind, kind.id(), config.budget(kind), &config)
+                .await
+                .unwrap();
+            let mut child = parent
+                .launch_child(child_id.clone(), kind.id(), "Inspect", sub)
+                .unwrap();
+            let turn = child.model_turn().await.unwrap();
+            assert!(turn.failure.is_none(), "{}", kind.id());
+            child
+                .finalize(&turn.message_id, turn.text, turn.tool_calls, None, None)
+                .await
+                .unwrap();
+            let request = seen.lock().unwrap().last().unwrap().clone();
+            let prompt = system_prompt(&request);
+            assert!(prompt.starts_with(&kind.spec().prompt(&config.budget(kind))));
+            assert!(
+                prompt.contains(&expected),
+                "{} follow-up={follow_up}: {prompt}",
+                kind.id()
+            );
+            assert_eq!(prompt.matches(INSTRUCTIONS).count(), 1, "{}", kind.id());
+            if follow_up {
+                let history = request["messages"].to_string();
+                assert!(history.contains("Initial brief") && history.contains("Follow-up brief"));
+                assert!(history.contains("Answer."));
+            }
+        }
+    }
+    assert_eq!(seen.lock().unwrap().len(), subagent::Kind::ALL.len() * 2);
+}
+
+#[tokio::test]
+async fn a_scout_receives_project_agent_instructions_on_every_turn() {
+    const INSTRUCTIONS: &str =
+        "Use the project's Result type.\nRun the relevant checks before finishing.";
+    let h = harness(&[("AGENTS.md", INSTRUCTIONS), ("a.txt", "the line\n")]).await;
+    let (url, seen) = model_routed(
+        vec![(
+            "INSTRUCTION-CHECK",
+            vec![
+                Reply::Call {
+                    id: "read-source",
+                    name: "read",
+                    args: json!({ "path": "a.txt" }),
+                },
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![
+            task("scout", "Find INSTRUCTION-CHECK in a.txt"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+
+    let expected = format!(
+        "The project's instructions for agents (AGENTS.md); follow them:\n\n{INSTRUCTIONS}"
+    );
+    let scout = requests_with(&seen, "INSTRUCTION-CHECK");
+    assert_eq!(scout.len(), 2);
+    for request in scout {
+        let prompt = system_prompt(&request);
+        assert!(prompt.starts_with("You are a scout"));
+        assert!(prompt.contains(&expected), "{prompt}");
+        assert_eq!(prompt.matches(INSTRUCTIONS).count(), 1);
+    }
+}
+
 #[tokio::test]
 async fn a_scout_explores_and_reports_to_the_lead() {
     let h = harness(&[("a.txt", "MARK-1 lives here\n")]).await;
@@ -2435,7 +2558,8 @@ async fn a_reviewer_gets_a_smaller_map_around_the_change() {
 /// it found before; an unknown or running one is refused.
 #[tokio::test]
 async fn a_follow_up_resumes_a_finished_scout_with_its_context() {
-    let h = harness(&[("a.txt", "x\n")]).await;
+    const INSTRUCTIONS: &str = "Keep following these project rules after follow-ups.";
+    let h = harness(&[("a.txt", "x\n"), ("AGENTS.md", INSTRUCTIONS)]).await;
     let (url, seen) = model_routed(
         vec![(
             "MARK-FU",
@@ -2481,6 +2605,9 @@ async fn a_follow_up_resumes_a_finished_scout_with_its_context() {
     // Its second request had the first exchange in its history.
     let asked = requests_with(&seen, "MARK-FU");
     assert_eq!(asked.len(), 2);
+    for request in &asked {
+        assert!(system_prompt(request).contains(INSTRUCTIONS));
+    }
     let history = asked[1]["messages"].to_string();
     assert!(history.contains("FIRST-ANSWER") && history.contains("And who calls it?"));
     assert!(h
@@ -10072,7 +10199,9 @@ async fn a_second_run_in_the_same_chat_starts_after_a_failed_batch() {
 /// on its own, not batched with scouts.
 #[tokio::test]
 async fn continue_by_call_id_of_a_test_writer_runs_alone() {
+    const INSTRUCTIONS: &str = "Use the project's test conventions, including on follow-ups.";
     let h = harness(&[
+        ("AGENTS.md", INSTRUCTIONS),
         (
             "src/greet.ts",
             "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
@@ -10081,7 +10210,7 @@ async fn continue_by_call_id_of_a_test_writer_runs_alone() {
         (".rovik/plans/greeter.md", TEST_PLAN),
     ])
     .await;
-    let (url, _) = model_routed(
+    let (url, seen) = model_routed(
         vec![
             (
                 "# Write tests for this change",
@@ -10125,6 +10254,12 @@ async fn continue_by_call_id_of_a_test_writer_runs_alone() {
     request.config.as_mut().unwrap().subagents = config;
     h.start(request).await;
     h.run_end().await;
+    let requests = requests_with(&seen, "# Write tests for this change");
+    assert_eq!(requests.len(), 2, "the initial test writer and its follow-up");
+    for request in &requests {
+        assert!(system_prompt(request).contains(INSTRUCTIONS));
+    }
+    assert!(requests[1]["messages"].to_string().contains("one more case?"));
     let batches = crate::agent_run::parallel::batches_of(&h.dialog_id);
     assert!(
         batches.iter().any(|b| b == &vec!["c1".to_string()]),
