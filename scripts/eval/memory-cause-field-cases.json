@@ -1,0 +1,608 @@
+{
+  "version": 1,
+  "description": "Source-bound causal assertions placed in the existing captured Cause field; hidden, paragraph and short controls. Exposed repository incidents, no automatic model extraction claim.",
+  "corpus": [
+    {
+      "title": "Recorded finding packing",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The old renderer stopped at the first record that did not fit.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The old renderer stopped at the first record that did not fit."
+      }
+    },
+    {
+      "title": "Recorded finding pools",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The previous SQLite queries cut off at 80 lexical rows and 40 file rows before the caller could reject inaccessible/stale records or collapse exact copies.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The previous SQLite queries cut off at 80 lexical rows and 40 file rows before\nthe caller could reject inaccessible/stale records or collapse exact copies."
+      }
+    },
+    {
+      "title": "Recorded finding indexing",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The native MiniLM background job stopped after three changed claims.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "The native MiniLM background job stopped after three changed claims."
+      }
+    },
+    {
+      "title": "Recorded finding clones",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: A second project sharing the model directory could also have its scheduling request suppressed by the first.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "A second project sharing the\nmodel directory could also have its scheduling request suppressed by the first."
+      }
+    },
+    {
+      "title": "Recorded finding hints",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: render_packet_traced includes fetch hints. Searching packet text could mark a hinted record delivered when another complete record had identical content.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-title-coverage-nov9-2026.md",
+        "sha256": "5435754c9b198363b6c22d94e45f98c077f16a1b4ebcdd6179c23dd2dc40220b",
+        "excerpt": "`render_packet_traced` includes fetch hints. Searching packet text could mark\n   a hinted record delivered when another complete record had identical content."
+      }
+    },
+    {
+      "title": "Recorded finding clock",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The common recency bonus changed floating-point ties in ordinary lexical ranking.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-short-suffix-nov9-2026.md",
+        "sha256": "855db8412905bc11f39ab143b519c683eb173399db481bd75f1e46cdbd503fc9",
+        "excerpt": "The common recency bonus changed\nfloating-point ties in ordinary lexical ranking."
+      }
+    },
+    {
+      "title": "Recorded finding envelope",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: editor/reference wrapper text could obscure the focused task.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "editor/reference wrapper text could obscure\nthe focused task."
+      }
+    },
+    {
+      "title": "Recorded finding leader",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: an unrelated leading observation reserved one of the eight slots, leaving seven for eight explicit subjects.",
+      "verified": true,
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "an unrelated leading observation\nreserved one of the eight slots, leaving seven for eight explicit subjects."
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "cause-packing-hidden-cause",
+      "incident": "packing",
+      "split": "development",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding packing",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The old renderer stopped at the first record that did not fit.",
+      "task": "Why does one enormous note prevent the later small findings from reaching the prompt?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The old renderer stopped at the first record that did not fit."
+      }
+    },
+    {
+      "id": "cause-packing-paragraph-control",
+      "incident": "packing",
+      "split": "development",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding packing",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: The old renderer stopped at the first record that did not fit.",
+      "task": "Why does one enormous note prevent the later small findings from reaching the prompt?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The old renderer stopped at the first record that did not fit."
+      }
+    },
+    {
+      "id": "cause-packing-short-control",
+      "incident": "packing",
+      "split": "development",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding packing",
+      "content": "The old renderer stopped at the first record that did not fit.",
+      "task": "Why does one enormous note prevent the later small findings from reaching the prompt?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The old renderer stopped at the first record that did not fit."
+      }
+    },
+    {
+      "id": "cause-pools-hidden-cause",
+      "incident": "pools",
+      "split": "development",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding pools",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The previous SQLite queries cut off at 80 lexical rows and 40 file rows before the caller could reject inaccessible/stale records or collapse exact copies.",
+      "task": "Why can inaccessible duplicates crowd a useful answer out of a search?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The previous SQLite queries cut off at 80 lexical rows and 40 file rows before\nthe caller could reject inaccessible/stale records or collapse exact copies."
+      }
+    },
+    {
+      "id": "cause-pools-paragraph-control",
+      "incident": "pools",
+      "split": "development",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding pools",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: The previous SQLite queries cut off at 80 lexical rows and 40 file rows before the caller could reject inaccessible/stale records or collapse exact copies.",
+      "task": "Why can inaccessible duplicates crowd a useful answer out of a search?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The previous SQLite queries cut off at 80 lexical rows and 40 file rows before\nthe caller could reject inaccessible/stale records or collapse exact copies."
+      }
+    },
+    {
+      "id": "cause-pools-short-control",
+      "incident": "pools",
+      "split": "development",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding pools",
+      "content": "The previous SQLite queries cut off at 80 lexical rows and 40 file rows before the caller could reject inaccessible/stale records or collapse exact copies.",
+      "task": "Why can inaccessible duplicates crowd a useful answer out of a search?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-capacity-gains-nov7-2026.md",
+        "sha256": "5669da73594deb2993bdc65c05648402cb1667b62d5b1dd034a3306859442d4d",
+        "excerpt": "The previous SQLite queries cut off at 80 lexical rows and 40 file rows before\nthe caller could reject inaccessible/stale records or collapse exact copies."
+      }
+    },
+    {
+      "id": "cause-indexing-hidden-cause",
+      "incident": "indexing",
+      "split": "development",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding indexing",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The native MiniLM background job stopped after three changed claims.",
+      "task": "Why are most old entries still absent from similarity lookup after enabling embeddings?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "The native MiniLM background job stopped after three changed claims."
+      }
+    },
+    {
+      "id": "cause-indexing-paragraph-control",
+      "incident": "indexing",
+      "split": "development",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding indexing",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: The native MiniLM background job stopped after three changed claims.",
+      "task": "Why are most old entries still absent from similarity lookup after enabling embeddings?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "The native MiniLM background job stopped after three changed claims."
+      }
+    },
+    {
+      "id": "cause-indexing-short-control",
+      "incident": "indexing",
+      "split": "development",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding indexing",
+      "content": "The native MiniLM background job stopped after three changed claims.",
+      "task": "Why are most old entries still absent from similarity lookup after enabling embeddings?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "The native MiniLM background job stopped after three changed claims."
+      }
+    },
+    {
+      "id": "cause-clones-hidden-cause",
+      "incident": "clones",
+      "split": "development",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding clones",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: A second project sharing the model directory could also have its scheduling request suppressed by the first.",
+      "task": "Why does opening another checkout fail to start its embedding work?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "A second project sharing the\nmodel directory could also have its scheduling request suppressed by the first."
+      }
+    },
+    {
+      "id": "cause-clones-paragraph-control",
+      "incident": "clones",
+      "split": "development",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding clones",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: A second project sharing the model directory could also have its scheduling request suppressed by the first.",
+      "task": "Why does opening another checkout fail to start its embedding work?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "A second project sharing the\nmodel directory could also have its scheduling request suppressed by the first."
+      }
+    },
+    {
+      "id": "cause-clones-short-control",
+      "incident": "clones",
+      "split": "development",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding clones",
+      "content": "A second project sharing the model directory could also have its scheduling request suppressed by the first.",
+      "task": "Why does opening another checkout fail to start its embedding work?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-index-completion-nov8-2026.md",
+        "sha256": "eb1ccc5d36629f0d32319d847d99ec3f1c0cfb0c202cfc2b8b0af342cf411959",
+        "excerpt": "A second project sharing the\nmodel directory could also have its scheduling request suppressed by the first."
+      }
+    },
+    {
+      "id": "cause-hints-hidden-cause",
+      "incident": "hints",
+      "split": "heldout",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding hints",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: render_packet_traced includes fetch hints. Searching packet text could mark a hinted record delivered when another complete record had identical content.",
+      "task": "Why does the evaluation report success even though the model only received a fetch pointer?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-title-coverage-nov9-2026.md",
+        "sha256": "5435754c9b198363b6c22d94e45f98c077f16a1b4ebcdd6179c23dd2dc40220b",
+        "excerpt": "`render_packet_traced` includes fetch hints. Searching packet text could mark\n   a hinted record delivered when another complete record had identical content."
+      }
+    },
+    {
+      "id": "cause-hints-paragraph-control",
+      "incident": "hints",
+      "split": "heldout",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding hints",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: render_packet_traced includes fetch hints. Searching packet text could mark a hinted record delivered when another complete record had identical content.",
+      "task": "Why does the evaluation report success even though the model only received a fetch pointer?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-title-coverage-nov9-2026.md",
+        "sha256": "5435754c9b198363b6c22d94e45f98c077f16a1b4ebcdd6179c23dd2dc40220b",
+        "excerpt": "`render_packet_traced` includes fetch hints. Searching packet text could mark\n   a hinted record delivered when another complete record had identical content."
+      }
+    },
+    {
+      "id": "cause-hints-short-control",
+      "incident": "hints",
+      "split": "heldout",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding hints",
+      "content": "render_packet_traced includes fetch hints. Searching packet text could mark a hinted record delivered when another complete record had identical content.",
+      "task": "Why does the evaluation report success even though the model only received a fetch pointer?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-title-coverage-nov9-2026.md",
+        "sha256": "5435754c9b198363b6c22d94e45f98c077f16a1b4ebcdd6179c23dd2dc40220b",
+        "excerpt": "`render_packet_traced` includes fetch hints. Searching packet text could mark\n   a hinted record delivered when another complete record had identical content."
+      }
+    },
+    {
+      "id": "cause-clock-hidden-cause",
+      "incident": "clock",
+      "split": "heldout",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding clock",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: The common recency bonus changed floating-point ties in ordinary lexical ranking.",
+      "task": "Why do unchanged fixtures produce different ordering after a calendar boundary?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-short-suffix-nov9-2026.md",
+        "sha256": "855db8412905bc11f39ab143b519c683eb173399db481bd75f1e46cdbd503fc9",
+        "excerpt": "The common recency bonus changed\nfloating-point ties in ordinary lexical ranking."
+      }
+    },
+    {
+      "id": "cause-clock-paragraph-control",
+      "incident": "clock",
+      "split": "heldout",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding clock",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: The common recency bonus changed floating-point ties in ordinary lexical ranking.",
+      "task": "Why do unchanged fixtures produce different ordering after a calendar boundary?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-short-suffix-nov9-2026.md",
+        "sha256": "855db8412905bc11f39ab143b519c683eb173399db481bd75f1e46cdbd503fc9",
+        "excerpt": "The common recency bonus changed\nfloating-point ties in ordinary lexical ranking."
+      }
+    },
+    {
+      "id": "cause-clock-short-control",
+      "incident": "clock",
+      "split": "heldout",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding clock",
+      "content": "The common recency bonus changed floating-point ties in ordinary lexical ranking.",
+      "task": "Why do unchanged fixtures produce different ordering after a calendar boundary?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-short-suffix-nov9-2026.md",
+        "sha256": "855db8412905bc11f39ab143b519c683eb173399db481bd75f1e46cdbd503fc9",
+        "excerpt": "The common recency bonus changed\nfloating-point ties in ordinary lexical ranking."
+      }
+    },
+    {
+      "id": "cause-envelope-hidden-cause",
+      "incident": "envelope",
+      "split": "heldout",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding envelope",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: editor/reference wrapper text could obscure the focused task.",
+      "task": "Why does attaching project references stop a terse symbol request from being recognized?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "editor/reference wrapper text could obscure\nthe focused task."
+      }
+    },
+    {
+      "id": "cause-envelope-paragraph-control",
+      "incident": "envelope",
+      "split": "heldout",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding envelope",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: editor/reference wrapper text could obscure the focused task.",
+      "task": "Why does attaching project references stop a terse symbol request from being recognized?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "editor/reference wrapper text could obscure\nthe focused task."
+      }
+    },
+    {
+      "id": "cause-envelope-short-control",
+      "incident": "envelope",
+      "split": "heldout",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding envelope",
+      "content": "editor/reference wrapper text could obscure the focused task.",
+      "task": "Why does attaching project references stop a terse symbol request from being recognized?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "editor/reference wrapper text could obscure\nthe focused task."
+      }
+    },
+    {
+      "id": "cause-leader-hidden-cause",
+      "incident": "leader",
+      "split": "heldout",
+      "category": "hidden-cause",
+      "answerable": true,
+      "title": "Recorded finding leader",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \nCause: an unrelated leading observation reserved one of the eight slots, leaving seven for eight explicit subjects.",
+      "task": "Why is a fully specified set incomplete when a generic first result occupies its final place?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "an unrelated leading observation\nreserved one of the eight slots, leaving seven for eight explicit subjects."
+      }
+    },
+    {
+      "id": "cause-leader-paragraph-control",
+      "incident": "leader",
+      "split": "heldout",
+      "category": "paragraph-control",
+      "answerable": true,
+      "title": "Recorded finding leader",
+      "content": "Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation Recorded background material from the investigation \n\nCause: an unrelated leading observation reserved one of the eight slots, leaving seven for eight explicit subjects.",
+      "task": "Why is a fully specified set incomplete when a generic first result occupies its final place?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "an unrelated leading observation\nreserved one of the eight slots, leaving seven for eight explicit subjects."
+      }
+    },
+    {
+      "id": "cause-leader-short-control",
+      "incident": "leader",
+      "split": "heldout",
+      "category": "short-control",
+      "answerable": true,
+      "title": "Recorded finding leader",
+      "content": "an unrelated leading observation reserved one of the eight slots, leaving seven for eight explicit subjects.",
+      "task": "Why is a fully specified set incomplete when a generic first result occupies its final place?",
+      "source_reference": {
+        "file": "docs/design/long-term-memory-full-subject-coverage-nov10-2026.md",
+        "sha256": "7511656bc97d97398316cc557dd41ffd349e67260df4d71ac9077ceb51034d36",
+        "excerpt": "an unrelated leading observation\nreserved one of the eight slots, leaving seven for eight explicit subjects."
+      }
+    },
+    {
+      "id": "cause-negative-development-0",
+      "incident": "negative-development-0",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "How does sourdough fermentation change bread texture?"
+    },
+    {
+      "id": "cause-negative-development-1",
+      "incident": "negative-development-1",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Where are Antarctic penguin breeding sites?"
+    },
+    {
+      "id": "cause-negative-development-2",
+      "incident": "negative-development-2",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Why do watercolor pigments separate on wet paper?"
+    },
+    {
+      "id": "cause-negative-development-3",
+      "incident": "negative-development-3",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "How is a violin bow repaired?"
+    },
+    {
+      "id": "cause-negative-development-4",
+      "incident": "negative-development-4",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Explain mortgage refinancing penalties."
+    },
+    {
+      "id": "cause-negative-development-5",
+      "incident": "negative-development-5",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Which meteor shower peaks in August?"
+    },
+    {
+      "id": "cause-negative-development-6",
+      "incident": "negative-development-6",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "How does olive oil affect pastry texture?"
+    },
+    {
+      "id": "cause-negative-development-7",
+      "incident": "negative-development-7",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "What makes a chess position stalemate?"
+    },
+    {
+      "id": "cause-negative-heldout-0",
+      "incident": "negative-heldout-0",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "How does sourdough fermentation change bread texture?"
+    },
+    {
+      "id": "cause-negative-heldout-1",
+      "incident": "negative-heldout-1",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Where are Antarctic penguin breeding sites?"
+    },
+    {
+      "id": "cause-negative-heldout-2",
+      "incident": "negative-heldout-2",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Why do watercolor pigments separate on wet paper?"
+    },
+    {
+      "id": "cause-negative-heldout-3",
+      "incident": "negative-heldout-3",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "How is a violin bow repaired?"
+    },
+    {
+      "id": "cause-negative-heldout-4",
+      "incident": "negative-heldout-4",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Explain mortgage refinancing penalties."
+    },
+    {
+      "id": "cause-negative-heldout-5",
+      "incident": "negative-heldout-5",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "Which meteor shower peaks in August?"
+    },
+    {
+      "id": "cause-negative-heldout-6",
+      "incident": "negative-heldout-6",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "How does olive oil affect pastry texture?"
+    },
+    {
+      "id": "cause-negative-heldout-7",
+      "incident": "negative-heldout-7",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unavailable finding",
+      "content": "No observation supports this request.",
+      "task": "What makes a chess position stalemate?"
+    }
+  ]
+}

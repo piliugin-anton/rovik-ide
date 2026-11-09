@@ -1,0 +1,1352 @@
+{
+  "baseline": "f844552504389031769b9344f90ac0eea313ca1e",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-cause-field-cases.json": "6806c6d4a85a5de2a0feb7f614d3f74d7ccb193ab6c848fee2d46f9a4d6defe9"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "hypothesis": "After existing paragraph/sentence views, index one complete final Cause field only when it begins beyond the primary window and fits entirely in that window. No field fragments, claim rewrites or trust changes. Preserve existing vectors and indexed lifecycle.",
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "limit": 8,
+    "budget": 1000
+  },
+  "selection": "Development gain with no per-fact/rank or exact negative packet regression, then historical checks before candidate reserved scoring. Existing comparator unchanged.",
+  "limitations": [
+    "Eight already exposed report incidents and correlated views, not eight new authentic coding histories. Source assertions are supplied; automatic extraction accuracy is unmeasured.",
+    "Negative controls are unrelated-domain requests, not sufficient evidence of adjacent-topic abstention.",
+    "Candidate tests share the same fixed queries and claims. Follow-up trials were registered after preceding development failures; no candidate reserved results were used.",
+    "Mechanically exposing a field is not proof that its vector supplies useful independent evidence; neither append-only nor fusion improved complete native delivery."
+  ],
+  "followup": {
+    "hypothesis": "Keep identical final-field eligibility but embed assertion text without the generic Cause label. Added after the labeled view yielded no development gain. No query or source assertion is changed.",
+    "selection": "Same existing per-record gate; development only before any reserved candidate."
+  },
+  "fusion_trial": {
+    "hypothesis": "Fuse normal-cutoff matches from the explicit captured Cause view as independent RRF evidence, before final selection. Appending alone cannot repair full pools. Same candidate gates; reject any required-fact/rank or negative identity change.",
+    "registered_after": "Both append-only development trials failed to improve; no reserved candidate scored."
+  },
+  "case_count": 40,
+  "source_incidents": 8,
+  "positive_per_split": 12,
+  "negative_per_split": 8,
+  "candidate_reserved_scored": false,
+  "accepted_runtime_changes": 0,
+  "trial_policy_views": 120,
+  "method": "Native pinned 384-dimensional MiniLM, existing revision chroma-minilm-l6-v2-913d7300-title-claim-native-v1, .30 normal cutoff, short-query scale 11/12, eight results, 1000 estimated tokens, stable 36-hour age. Source excerpts and questions frozen before baseline/candidate scoring. Assertions copied from existing repository reports with whitespace/backtick normalization; synthetic generic prefaces and Cause field isolate visibility. No automatic model extraction or blind generalization claim.",
+  "baseline_reserved_reference": {
+    "hybrid": {
+      "complete": 6,
+      "total": 12
+    },
+    "note": "Baseline reference only; no candidate reserved scoring or selection from reserved outcomes."
+  },
+  "development_miss_diagnosis": {
+    "primary_selected_not_fully_delivered": [
+      "cause-packing-hidden-cause",
+      "cause-packing-paragraph-control",
+      "cause-packing-short-control"
+    ],
+    "primary_not_selected": [
+      "cause-indexing-hidden-cause",
+      "cause-indexing-paragraph-control",
+      "cause-indexing-short-control",
+      "cause-clones-hidden-cause",
+      "cause-clones-paragraph-control",
+      "cause-clones-short-control"
+    ]
+  },
+  "trials": [
+    {
+      "label": "candidate",
+      "decision": "discarded: no additional complete answer",
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..e3cacff 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -870,6 +870,25 @@ fn focused_scope(task: &str) -> bool {\n }\n \n fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {\n+    overflow_prose_conclusion(document, limit).or_else(|| {\n+        let limit = limit.filter(|n| *n > 0)?;\n+        let document = document.trim_end();\n+        let (prefix, cause) = document.rsplit_once(\"\\nCause: \")?;\n+        let field = format!(\"Cause: {cause}\");\n+        // The capture tool appends this explicit assertion to the claim. Keep\n+        // the whole field, and only when the primary encoder cannot see it.\n+        if prefix.chars().count().saturating_add(1) < limit\n+            || cause.trim().is_empty()\n+            || cause.contains('\\n')\n+            || field.chars().count() > limit\n+        {\n+            return None;\n+        }\n+        Some(field)\n+    })\n+}\n+\n+fn overflow_prose_conclusion(document: &str, limit: Option<usize>) -> Option<String> {\n     let limit = limit.filter(|limit| *limit > 0)?;\n     let document = document.trim_end();\n     if document.chars().count() <= limit {\n",
+      "groups": [
+        {
+          "policy": "lexical",
+          "cases": 20,
+          "before": {
+            "complete": 3,
+            "total": 12
+          },
+          "after": {
+            "complete": 3,
+            "total": 12
+          },
+          "metrics": {
+            "candidate_recall": 0.5,
+            "cases": 20,
+            "delivered_recall": 0.25,
+            "mrr": 0.15922619047619047,
+            "ndcg_at_8": 0.239576733680564,
+            "no_match_injection_rate": 0,
+            "recall_at_8": 0.5
+          },
+          "audit": {
+            "safe": true,
+            "cases": 20,
+            "gains": [],
+            "errors": []
+          },
+          "categories": {
+            "hidden-cause": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "paragraph-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "short-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "no-match": {
+              "before": {
+                "complete": 0,
+                "total": 8
+              },
+              "after": {
+                "complete": 0,
+                "total": 8
+              }
+            }
+          },
+          "changed_cases": [],
+          "artifact_sha256": {
+            "baseline": "efc195d48997a0aa972418a31c1d493c7ede1302181385e1012ecf2f70e560cf",
+            "candidate": "c24d3ff2493d3c26fd6980c26e9e2f1510a3adfcdaa838d9583a7fa9cc4281dd"
+          }
+        },
+        {
+          "policy": "hybrid",
+          "cases": 20,
+          "before": {
+            "complete": 3,
+            "total": 12
+          },
+          "after": {
+            "complete": 3,
+            "total": 12
+          },
+          "metrics": {
+            "candidate_recall": 0.5,
+            "cases": 20,
+            "delivered_recall": 0.25,
+            "mrr": 0.15922619047619047,
+            "ndcg_at_8": 0.239576733680564,
+            "no_match_injection_rate": 0,
+            "recall_at_8": 0.5
+          },
+          "audit": {
+            "safe": true,
+            "cases": 20,
+            "gains": [],
+            "errors": []
+          },
+          "categories": {
+            "hidden-cause": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "paragraph-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "short-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "no-match": {
+              "before": {
+                "complete": 0,
+                "total": 8
+              },
+              "after": {
+                "complete": 0,
+                "total": 8
+              }
+            }
+          },
+          "changed_cases": [],
+          "artifact_sha256": {
+            "baseline": "62616dff99da01472314d6c86cef2955815a812671f4df683f4617c04d2926fc",
+            "candidate": "86fa34db2ba7857b0451c46bf8b10f70d6039426ca0b5eb07811b5a6379c8e93"
+          }
+        }
+      ]
+    },
+    {
+      "label": "assertion",
+      "decision": "discarded: no additional complete answer",
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..76892d3 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -870,6 +870,25 @@ fn focused_scope(task: &str) -> bool {\n }\n \n fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {\n+    overflow_prose_conclusion(document, limit).or_else(|| {\n+        let limit = limit.filter(|n| *n > 0)?;\n+        let document = document.trim_end();\n+        let (prefix, cause) = document.rsplit_once(\"\\nCause: \")?;\n+        let field = format!(\"Cause: {cause}\");\n+        // The capture tool appends this explicit assertion to the claim. Keep\n+        // the whole field, and only when the primary encoder cannot see it.\n+        if prefix.chars().count().saturating_add(1) < limit\n+            || cause.trim().is_empty()\n+            || cause.contains('\\n')\n+            || field.chars().count() > limit\n+        {\n+            return None;\n+        }\n+        Some(cause.to_owned())\n+    })\n+}\n+\n+fn overflow_prose_conclusion(document: &str, limit: Option<usize>) -> Option<String> {\n     let limit = limit.filter(|limit| *limit > 0)?;\n     let document = document.trim_end();\n     if document.chars().count() <= limit {\n",
+      "groups": [
+        {
+          "policy": "lexical",
+          "cases": 20,
+          "before": {
+            "complete": 3,
+            "total": 12
+          },
+          "after": {
+            "complete": 3,
+            "total": 12
+          },
+          "metrics": {
+            "candidate_recall": 0.5,
+            "cases": 20,
+            "delivered_recall": 0.25,
+            "mrr": 0.15922619047619047,
+            "ndcg_at_8": 0.239576733680564,
+            "no_match_injection_rate": 0,
+            "recall_at_8": 0.5
+          },
+          "audit": {
+            "safe": true,
+            "cases": 20,
+            "gains": [],
+            "errors": []
+          },
+          "categories": {
+            "hidden-cause": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "paragraph-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "short-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "no-match": {
+              "before": {
+                "complete": 0,
+                "total": 8
+              },
+              "after": {
+                "complete": 0,
+                "total": 8
+              }
+            }
+          },
+          "changed_cases": [],
+          "artifact_sha256": {
+            "baseline": "efc195d48997a0aa972418a31c1d493c7ede1302181385e1012ecf2f70e560cf",
+            "candidate": "77495aba2a3af3205ff839581b804e9ece269f85a3ea0680bb0fa9b6f4d2dc9d"
+          }
+        },
+        {
+          "policy": "hybrid",
+          "cases": 20,
+          "before": {
+            "complete": 3,
+            "total": 12
+          },
+          "after": {
+            "complete": 3,
+            "total": 12
+          },
+          "metrics": {
+            "candidate_recall": 0.5,
+            "cases": 20,
+            "delivered_recall": 0.25,
+            "mrr": 0.15922619047619047,
+            "ndcg_at_8": 0.239576733680564,
+            "no_match_injection_rate": 0,
+            "recall_at_8": 0.5
+          },
+          "audit": {
+            "safe": true,
+            "cases": 20,
+            "gains": [],
+            "errors": []
+          },
+          "categories": {
+            "hidden-cause": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "paragraph-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "short-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "no-match": {
+              "before": {
+                "complete": 0,
+                "total": 8
+              },
+              "after": {
+                "complete": 0,
+                "total": 8
+              }
+            }
+          },
+          "changed_cases": [],
+          "artifact_sha256": {
+            "baseline": "62616dff99da01472314d6c86cef2955815a812671f4df683f4617c04d2926fc",
+            "candidate": "0efbc49ad362d15e19c646c13b1d9a003abf0dd66ac1e4a56860a6a2657e303b"
+          }
+        }
+      ]
+    },
+    {
+      "label": "fusion",
+      "decision": "discarded: no additional complete answer",
+      "patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex 8a8edcf..820f776 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -327,6 +327,21 @@ impl SemanticIndex {\n                 );\n             }\n         }\n+        // Experimental: independent, explicitly captured cause evidence.\n+        match self.search_view_filtered(query, &vector, minimum, |record| {\n+            accept(record) && record.content.contains(\"\\nCause: \")\n+        }, true) {\n+            Ok(hits) => for (rank, (record, similarity)) in hits.into_iter().enumerate() {\n+                let score = 1.0 / (61 + rank) as f32;\n+                if let Some(hit) = fused.values_mut().find(|hit| hit.record.same_context_claim(&record)) {\n+                    hit.score += score;\n+                    hit.reason.push_str(\", captured cause match\");\n+                } else {\n+                    fused.insert(record.id, RetrievedMemory {record, score, reason: format!(\"captured cause cosine {similarity:.3}\"), components: Default::default()});\n+                }\n+            },\n+            Err(error) => eprintln!(\"memory: cause evidence unavailable: {error}\"),\n+        }\n         let mut found: Vec<_> = fused.into_values().collect();\n         found.sort_by(|a, b| {\n             b.score\n@@ -870,6 +885,25 @@ fn focused_scope(task: &str) -> bool {\n }\n \n fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {\n+    overflow_prose_conclusion(document, limit).or_else(|| {\n+        let limit = limit.filter(|n| *n > 0)?;\n+        let document = document.trim_end();\n+        let (prefix, cause) = document.rsplit_once(\"\\nCause: \")?;\n+        let field = format!(\"Cause: {cause}\");\n+        // The capture tool appends this explicit assertion to the claim. Keep\n+        // the whole field, and only when the primary encoder cannot see it.\n+        if prefix.chars().count().saturating_add(1) < limit\n+            || cause.trim().is_empty()\n+            || cause.contains('\\n')\n+            || field.chars().count() > limit\n+        {\n+            return None;\n+        }\n+        Some(cause.to_owned())\n+    })\n+}\n+\n+fn overflow_prose_conclusion(document: &str, limit: Option<usize>) -> Option<String> {\n     let limit = limit.filter(|limit| *limit > 0)?;\n     let document = document.trim_end();\n     if document.chars().count() <= limit {\n",
+      "groups": [
+        {
+          "policy": "lexical",
+          "cases": 20,
+          "before": {
+            "complete": 3,
+            "total": 12
+          },
+          "after": {
+            "complete": 3,
+            "total": 12
+          },
+          "metrics": {
+            "candidate_recall": 0.5,
+            "cases": 20,
+            "delivered_recall": 0.25,
+            "mrr": 0.15922619047619047,
+            "ndcg_at_8": 0.239576733680564,
+            "no_match_injection_rate": 0,
+            "recall_at_8": 0.5
+          },
+          "audit": {
+            "safe": true,
+            "cases": 20,
+            "gains": [],
+            "errors": []
+          },
+          "categories": {
+            "hidden-cause": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "paragraph-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "short-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "no-match": {
+              "before": {
+                "complete": 0,
+                "total": 8
+              },
+              "after": {
+                "complete": 0,
+                "total": 8
+              }
+            }
+          },
+          "changed_cases": [],
+          "artifact_sha256": {
+            "baseline": "efc195d48997a0aa972418a31c1d493c7ede1302181385e1012ecf2f70e560cf",
+            "candidate": "adc546a551e50116c1f0ed6dd6dc6e10d288f07b8cae82b6d35bce05eba56702"
+          }
+        },
+        {
+          "policy": "hybrid",
+          "cases": 20,
+          "before": {
+            "complete": 3,
+            "total": 12
+          },
+          "after": {
+            "complete": 3,
+            "total": 12
+          },
+          "metrics": {
+            "candidate_recall": 0.5,
+            "cases": 20,
+            "delivered_recall": 0.25,
+            "mrr": 0.15922619047619047,
+            "ndcg_at_8": 0.239576733680564,
+            "no_match_injection_rate": 0,
+            "recall_at_8": 0.5
+          },
+          "audit": {
+            "safe": true,
+            "cases": 20,
+            "gains": [],
+            "errors": []
+          },
+          "categories": {
+            "hidden-cause": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "paragraph-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "short-control": {
+              "before": {
+                "complete": 1,
+                "total": 4
+              },
+              "after": {
+                "complete": 1,
+                "total": 4
+              }
+            },
+            "no-match": {
+              "before": {
+                "complete": 0,
+                "total": 8
+              },
+              "after": {
+                "complete": 0,
+                "total": 8
+              }
+            }
+          },
+          "changed_cases": [
+            {
+              "id": "cause-packing-hidden-cause",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": 7,
+                "category": "hidden-cause",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004"
+                ],
+                "id": "cause-packing-hidden-cause",
+                "incident": "packing",
+                "packet_tokens": 996,
+                "primary_claim_hash": "172a1a75e859625b",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000008",
+                "prohibited": false,
+                "rank": 7,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 8,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000006",
+                  "00000000-0000-0000-0000-000000000008",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 8,
+                  "file_matches": 0,
+                  "fts_matches": 8,
+                  "rejected": 0,
+                  "returned": 8,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": 7,
+                "category": "hidden-cause",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "id": "cause-packing-hidden-cause",
+                "incident": "packing",
+                "packet_tokens": 997,
+                "primary_claim_hash": "172a1a75e859625b",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000008",
+                "prohibited": false,
+                "rank": 7,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 8,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000006",
+                  "00000000-0000-0000-0000-000000000008",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 8,
+                  "file_matches": 0,
+                  "fts_matches": 8,
+                  "rejected": 0,
+                  "returned": 8,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-packing-paragraph-control",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": 7,
+                "category": "paragraph-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004"
+                ],
+                "id": "cause-packing-paragraph-control",
+                "incident": "packing",
+                "packet_tokens": 996,
+                "primary_claim_hash": "172a1a75e859625b",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000008",
+                "prohibited": false,
+                "rank": 7,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 8,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000006",
+                  "00000000-0000-0000-0000-000000000008",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 8,
+                  "file_matches": 0,
+                  "fts_matches": 8,
+                  "rejected": 0,
+                  "returned": 8,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": 7,
+                "category": "paragraph-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "id": "cause-packing-paragraph-control",
+                "incident": "packing",
+                "packet_tokens": 997,
+                "primary_claim_hash": "172a1a75e859625b",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000008",
+                "prohibited": false,
+                "rank": 7,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 8,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000006",
+                  "00000000-0000-0000-0000-000000000008",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 8,
+                  "file_matches": 0,
+                  "fts_matches": 8,
+                  "rejected": 0,
+                  "returned": 8,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-packing-short-control",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": 8,
+                "category": "short-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004"
+                ],
+                "id": "cause-packing-short-control",
+                "incident": "packing",
+                "packet_tokens": 996,
+                "primary_claim_hash": "e4f31c395d5d46a2",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000008",
+                "prohibited": false,
+                "rank": 8,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 8,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000006",
+                  "00000000-0000-0000-0000-000000000009",
+                  "00000000-0000-0000-0000-000000000008"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 8,
+                  "file_matches": 0,
+                  "fts_matches": 8,
+                  "rejected": 0,
+                  "returned": 8,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": 8,
+                "category": "short-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "id": "cause-packing-short-control",
+                "incident": "packing",
+                "packet_tokens": 997,
+                "primary_claim_hash": "e4f31c395d5d46a2",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000008",
+                "prohibited": false,
+                "rank": 8,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003"
+                ],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 8,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000007",
+                  "00000000-0000-0000-0000-000000000004",
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000003",
+                  "00000000-0000-0000-0000-000000000002",
+                  "00000000-0000-0000-0000-000000000006",
+                  "00000000-0000-0000-0000-000000000009",
+                  "00000000-0000-0000-0000-000000000008"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 8,
+                  "file_matches": 0,
+                  "fts_matches": 8,
+                  "rejected": 0,
+                  "returned": 8,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-pools-hidden-cause",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "hidden-cause",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "id": "cause-pools-hidden-cause",
+                "incident": "pools",
+                "packet_tokens": 523,
+                "primary_claim_hash": "34ffc9a64a22e7c3",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000009",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "hidden-cause",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "id": "cause-pools-hidden-cause",
+                "incident": "pools",
+                "packet_tokens": 528,
+                "primary_claim_hash": "34ffc9a64a22e7c3",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000009",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-pools-paragraph-control",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "paragraph-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "id": "cause-pools-paragraph-control",
+                "incident": "pools",
+                "packet_tokens": 523,
+                "primary_claim_hash": "34ffc9a64a22e7c3",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000009",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "paragraph-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "id": "cause-pools-paragraph-control",
+                "incident": "pools",
+                "packet_tokens": 529,
+                "primary_claim_hash": "34ffc9a64a22e7c3",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000009",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-pools-short-control",
+              "before": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "short-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "id": "cause-pools-short-control",
+                "incident": "pools",
+                "packet_tokens": 352,
+                "primary_claim_hash": "55d635999d954614",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000009",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": true,
+                "answerable": true,
+                "candidate_rank": 2,
+                "category": "short-control",
+                "embedding_fallback": false,
+                "full_text_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "id": "cause-pools-short-control",
+                "incident": "pools",
+                "packet_tokens": 357,
+                "primary_claim_hash": "55d635999d954614",
+                "primary_delivered": true,
+                "primary_id": "00000000-0000-0000-0000-000000000009",
+                "prohibited": false,
+                "rank": 2,
+                "rendered_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "required_count": 1,
+                "required_delivered": 1,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 2,
+                "returned_ids": [
+                  "00000000-0000-0000-0000-000000000005",
+                  "00000000-0000-0000-0000-000000000009"
+                ],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 2,
+                  "file_matches": 0,
+                  "fts_matches": 2,
+                  "rejected": 0,
+                  "returned": 2,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-indexing-hidden-cause",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "hidden-cause",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000008"],
+                "id": "cause-indexing-hidden-cause",
+                "incident": "indexing",
+                "packet_tokens": 239,
+                "primary_claim_hash": "5fcb7a1dd968f7c2",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000006",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000008"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000008"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "hidden-cause",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000008"],
+                "id": "cause-indexing-hidden-cause",
+                "incident": "indexing",
+                "packet_tokens": 244,
+                "primary_claim_hash": "5fcb7a1dd968f7c2",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000006",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000008"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000008"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-indexing-paragraph-control",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "paragraph-control",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000008"],
+                "id": "cause-indexing-paragraph-control",
+                "incident": "indexing",
+                "packet_tokens": 239,
+                "primary_claim_hash": "5fcb7a1dd968f7c2",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000006",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000008"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000008"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "paragraph-control",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000008"],
+                "id": "cause-indexing-paragraph-control",
+                "incident": "indexing",
+                "packet_tokens": 244,
+                "primary_claim_hash": "5fcb7a1dd968f7c2",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000006",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000008"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000008"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            },
+            {
+              "id": "cause-indexing-short-control",
+              "before": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "short-control",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000008"],
+                "id": "cause-indexing-short-control",
+                "incident": "indexing",
+                "packet_tokens": 239,
+                "primary_claim_hash": "72372ded6989b00d",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000006",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000008"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000008"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              },
+              "after": {
+                "answer_delivered": false,
+                "answerable": true,
+                "candidate_rank": null,
+                "category": "short-control",
+                "embedding_fallback": false,
+                "full_text_ids": ["00000000-0000-0000-0000-000000000008"],
+                "id": "cause-indexing-short-control",
+                "incident": "indexing",
+                "packet_tokens": 244,
+                "primary_claim_hash": "72372ded6989b00d",
+                "primary_delivered": false,
+                "primary_id": "00000000-0000-0000-0000-000000000006",
+                "prohibited": false,
+                "rank": null,
+                "rendered_ids": ["00000000-0000-0000-0000-000000000008"],
+                "required_count": 1,
+                "required_delivered": 0,
+                "required_facts": [],
+                "required_ranks": {},
+                "returned": 1,
+                "returned_ids": ["00000000-0000-0000-0000-000000000008"],
+                "split": "development",
+                "telemetry": {
+                  "candidates_scanned": 1,
+                  "file_matches": 0,
+                  "fts_matches": 1,
+                  "rejected": 0,
+                  "returned": 1,
+                  "used_full_text_search": true
+                }
+              }
+            }
+          ],
+          "artifact_sha256": {
+            "baseline": "62616dff99da01472314d6c86cef2955815a812671f4df683f4617c04d2926fc",
+            "candidate": "27491730538dbb8bb7bfe48923607129108c5ce0c176477a67f77eb02323c7f0"
+          }
+        }
+      ]
+    }
+  ],
+  "restoration": [
+    {
+      "key": "original",
+      "policy": "lexical",
+      "cases": 110,
+      "exact_except_timing": true
+    },
+    {
+      "key": "original",
+      "policy": "hybrid",
+      "cases": 110,
+      "exact_except_timing": true
+    },
+    {
+      "key": "fresh",
+      "policy": "lexical",
+      "cases": 45,
+      "exact_except_timing": true
+    },
+    {
+      "key": "fresh",
+      "policy": "hybrid",
+      "cases": 45,
+      "exact_except_timing": true
+    },
+    {
+      "key": "cause",
+      "policy": "lexical",
+      "cases": 20,
+      "exact_except_timing": true
+    },
+    {
+      "key": "cause",
+      "policy": "hybrid",
+      "cases": 20,
+      "exact_except_timing": true
+    }
+  ],
+  "source_restored": true,
+  "validation": {
+    "prototype_tests": "The labeled-field prototype passed all 11 conclusions target tests, including two new hidden-field/trust/full-delivery and malformed/oversized-field contracts. The tests were removed with the rejected feature.",
+    "restoration": "350 original/fresh/new development policy views reproduce accepted baseline outcomes, including non-timing telemetry.",
+    "broader_checks": "Broader tests remain skipped under user instruction. No full historical/stress matrix was needed after no prototype passed development selection."
+  },
+  "artifact_sha256": {
+    "baseline_evaluator": "1302bdbf441d7de17d4693663ebdc06839ccb8a4d7b934f7f698ceabef2c2d77",
+    "restored_semantic_source": "783bf669edbfb54c01de501f5c18910ce2eb6271721bfbb6fe3ea0aafe36fa09",
+    "evaluator_source": "8e3c7aaaa0659d5b0a169705f122f11dddd6ce478446bffcd895e91e5ffdbcab"
+  }
+}

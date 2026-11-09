@@ -123,3 +123,14 @@ no-match judgments before evaluating extraction. Preserve original assertions,
 claim hashes, evidence, applicability and trust; do not replace measured extraction
 with hand-authored benchmark aliases. Compare both library delivery and actual
 agent prompts/tasks before accepting a gain.
+
+## Grounded cause-field follow-up
+
+The [cause-field experiment](long-term-memory-cause-fields-nov10-2026.md) adds 40
+source-bound cases and tests three approaches to exposing an existing captured
+assertion: labeled field, assertion-only field, and independent rank fusion.
+All remain 3/12 on development, with no accepted runtime change. The nine misses
+separate into three delivery and six matching/selection failures across correlated
+variants. Preserve these cases instead of revising their questions after scoring.
+Measure expected/distractor similarities and admission stages before another
+representation trial; additional grounded text alone did not establish a gain.
