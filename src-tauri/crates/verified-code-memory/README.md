@@ -165,6 +165,10 @@ that exact allowance. Any capacity, rendering or lookup failure keeps the legacy
 plan. This uses the existing indexed, filtered collector and adds no inference.
 Omitting the allowance preserves legacy retrieval. Automatic application recall
 supplies its existing 2,000-token allowance.
+Optional title candidates whose claim text alone exceeds that allowance are
+rejected before the collector's bound. This necessary size check permits later
+eligible claims to be considered; the full rendering preview remains authoritative.
+Existing incumbents and ordinary lexical/vector candidate eligibility are unchanged.
 
 ## Development
 

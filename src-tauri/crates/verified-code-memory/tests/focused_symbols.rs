@@ -801,6 +801,21 @@ fn optional_title_coverage_preserves_the_legacy_packet_when_protected_full_text_
             .unwrap();
         store.verify(hidden.id, "private source").unwrap();
     }
+    // Visible title alternatives must not fill the bounded supplementary pool
+    // with claims that cannot possibly render under the supplied allowance.
+    for n in 0..90 {
+        let oversized = store
+            .remember(NewMemory::procedure(
+                "a",
+                "shared memory store",
+                format!(
+                    "Use a lock for archive {n}. {}",
+                    "Shared memory store reference; ".repeat(400)
+                ),
+            ))
+            .unwrap();
+        store.verify(oversized.id, "archived source").unwrap();
+    }
     index.backfill("a", &TitleModel).unwrap();
     let visible = |record: &verified_code_memory::MemoryRecord| {
         !record.tags.iter().any(|tag| tag == "caller-hidden")
