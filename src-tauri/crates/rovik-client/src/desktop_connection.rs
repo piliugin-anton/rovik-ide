@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 /// One explicit backend destination for a window's adapted commands.
 pub struct DesktopConnection {
+    #[cfg(unix)]
+    journal_reader: tokio::sync::Mutex<Option<crate::local_backend::rpc::Client>>,
     backend: Backend,
     events: crate::desktop_events::EventRouter,
 }
@@ -21,6 +23,64 @@ enum Backend {
 }
 
 impl DesktopConnection {
+    /// Reads shared work independently of command and private-resource connections.
+    /// Only this read connection is reopened after failure; commands are never replayed.
+    pub async fn poll_events(
+        &self,
+        scope: crate::desktop_journal::Scope,
+        cursor: Option<crate::desktop_journal::Cursor>,
+    ) -> Result<serde_json::Value, String> {
+        self.read_events(crate::desktop_api::DesktopRequest::Events { scope, cursor })
+            .await
+    }
+
+    /// Reads scoped run state using the reconnectable read connection.
+    pub async fn event_status(
+        &self,
+        scope: crate::desktop_journal::Scope,
+    ) -> Result<serde_json::Value, String> {
+        self.read_events(crate::desktop_api::DesktopRequest::EventStatus { scope })
+            .await
+    }
+
+    async fn read_events(
+        &self,
+        request: crate::desktop_api::DesktopRequest,
+    ) -> Result<serde_json::Value, String> {
+        match &self.backend {
+            Backend::Embedded { backend, .. } => {
+                request.dispatch_in(backend, None).await.map_err(|e| {
+                    e.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| e.to_string())
+                })
+            }
+            #[cfg(unix)]
+            Backend::Local(client) => {
+                let mut reader = self.journal_reader.lock().await;
+                if reader.is_none() {
+                    *reader = Some(
+                        crate::local_backend::rpc::Client::connect(client.directory())
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    );
+                }
+                let current = reader.as_ref().ok_or("Event reader unavailable")?;
+                match current.desktop(request).await {
+                    Ok(reply) => reply.map_err(|e| {
+                        e.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| e.to_string())
+                    }),
+                    Err(error) => {
+                        *reader = None;
+                        Err(format!("Desktop events disconnected: {error}"))
+                    }
+                }
+            }
+        }
+    }
+
     /// Reports event loss to the native UI. A failed session must be reconnected.
     pub fn on_event_error(&self, report: impl Fn(String) + Send + Sync + 'static) {
         self.events.on_error(report);
@@ -184,6 +244,8 @@ impl DesktopConnection {
         Self {
             backend: Backend::Embedded { backend, lease },
             events: Default::default(),
+            #[cfg(unix)]
+            journal_reader: Default::default(),
         }
     }
 
@@ -195,6 +257,8 @@ impl DesktopConnection {
         Ok(Self {
             backend: Backend::Local(client),
             events: Default::default(),
+            #[cfg(unix)]
+            journal_reader: Default::default(),
         })
     }
 

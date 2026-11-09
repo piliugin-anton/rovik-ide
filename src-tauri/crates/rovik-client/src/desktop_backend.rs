@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Replay history for all UI clients.
+    pub journal: Arc<crate::desktop_journal::Journal>,
     /// Serializes ownership checks with project opens and destructive changes.
     pub(crate) project_changes: tokio::sync::Mutex<()>,
     /// Terminals run by this backend, with per-client ownership.
@@ -41,6 +43,27 @@ impl DesktopBackend {
         cloud_events: CloudSink,
         version: &str,
     ) -> Result<Self, String> {
+        let journal = Arc::new(crate::desktop_journal::Journal::default());
+        struct Published {
+            journal: Arc<crate::desktop_journal::Journal>,
+            observer: Arc<dyn EventSink>,
+        }
+        impl EventSink for Published {
+            fn agent(&self, event: &rovik_core::agent_run::events::AgentEvent) {
+                self.journal.agent(event);
+                self.observer.agent(event);
+            }
+        }
+        let events = Arc::new(Published {
+            journal: journal.clone(),
+            observer: events,
+        });
+        let journal_cloud = journal.clone();
+        let observer = cloud_events;
+        let cloud_events: CloudSink = Arc::new(move |event| {
+            journal_cloud.cloud(&event);
+            observer(event);
+        });
         let config = paths.config_dir.clone();
         let data = paths.data_dir.clone();
         rovik_core::os_lock::take_slot(&data.join("slots"));
@@ -101,6 +124,7 @@ impl DesktopBackend {
         }));
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
+            journal,
             project_changes: Default::default(),
             sessions: Default::default(),
             terminals: Arc::new(crate::terminal::terminals()),
@@ -210,6 +234,7 @@ mod routing_tests {
             "test",
         ));
         DesktopBackend {
+            journal: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             terminals: Arc::new(crate::terminal::terminals()),
@@ -316,6 +341,42 @@ mod routing_tests {
             .lock()
             .unwrap()
             .contains(&Request::AgentStatus));
+        *fake.status.lock().unwrap() = Some(rovik_protocol::agent::AgentStatus {
+            runs: vec![rovik_protocol::agent::RunningRun {
+                dialog_id: "remote".into(),
+                run_id: "running".into(),
+                steerable: true,
+            }],
+            questions: vec![rovik_protocol::events::QuestionsRequest {
+                dialog_id: "remote".into(),
+                tool_call_id: "question".into(),
+                questions: vec![],
+            }],
+            ..Default::default()
+        });
+        let unrelated = crate::desktop_journal::Scope {
+            project_id: Some("another-project".into()),
+            chats: vec![],
+        };
+        let hidden = crate::desktop_journal::status(&backend, unrelated.clone())
+            .await
+            .unwrap();
+        assert!(hidden.runs.is_empty() && hidden.questions.is_empty());
+        let followed = crate::desktop_journal::status(
+            &backend,
+            crate::desktop_journal::Scope {
+                chats: vec!["remote".into()],
+                ..unrelated
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(followed.runs.len(), 1);
+        assert_eq!(followed.questions.len(), 1);
+        let no_project = crate::desktop_journal::status(&backend, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(no_project.runs.len(), 1);
         backend.remote.disconnect("host");
         use crate::desktop_api::{overlay::OverlayRequest, DesktopRequest};
         // A disconnected remote chat must never mutate a local overlay as a

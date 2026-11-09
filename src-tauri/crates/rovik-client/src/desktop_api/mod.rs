@@ -26,6 +26,15 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Scoped run-state recovery for a UI event reader.
+    EventStatus {
+        scope: crate::desktop_journal::Scope,
+    },
+    /// Read-only shared event replay, safe on a dedicated reconnectable connection.
+    Events {
+        scope: crate::desktop_journal::Scope,
+        cursor: Option<crate::desktop_journal::Cursor>,
+    },
     /// Client-owned project lifecycle.
     Projects(Box<projects::ProjectRequest>),
     /// Client-scoped model requests and estimates.
@@ -69,6 +78,12 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::EventStatus { scope } => {
+                    encode_result(crate::desktop_journal::status(backend, scope).await)
+                }
+                Self::Events { scope, cursor } => {
+                    encode_result(backend.journal.poll(backend, scope, cursor).await)
+                }
                 Self::Projects(request) => request.dispatch(backend, session).await,
                 Self::Agent(request) => request.dispatch(backend, session).await,
                 Self::Filesystem(request) => request

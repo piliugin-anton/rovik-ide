@@ -74,3 +74,6 @@ pub mod filesystem;
 mod desktop_task;
 
 pub mod shared_state;
+
+/// Replayable shared desktop events.
+pub mod desktop_journal;

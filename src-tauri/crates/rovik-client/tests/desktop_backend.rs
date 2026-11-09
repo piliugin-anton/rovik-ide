@@ -1,5 +1,7 @@
 //! A separate test executable keeps backend process globals isolated from
 //! the client's unit tests.
+#[path = "support/desktop_journal.rs"]
+mod desktop_journal;
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
 #[path = "support/desktop_projects.rs"]
@@ -34,6 +36,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     let backend = DesktopBackend::open(paths(), events.clone(), Arc::new(|_| {}), "test")
         .await
         .unwrap();
+    let journal_projects = desktop_journal::seed(&backend.core.db).await;
     let backend = Arc::new(backend);
     let connection = DesktopConnection::embedded(backend.clone());
     desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
@@ -82,6 +85,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     #[cfg(unix)]
     desktop_operations::check_terminal_contract(&connection, &other).await;
     desktop_tasks::check(&connection, &other).await;
+    desktop_journal::check(&connection, &other, journal_projects).await;
     desktop_projects::check(&connection, other).await;
     api::chat_create_dialog(
         &backend.core.db,

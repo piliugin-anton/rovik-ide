@@ -26,7 +26,7 @@ const callbacks = new Map<number, (event: any) => void>();
       if (args.event === 'agent-event') eventHandler = callbacks.get(args.handler);
       return 1;
     }
-    if (cmd === 'agent_status') return { runs: [], approvals: [], questions: [] };
+    if (cmd === 'desktop_event_status') return { runs: [], approvals: [], questions: [] };
     if (cmd === 'chat_read_plan') return '# Contact form\n';
     if (cmd === 'chat_plan_implementation') {
       if (lookupError) throw new Error('Database unavailable');

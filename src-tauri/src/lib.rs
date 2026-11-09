@@ -73,15 +73,10 @@ pub fn run() {
                 folder,
                 new_window: std::env::args().any(|a| a == NEW_WINDOW),
             });
-            let window = app.handle().clone();
             let backend = rt::block_on(DesktopBackend::open(
                 Paths::new(data.clone(), config.clone()),
-                Arc::new(WindowEvents(app.handle().clone())),
-                Arc::new(move |event| {
-                    if let Err(e) = window.emit(CLOUD_EVENT, &event) {
-                        log::error!("cloud: could not send an event: {e}");
-                    }
-                }),
+                Arc::new(WindowEvents),
+                Arc::new(|_| {}),
                 env!("CARGO_PKG_VERSION"),
             ))?;
             let backend = Arc::new(backend);
@@ -193,6 +188,8 @@ pub fn run() {
             });
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_poll_events,
+            desktop_event_status,
             terminal::spawn_terminal,
             terminal::spawn_remote_terminal,
             terminal::write_to_terminal,
@@ -706,9 +703,6 @@ async fn attachment_response(
     }
 }
 
-/// The hosts' own events, apart from the chats': connections and transfers.
-const CLOUD_EVENT: &str = "cloud-event";
-
 /// A page for a browser tab of the editor to open (D20,
 /// src/lib/browserTabs.ts): its address at the port forwarded here.
 const PAGE_EVENT: &str = "open-page";
@@ -778,13 +772,27 @@ fn init_log() {
     }
 }
 
-/// The core's events, to every window (src/lib/agentRuns.ts listens).
-struct WindowEvents(tauri::AppHandle);
-
+/// Shared events are read through the journal after the UI is ready.
+struct WindowEvents;
 impl EventSink for WindowEvents {
-    fn agent(&self, event: &AgentEvent) {
-        if let Err(e) = self.0.emit(EVENT, event) {
-            eprintln!("agent: could not send an event: {e}");
-        }
-    }
+    fn agent(&self, _: &AgentEvent) {}
+}
+
+/// Read-only event transport uses its own connection and bounded replay cursor.
+#[tauri::command]
+async fn desktop_poll_events(
+    backend: tauri::State<'_, DesktopConnection>,
+    scope: rovik_client::desktop_journal::Scope,
+    cursor: Option<rovik_client::desktop_journal::Cursor>,
+) -> Result<serde_json::Value, String> {
+    backend.poll_events(scope, cursor).await
+}
+
+/// Authoritative run state for the same UI scope as shared event replay.
+#[tauri::command]
+async fn desktop_event_status(
+    backend: tauri::State<'_, DesktopConnection>,
+    scope: rovik_client::desktop_journal::Scope,
+) -> Result<serde_json::Value, String> {
+    backend.event_status(scope).await
 }

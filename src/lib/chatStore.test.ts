@@ -170,3 +170,33 @@ test('a message sent to a run waits in its chat until the run reads it (steering
   store.setSteerable('chat', false);
   assert.ok(!store.isSteerable('chat'));
 });
+
+test('journal recovery reloads transcripts without switching chats and removes deleted selections', async () => {
+  const original = (window as any).__TAURI_INTERNALS__.invoke;
+  let deleted = false;
+  const summary = { id: 'chat', title: 'Renamed', createdAt: 1, updatedAt: 2, messageCount: 1 };
+  (window as any).__TAURI_INTERNALS__.invoke = async (cmd: string) => {
+    if (cmd === 'chat_get_dialog') return deleted ? null : summary;
+    if (cmd === 'chat_list_dialogs') return { items: deleted ? [] : [summary], nextCursor: null };
+    if (cmd === 'chat_get_messages')
+      return { messages: [{ ...row, content: 'authoritative' }], hasOlder: false };
+    return original(cmd);
+  };
+  try {
+    const store = createChatStore();
+    await store.openChat({ ...summary, title: 'Old title' });
+    store.applyPatch('chat', 'm1', { content: 'stale' });
+    await store.recoverEvents(() => false);
+    assert.equal(store.messagesOf('chat')[0].content, 'stale');
+    await store.recoverEvents();
+    assert.equal(store.state.activeId, 'chat');
+    assert.equal(store.state.active?.title, 'Renamed');
+    assert.equal(store.messagesOf('chat')[0].content, 'authoritative');
+    deleted = true;
+    await store.recoverEvents();
+    assert.equal(store.state.activeId, null);
+    assert.equal(store.state.open.chat, undefined);
+  } finally {
+    (window as any).__TAURI_INTERNALS__.invoke = original;
+  }
+});

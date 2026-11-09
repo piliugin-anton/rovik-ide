@@ -1,6 +1,8 @@
 //! Actual daemon processes arbitrate startup through the OS lifetime lock.
 #![cfg(unix)]
 
+#[path = "support/desktop_journal.rs"]
+mod desktop_journal;
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
 #[path = "support/desktop_projects.rs"]
@@ -41,6 +43,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .await
         .unwrap();
     }
+    let journal_projects = desktop_journal::seed(&db).await;
     drop(db);
 
     let spawn = || {
@@ -151,6 +154,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .unwrap();
     desktop_operations::check_terminal_contract(&adapter, &other_adapter).await;
     desktop_tasks::check(&adapter, &other_adapter).await;
+    desktop_journal::check(&adapter, &other_adapter, journal_projects).await;
     desktop_projects::check(&adapter, other_adapter).await;
     let shared_volume = client_b
         .desktop(rovik_client::desktop_api::DesktopRequest::from(

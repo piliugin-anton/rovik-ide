@@ -2250,5 +2250,11 @@ WSL operations also use desktop RPC; native adapters retain browser/window actio
 Project lifecycle commands and attachment reads now use desktop RPC. Open projects
 are registered per client, with guarded merges/deletes and disconnect cleanup;
 remote results and steering use the chat's project. This completes the listed
-command-family migration. Automatic daemon attachment and global event recovery
-remain follow-up work; the app still explicitly uses the embedded backend.
+command-family migration. Automatic daemon attachment remains follow-up work;
+the app still explicitly uses the embedded backend.
+
+Agent and cloud events now reach each UI through a project-scoped replay journal.
+The read connection reconnects independently of commands, and a missed-history
+reset refreshes chats, live runs, approvals, hosts, and ports before advancing its
+cursor. Command-session reconstruction after a backend crash remains lifecycle
+work; automatic daemon attachment is still disabled.

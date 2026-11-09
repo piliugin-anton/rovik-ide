@@ -117,6 +117,11 @@ pub struct Client {
 }
 
 impl Client {
+    /// Discovery directory for an independent read-only event connection.
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     /// Attaches to an existing backend without constructing a local Core.
     pub async fn connect(directory: &Path) -> io::Result<Self> {
         let (stream, ready) = connect(directory).await?;

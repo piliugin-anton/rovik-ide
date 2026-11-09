@@ -32,8 +32,8 @@ pretend they are ready for IPC. The UI remains embedded until these are complete
 
 ## Following this migration
 
-Automatic daemon packaging/start/attach; per-window event routing and reconnect
-recovery; lifecycle, crash, and upgrade behavior; Windows named pipes; real
+Automatic daemon packaging/start/attach; command-session reconstruction after
+failure; lifecycle, crash, and upgrade behavior; Windows named pipes; real
 multi-window FUSE and execution isolation tests.
 
 ## Private event transport prerequisite
@@ -75,8 +75,8 @@ browser URL is forwarded to the native adapter. WSL setup and shared UI settings
 also use typed desktop requests. Local OAuth and streamed HTTP fixtures exercise
 the same contracts through embedded clients and real daemon connections.
 
-Shared agent-event replay and automatic daemon activation remain separate
-follow-up phases.
+Shared event replay is implemented below. Automatic daemon activation remains
+a separate follow-up phase.
 
 ## Project ownership and remaining chat operations
 
@@ -95,7 +95,35 @@ cleanup, and binary attachment round trips; remote tests cover project-specific
 steering and delivery tests.
 
 The command families listed in this migration are routed. This does not enable
-automatic daemon attachment: global agent/cloud event routing and recovery,
+automatic daemon attachment: command/private-session recovery after failure,
 remaining native service ownership (such as Git/LSP/browser integration), daemon
 packaging/lifecycle, Windows transport, and real multi-window FUSE validation are
 still separate work before every window can run purely as a UI client.
+
+## Shared event routing and recovery
+
+Core and cloud events are now recorded before optional native observers in a
+single ordered journal. Each UI polls through a separate read-only connection;
+this connection can reconnect and replay without reissuing a command or affecting
+PTYs and private callbacks. The app consumes this path even in embedded mode.
+
+A scope selects a project (including the no-project view) plus explicitly retained
+chats. Child chats follow their lead's project. Settings and host-wide events go
+to every reader. Cursors include the backend incarnation, sequence, and scope.
+History is bounded to 4,096 events and 8 MiB. Initial attach, changed scope,
+restarted backend, or an evicted cursor requires a refresh, not silent loss.
+
+The UI advances a cursor only after applying its batch or successfully refreshing
+state. Recovery reads scoped run/approval/question state, reloads cached messages
+and summaries, removes deleted chats and stale live state, and refreshes hosts and
+ports. Events produced during recovery remain available after its checkpoint.
+Replies for an old scope or disposed reader are ignored. Failed reads retry with
+the previous checkpoint; partially applied batches force a refresh.
+
+This is recovery of the shared event reader. A backend crash can also invalidate
+the command/private-resource session; automatic reconstruction of that session,
+project claims, watches and terminals remains part of daemon lifecycle work.
+Recovery failures remain visible and do not acknowledge an incomplete refresh.
+The UI still explicitly selects embedded mode. Automatic daemon activation,
+remaining native service ownership, Windows transport, and mounted multi-window
+FUSE validation remain outstanding.

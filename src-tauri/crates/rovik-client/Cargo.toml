@@ -5,6 +5,7 @@ description = "The app's half of the protocol: a connection to an agent daemon"
 edition.workspace = true
 
 [dependencies]
+rusqlite.workspace = true
 rovik-protocol.workspace = true
 # The app's Core: the mirror is written into its database, and remote
 # events go out through its sink (6.1).
@@ -50,7 +51,6 @@ flate2 = "1.1.10"
 tempfile = "3.27.0"
 # Cores on temporary folders, and the database read as the frontend would.
 rovik-core = { workspace = true, features = ["testing"] }
-rusqlite.workspace = true
 # A release key and files it signed (release::fixture).
 rovik-protocol = { workspace = true, features = ["testing"] }
 

@@ -304,6 +304,61 @@ export function createChatStore() {
     }
   }
 
+  /** Reloads cached transcripts after a journal gap without changing the selected chat. */
+  async function recoverEvents(current: () => boolean = () => true) {
+    const project = projectId;
+    const ids = Object.keys(state.open);
+    const pages = await Promise.all(
+      ids.map(async (id) => {
+        const summary = await chatApi.getDialog(id);
+        const page = summary ? await chatApi.getMessages(id, undefined, PAGE) : null;
+        return { id, summary, page };
+      })
+    );
+    const list = await chatApi.listDialogs(project, null, LIST_PAGE);
+    if (project !== projectId || !current()) return;
+    setState('list', {
+      items: list.items,
+      nextCursor: list.nextCursor,
+      loading: false,
+      loaded: true,
+    });
+    for (const { id, summary, page } of pages) {
+      if (!state.open[id]) continue;
+      if (!summary || !page) {
+        setState(
+          produce((s) => {
+            delete s.open[id];
+            if (s.activeId === id) {
+              s.activeId = null;
+              s.active = null;
+            }
+          })
+        );
+        continue;
+      }
+      if (state.activeId === id) setState('active', summary);
+      setState('open', id, {
+        messages: page.messages,
+        hasOlder: page.hasOlder,
+        hasNewer: false,
+        loadingOlder: false,
+      });
+    }
+  }
+
+  /** Clears ephemeral execution state before applying an authoritative snapshot. */
+  function resetExecution() {
+    setState(
+      produce((s) => {
+        s.running = {};
+        s.driving = {};
+        s.steerable = {};
+        s.queued = {};
+      })
+    );
+  }
+
   async function loadMoreDialogs() {
     const { nextCursor, loading } = state.list;
     if (!nextCursor || loading) return;
@@ -728,6 +783,8 @@ export function createChatStore() {
     loadFirstPage,
     loadMoreDialogs,
     switchProject,
+    recoverEvents,
+    resetExecution,
     /** The project being shown (null: none). */
     projectId: () => projectId,
     openChat,

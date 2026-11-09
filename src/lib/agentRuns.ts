@@ -1,3 +1,4 @@
+import { desktopScope } from './desktopScope';
 // agentRuns.ts
 //
 // The agent runs in the backend (src-tauri/src/agent_run): a run goes on
@@ -32,6 +33,7 @@ import { noteBackgroundTasks, type BackgroundTask } from './backgroundTasks';
 import { noteMcpServersAwaiting, type ProjectServer } from './projectMcpServers';
 import {
   clearApproval,
+  approvalsWaiting,
   notifyFileDeleted,
   notifyFileWritten,
   pendingApproval,
@@ -40,6 +42,7 @@ import {
 } from './approvals';
 import {
   clearQuestions,
+  questionsWaiting,
   pendingQuestions,
   registerQuestions,
   type PendingQuestions,
@@ -69,6 +72,7 @@ import { dismiss, notify } from './notifications';
 import { noteClmStatus, type ClmStatus } from './contextMode';
 import {
   isSubagentChat,
+  resetLiveSubagents,
   seedRunningSubagent,
   type RunningSubagent,
   type SubagentEnded,
@@ -529,7 +533,7 @@ function waitingQuestions(request: PendingQuestions): Waiting {
  * ---------------------------------------------------------------------------
  */
 
-function handle(event: AgentEvent) {
+export function handleBackendAgent(event: AgentEvent) {
   switch (event.type) {
     case 'runStarted':
       setState('runIds', event.dialogId, event.runId);
@@ -688,7 +692,7 @@ interface WaitingSteer {
   queuedAt: number;
 }
 
-interface AgentStatus {
+export interface AgentStatus {
   /** `steerable`: the run takes messages while it works; absent: false. */
   runs: { dialogId: string; runId: string; steerable?: boolean }[];
   /** Subagents' runs: their chats and their leads'. */
@@ -721,7 +725,7 @@ function seedSteering(status: AgentStatus) {
  */
 async function reseedSteering() {
   try {
-    const status = await invoke<AgentStatus>('agent_status');
+    const status = await invoke<AgentStatus>('desktop_event_status', { scope: desktopScope() });
     for (const run of status.runs) setState('runIds', run.dialogId, run.runId);
     seedSteering(status);
   } catch (err) {
@@ -736,12 +740,13 @@ let ready: Promise<void> | null = null;
  * going on is known: a reloaded page picks up running runs and what they
  * wait on.
  */
-export function initAgentRuns(): Promise<void> {
+export function initAgentRuns(seed = true): Promise<void> {
   if (ready) return ready;
   ready = (async () => {
-    await listen<AgentEvent>('agent-event', (e) => handle(e.payload));
+    await listen<AgentEvent>('agent-event', (e) => handleBackendAgent(e.payload));
+    if (!seed) return;
     try {
-      const status = await invoke<AgentStatus>('agent_status');
+      const status = await invoke<AgentStatus>('desktop_event_status', { scope: desktopScope() });
       for (const run of status.runs) {
         chatStore.setRunning(run.dialogId, true);
         setState('runIds', run.dialogId, run.runId);
@@ -763,4 +768,41 @@ export function initAgentRuns(): Promise<void> {
     refreshPlanImplementations();
   });
   return ready;
+}
+
+/** Replace live state after reconnect/gap; stale approvals and runs must disappear. */
+export function recoverAgentRuns(status: AgentStatus) {
+  const approvalIds = new Set(status.approvals.map((r) => `${r.dialogId}\n${r.toolCallId}`));
+  for (const r of approvalsWaiting())
+    if (!approvalIds.has(`${r.dialogId}\n${r.toolCallId}`)) {
+      clearApproval(r.dialogId, r.toolCallId);
+      dismiss(approvalNoticeId(r.dialogId, r.toolCallId));
+    }
+  const questionIds = new Set(status.questions.map((r) => `${r.dialogId}\n${r.toolCallId}`));
+  for (const r of questionsWaiting())
+    if (!questionIds.has(`${r.dialogId}\n${r.toolCallId}`)) {
+      clearQuestions(r.dialogId, r.toolCallId);
+      dismiss(questionNoticeId(r.dialogId, r.toolCallId));
+    }
+  waitingSettled();
+  for (const id of Object.keys(state.runIds)) clearLiveChecklist(id);
+  chatStore.resetExecution();
+  resetLiveSubagents();
+  setState(
+    produce((s) => {
+      s.runIds = {};
+      s.toolNotes = {};
+      s.priorWork = {};
+    })
+  );
+  for (const run of status.runs) {
+    chatStore.setRunning(run.dialogId, true);
+    setState('runIds', run.dialogId, run.runId);
+  }
+  for (const id of status.driving ?? []) chatStore.setDriving(id, true);
+  seedSteering(status);
+  for (const sub of status.subagents ?? []) seedRunningSubagent(sub);
+  for (const request of status.approvals) registerApproval(request, false);
+  for (const request of status.questions) registerQuestions(request);
+  refreshPlanImplementations();
 }

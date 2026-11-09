@@ -1,3 +1,4 @@
+import { startBackendEvents } from './lib/backendEvents';
 import {
   batch,
   createSignal,
@@ -136,8 +137,8 @@ import { startSandbox } from './lib/sandboxStartup';
 import { startWsl } from './lib/wslStartup';
 import { startUpdates } from './lib/updates';
 import { startHostUpdates } from './lib/hostUpdates';
-import { initAgentRuns, onShowChat } from './lib/agentRuns';
-import { cloud, hostName, initCloud } from './lib/cloud';
+import { onShowChat } from './lib/agentRuns';
+import { cloud, hostName } from './lib/cloud';
 import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
@@ -173,9 +174,10 @@ export default function App() {
   onMount(() => void startWsl());
   // Agent runs live in the backend: follow them from the start, whichever
   // sidebar tab is open (approvals show in the editor too).
-  onMount(() => void initAgentRuns());
-  // The cloud hosts' connections and the chats' moves, likewise.
-  onMount(() => void initCloud());
+  onMount(() => {
+    const stop = startBackendEvents();
+    onCleanup(stop);
+  });
   // The web tools' browser: downloaded if it's missing (in the background).
   onMount(() => void startBrowser());
 

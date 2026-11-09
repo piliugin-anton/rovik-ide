@@ -53,7 +53,7 @@ const listeners: { event: string; handler: number }[] = [];
         listeners.push({ event: args.event, handler: args.handler });
         return args.handler;
       }
-      if (cmd === 'agent_status') {
+      if (cmd === 'desktop_event_status') {
         // What waited as the app started: on the host, and here.
         return {
           runs: [],
