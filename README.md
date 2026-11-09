@@ -1649,8 +1649,14 @@ application layer. Initialization fails if remote chat ownership cannot be
 loaded, rather than treating those chats as local.
 
 This is the service extraction stage: each window still hosts its own backend.
-A shared process, local IPC, event subscriptions, and coordinated shutdown are
-not enabled yet.
+The `rovik-desktopd` binary now provides Unix singleton ownership and a private
+readiness socket. `local_backend::ensure_backend` connects first or starts that
+binary, then waits for initialization. The handshake identifies the protocol,
+backend boot, and client session; the daemon retains ownership through shutdown.
+The endpoint currently advertises readiness only. Windows named pipes,
+execution requests, event subscriptions, and automatic desktop attachment are
+not enabled yet. Build the bootstrap host with
+`cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
 
 ### Chat isolation
 

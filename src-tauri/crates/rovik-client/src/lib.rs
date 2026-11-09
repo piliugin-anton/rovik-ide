@@ -38,6 +38,7 @@ pub mod host_shell;
 mod hosts;
 pub mod hosts_page;
 mod http;
+pub mod local_backend;
 pub mod mcp_sign_in;
 mod packs;
 pub mod provider_keys;

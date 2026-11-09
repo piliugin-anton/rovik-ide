@@ -5219,6 +5219,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "keyring",
+ "libc",
  "log",
  "reqwest",
  "rovik-core",
