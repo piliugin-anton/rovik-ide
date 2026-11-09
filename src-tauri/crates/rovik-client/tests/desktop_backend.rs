@@ -69,6 +69,8 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
             .unwrap(),
         true
     );
+    #[cfg(unix)]
+    desktop_operations::check_terminal_contract(&connection, &other).await;
     drop(other);
     api::chat_create_dialog(
         &backend.core.db,

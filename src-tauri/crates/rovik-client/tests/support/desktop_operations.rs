@@ -150,3 +150,106 @@ pub async fn check_settings_and_chat_contract(connection: &DesktopConnection) {
     assert_eq!(servers.as_array().unwrap().len(), 1);
     assert_eq!(servers[0]["transport"]["command"], "demo-cli");
 }
+
+/// Real PTY output uses the same private callback in embedded and daemon mode.
+#[cfg(unix)]
+pub async fn check_terminal_contract(owner: &DesktopConnection, other: &DesktopConnection) {
+    use rovik_client::desktop_api::terminal::TerminalRequest;
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let terminal = owner
+        .desktop_stream(
+            |sink| {
+                TerminalRequest::Spawn {
+                    cwd: None,
+                    cols: Some(80),
+                    rows: Some(24),
+                    sink,
+                }
+                .into()
+            },
+            move |event| sent.send(event).is_ok(),
+        )
+        .await
+        .unwrap();
+    let id = terminal["id"].as_str().unwrap().to_string();
+    assert!(other
+        .desktop(
+            TerminalRequest::Write {
+                id: id.clone(),
+                data: "must not run".into()
+            }
+            .into()
+        )
+        .await
+        .is_err());
+    assert!(other
+        .desktop(
+            TerminalRequest::Resize {
+                id: id.clone(),
+                cols: 90,
+                rows: 30
+            }
+            .into()
+        )
+        .await
+        .is_err());
+    // Another window's close is harmless, and the owner can still use its shell.
+    other
+        .desktop(TerminalRequest::Close { id: id.clone() }.into())
+        .await
+        .unwrap();
+    owner
+        .desktop(
+            TerminalRequest::Resize {
+                id: id.clone(),
+                cols: 100,
+                rows: 40,
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    // The marker never appears verbatim in echoed input: only execution can produce it.
+    owner
+        .desktop(
+            TerminalRequest::Write {
+                id: id.clone(),
+                data: "printf 'rpc-%s\\n' terminal-ok\nexit 7\n".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let (text, code) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let mut text = String::new();
+        loop {
+            let event = received
+                .recv()
+                .await
+                .expect("terminal callback ended before its exit");
+            match event["type"].as_str() {
+                Some("output") => text.push_str(event["data"].as_str().unwrap()),
+                Some("exit") => break (text, event["code"].as_u64()),
+                _ => panic!("unexpected terminal event: {event}"),
+            }
+        }
+    })
+    .await
+    .expect("terminal exited");
+    assert!(text.contains("rpc-terminal-ok"), "{text}");
+    assert_eq!(code, Some(7));
+    assert!(owner
+        .desktop(
+            TerminalRequest::Write {
+                id: id.clone(),
+                data: "late".into()
+            }
+            .into()
+        )
+        .await
+        .is_err());
+    owner
+        .desktop(TerminalRequest::Close { id }.into())
+        .await
+        .unwrap();
+}

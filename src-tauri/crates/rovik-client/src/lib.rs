@@ -65,3 +65,6 @@ pub use remote::{
     ApprovalPolicy, CloudEvent, CloudSink, ForwardedPort, HandedSync, MovePreflight, OpenPage,
     PageToOpen, Remote, LOCAL_ONLY,
 };
+
+pub mod terminal;
+pub mod util;

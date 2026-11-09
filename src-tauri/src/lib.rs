@@ -40,7 +40,6 @@ pub fn run() {
         // plugin's, which the window has no permission for.
         .plugin(updates::plugin())
         .manage(updates::Updates::default())
-        .manage(terminal::terminals())
         .manage(lsp::servers())
         .manage(chat_request::ChatRequests::default())
         .manage(WatcherState::default())
@@ -464,21 +463,12 @@ pub fn run() {
 /// an update's installer ends the process at once (Windows), on a thread
 /// off the runtime's.
 fn before_exit(app: &tauri::AppHandle) {
-    // First, so that what they left running is ended while the core shuts
-    // down (terminal.rs).
-    let terminals = app.try_state::<terminal::TerminalState>();
-    if let Some(terminals) = &terminals {
-        terminals.end_all();
-    }
     if let Some(backend) = app.try_state::<Arc<DesktopBackend>>() {
         rt::block_on(backend.shutdown());
     }
     // Only once the core is done with the project's chats.
     if let Some(instances) = app.try_state::<Instances>() {
         instances.release();
-    }
-    if let Some(terminals) = terminals {
-        terminals.wait_ended();
     }
 }
 

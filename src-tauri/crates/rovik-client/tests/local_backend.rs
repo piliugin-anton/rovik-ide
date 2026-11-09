@@ -132,6 +132,11 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .unwrap();
     desktop_operations::check_filesystem_and_overlay_contract(&adapter).await;
     desktop_operations::check_settings_and_chat_contract(&adapter).await;
+    let other_adapter = rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+        .await
+        .unwrap();
+    desktop_operations::check_terminal_contract(&adapter, &other_adapter).await;
+    drop(other_adapter);
     let shared_volume = client_b
         .desktop(rovik_client::desktop_api::DesktopRequest::from(
             rovik_client::desktop_api::vfs::VfsRequest::Status,

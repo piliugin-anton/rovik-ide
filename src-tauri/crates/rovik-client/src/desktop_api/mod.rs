@@ -13,6 +13,7 @@ pub mod memory;
 pub mod network;
 pub mod overlay;
 pub mod settings;
+pub mod terminal;
 pub mod vfs;
 
 /// A desktop response preserves both string and structured UI errors.
@@ -40,6 +41,8 @@ pub enum DesktopRequest {
     Overlay(Box<overlay::OverlayRequest>),
     /// The backend's virtual filesystem and mount.
     Vfs(Box<vfs::VfsRequest>),
+    /// Client-owned local and remote terminals.
+    Terminal(Box<terminal::TerminalRequest>),
 }
 
 impl DesktopRequest {
@@ -54,6 +57,10 @@ impl DesktopRequest {
         session: Option<&std::sync::Arc<crate::desktop_session::Session>>,
     ) -> DesktopResult {
         match self {
+            Self::Terminal(request) => request
+                .dispatch(backend, session)
+                .await
+                .map_err(serde_json::Value::String),
             Self::Clm(request) => request.dispatch(backend).await,
             Self::Chat(request) => request.dispatch(backend).await,
             Self::Settings(request) => request.dispatch(backend).await,

@@ -24,11 +24,9 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::time::Instant;
 
-use rovik_client::host_shell::HostShell;
-use rovik_client::ssh::quote;
+use crate::host_shell::HostShell;
+use crate::ssh::quote;
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use tauri::{AppHandle, Manager};
 
 /// What bash reads as it starts.
 const SCRIPT: &str = include_str!("bash.sh");
@@ -121,8 +119,8 @@ fn write(path: &Path) -> bool {
 /// when it's a bash that takes it; None for any other shell, which starts
 /// as a login shell.
 #[cfg(unix)]
-pub(super) fn init_file(app: &AppHandle, shell: &str) -> Option<PathBuf> {
-    let dir = app.path().app_data_dir().ok()?.join("terminal");
+pub(super) fn init_file(data: &Path, shell: &str) -> Option<PathBuf> {
+    let dir = data.join("terminal");
     // Readline's settings, which 0.1.17 wrote for every terminal (INPUTRC):
     // read by nothing now.
     let _ = std::fs::remove_file(dir.join("inputrc"));
@@ -253,7 +251,7 @@ pub(super) async fn on_host(host: &dyn HostShell) -> Option<HostStart> {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use rovik_client::host_shell::ProcessShell;
+    use crate::host_shell::ProcessShell;
     #[cfg(unix)]
     use std::process::Command;
 

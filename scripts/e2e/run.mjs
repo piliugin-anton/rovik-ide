@@ -1376,7 +1376,7 @@ async function run() {
   // Bash up to 5.4 garbles an input line taller than the terminal: held
   // Backspace through a long paste blanked the row the caret moved up to.
   // A terminal here starts bash 4.4 to 5.4 with a file of its own
-  // (src-tauri/src/terminal/bash.sh), and has a paste that may not fit go
+  // (src-tauri/crates/rovik-client/src/terminal/bash.sh), and has a paste that may not fit go
   // on one row first, which wraps again once enough is deleted for it to
   // fit (src/lib/bashLine.ts). Asked of the terminal's own shell: bash 5.1
   // to 5.4 (from 5.1 on, with bracketed paste on as it is by default). A

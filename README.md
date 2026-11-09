@@ -1674,7 +1674,7 @@ never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 5 adds private client event connections alongside
+use the adapter. Local protocol 6 provides private client event connections alongside
 explicit desktop requests. VFS subscriptions now use this transport in both
 embedded and IPC modes. Each client owns its subscriptions; disconnecting it
 cleans up only its resources. Bounded queues fail explicitly if a consumer falls
@@ -2229,3 +2229,9 @@ Existing High selections stay High. CLI connectors pass the selected effort to t
 
 Retry and Continue (including the checklist) restore the chat’s saved reasoning
 effort, even if another chat changed the shared preference for that model.
+
+Local, SSH, system-SSH, and WSL terminals now run in the desktop backend.
+Terminal output uses the owning client's private stream; write and resize
+requests require that ownership. Closing a client ends its terminals and their
+remaining jobs, while a shell that exits naturally keeps the existing behavior
+of leaving its background jobs running.

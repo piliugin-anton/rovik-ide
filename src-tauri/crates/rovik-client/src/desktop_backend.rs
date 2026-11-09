@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Terminals run by this backend, with per-client ownership.
+    pub terminals: Arc<crate::terminal::TerminalState>,
     /// Client resource lifetimes and private event streams.
     pub sessions: crate::desktop_session::Sessions,
     /// Chat persistence, execution, MCP, and virtual files.
@@ -98,6 +100,7 @@ impl DesktopBackend {
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
             sessions: Default::default(),
+            terminals: Arc::new(crate::terminal::terminals()),
             core,
             secrets,
             keys,
@@ -158,7 +161,12 @@ impl DesktopBackend {
     /// once the service moves into a shared process.
     pub async fn shutdown(&self) {
         self.sessions.close_all();
+        self.terminals.end_all();
         self.core.shutdown().await;
+        let terminals = self.terminals.clone();
+        if let Err(error) = rovik_core::rt::spawn_blocking(move || terminals.wait_ended()).await {
+            log::error!("Could not wait for terminal cleanup: {error}");
+        }
     }
 }
 
@@ -200,6 +208,7 @@ mod routing_tests {
         ));
         DesktopBackend {
             sessions: Default::default(),
+            terminals: Arc::new(crate::terminal::terminals()),
             core,
             secrets,
             keys,

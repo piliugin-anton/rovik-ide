@@ -44,3 +44,13 @@ the same resource ownership and callback routing. Disconnect and callback-loss
 cleanup cannot cancel another client's resources. Queues are bounded by event
 count and bytes; overflow fails the session explicitly. This is the foundation
 for phases 3 and 4, not global agent event replay or reconnect recovery.
+
+## Terminal migration
+
+Local PTYs and remote terminal launches now live in `rovik-client::terminal`.
+Native commands forward requests and output only. The backend owns the terminal
+registry and shutdown; client leases own individual terminals. Write and resize
+require the owning session, and a close from another client is harmless. Existing
+UTF-8 decoding, bash setup, workload tracking, and process-tree cleanup are
+preserved. Per-client project registration and filesystem migration remain in
+phase 3; the remaining event adapters remain in phase 4.
