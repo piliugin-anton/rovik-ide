@@ -2112,6 +2112,18 @@ use a concise explanation so duplicate matching metadata does not consume claim
 space. The same protected-packet checks apply. See the
 [denser context experiment](docs/design/long-term-memory-context-completion-nov10-2026.md).
 
+For a fully subscribed focused request, an independently unrelated leading result
+may supply one additional title slot. This exception requires complete delivery
+of every explicit symbol title, file and distinctive literal subject, with at
+least eight distinct subjects. Canonical name aliases and overlapping paths count
+once. Leading name/file/literal anchors and other protected claims keep their
+ranks; partial packets keep the original plan. See the
+[full-subject experiment](docs/design/long-term-memory-full-subject-coverage-nov10-2026.md).
+Automatic recall extracts explicit project-file references from the current UI
+message's matching metadata and searches with the typed intent. Active-editor
+context alone does not become a file hint. Stale or unsupported message envelopes
+retain the original query.
+
 Native evaluation reports each required record's ID, claim hash, rank and full
 delivery, distinguishing complete claims from fetch hints. Compare two saved
 native results with `node scripts/eval/memory-regressions.mjs baseline.json candidate.json`

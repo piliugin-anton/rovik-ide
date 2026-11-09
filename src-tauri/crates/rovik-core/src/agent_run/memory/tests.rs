@@ -12,6 +12,43 @@ use verified_code_memory::model::claim_hash;
 use verified_code_memory::{MemoryRecord, NewMemory, SharedMemoryStore, Verification};
 
 #[test]
+fn recall_wire_parts_keep_the_entire_typed_intent_and_current_reference_prefix() {
+    let typed = "MemoryPacket,RetrievalQuery crowding\n\nKeep the evidence.";
+    let prefix = "[Active editor context — file src/a.rs (rust)]\n\nThe user explicitly referenced these project files:\n- src/a.rs\n- src/b.rs\n\n";
+    let wire = format!("{prefix}{typed}");
+    assert_eq!(
+        recall_wire_parts(&wire, typed, Some(&wire)),
+        Some((typed, prefix))
+    );
+    assert_eq!(recall_wire_parts(&wire, typed, Some("stale wire")), None);
+    assert_eq!(recall_wire_parts(&wire, typed, None), None);
+    let other = format!("Transport note\n\n{typed}");
+    assert_eq!(recall_wire_parts(&other, typed, Some(&other)), None);
+}
+
+#[test]
+fn recall_wire_parts_preserve_file_only_requests_and_plain_messages() {
+    let wire = "The user explicitly referenced these project files:\n- src/a.rs";
+    assert_eq!(recall_wire_parts(wire, "", Some(wire)), Some((wire, wire)));
+    assert_eq!(
+        recall_wire_parts("plain", "plain", Some("plain")),
+        Some(("plain", ""))
+    );
+}
+
+#[test]
+fn recall_file_hints_use_only_explicit_paths_and_keep_spaces_without_range_aliases() {
+    let context = "[Active editor context — file src/unrelated.rs (rust)]\n\nThe user explicitly referenced these project files:\n- src/with spaces.rs\n- src/nested.rs (lines 2-4, shown in the message as nested.rs:2-4)\n\nTreat these as explicit references.\n";
+    assert_eq!(
+        explicit_reference_paths(context),
+        vec!["src/with spaces.rs", "src/nested.rs"]
+    );
+    assert!(
+        explicit_reference_paths("[Active editor context — file src/open.rs (rust)]").is_empty()
+    );
+}
+
+#[test]
 fn a_long_query_keeps_its_goal_and_diagnostic_tail() {
     let request = format!(
         "Repair the scheduler {} failure: retry-lock-deadlock",

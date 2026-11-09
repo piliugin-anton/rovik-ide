@@ -502,6 +502,9 @@ impl SemanticIndex {
                 let supplementary = (|| -> Result<_> {
                     let mut protected = vec![false; found.len()];
                     protected[0] = true;
+                    let mut anchored_leader = names.iter().any(|name| {
+                        crate::retrieval::identifier_title_matches(name, &found[0].record.title)
+                    });
                     for (i, hit) in found.iter().enumerate() {
                         // A file hint is independent relevance evidence. Keep
                         // every matching incumbent, even at the pool's tail.
@@ -517,6 +520,7 @@ impl SemanticIndex {
                                 )
                         }) {
                             protected[i] = true;
+                            anchored_leader |= i == 0;
                         }
                     }
                     let mut additions: Vec<RetrievedMemory> = Vec::new();
@@ -540,6 +544,7 @@ impl SemanticIndex {
                                 .any(|r| r.record.same_context_claim(&hit.record))
                             {
                                 protected[i] = true;
+                                anchored_leader |= i == 0;
                             }
                         }
                         if represented.is_empty() {
@@ -557,7 +562,8 @@ impl SemanticIndex {
                             additions.push(candidate);
                         }
                     }
-                    let slots: Vec<_> = (1..found.len()).rev().filter(|i| !protected[*i]).collect();
+                    let mut slots: Vec<_> =
+                        (1..found.len()).rev().filter(|i| !protected[*i]).collect();
                     if additions.len() > slots.len() {
                         return Ok(None);
                     }
@@ -600,7 +606,8 @@ impl SemanticIndex {
                     if let Some(budget) = query.packet_budget {
                         let title_coverage = (|| -> Result<_> {
                             let mut titles: Vec<RetrievedMemory> = Vec::new();
-                            for name in names {
+                            for name in &names {
+                                let name = *name;
                                 if found.iter().chain(&additions).chain(&titles).any(|hit| {
                                     crate::retrieval::identifier_title_matches(
                                         name,
@@ -642,7 +649,7 @@ impl SemanticIndex {
                         match title_coverage {
                             Ok(titles)
                                 if !titles.is_empty()
-                                    && additions.len() + titles.len() <= slots.len() =>
+                                    && additions.len() + titles.len() <= slots.len() + 1 =>
                             {
                                 // Preserve the complete protected claims from the exact
                                 // legacy plan, including names/files added to that plan.
@@ -663,24 +670,54 @@ impl SemanticIndex {
                                     .map(|(_, hit)| hit.record.id)
                                     .filter(|id| before.complete_ids.contains(id))
                                     .collect();
-                                let mut trial = legacy;
-                                for (slot, hit) in slots
-                                    .iter()
-                                    .copied()
-                                    .skip(additions.len())
-                                    .zip(&titles)
-                                {
-                                    let mut hit = hit.clone();
-                                    hit.score = trial[slot].score;
-                                    trial[slot] = hit;
-                                }
-                                let after = self.store.render_packet_with_evidence(&trial, budget);
-                                if protected_ids.iter().all(|id| after.complete_ids.contains(id))
-                                    && titles
+                                // Keep successful legacy placements. An unanchored
+                                // leader may supply one slot only when every explicit
+                                // subject is then delivered in full.
+                                for release_leader in [false, true] {
+                                    if release_leader
+                                        && (anchored_leader
+                                            || names.len() + query.files.len() + 1 < query.limit)
+                                    {
+                                        continue;
+                                    }
+                                    let mut trial_slots = slots.clone();
+                                    if release_leader {
+                                        trial_slots.insert(additions.len(), 0);
+                                    }
+                                    if additions.len() + titles.len() > trial_slots.len() {
+                                        continue;
+                                    }
+                                    let mut trial = legacy.clone();
+                                    for (slot, hit) in trial_slots
                                         .iter()
-                                        .all(|hit| after.complete_ids.contains(&hit.record.id))
-                                {
-                                    additions.extend(titles);
+                                        .copied()
+                                        .skip(additions.len())
+                                        .zip(&titles)
+                                    {
+                                        let mut hit = hit.clone();
+                                        hit.score = trial[slot].score;
+                                        trial[slot] = hit;
+                                    }
+                                    let after = self.store.render_packet_with_evidence(&trial, budget);
+                                    if protected_ids
+                                        .iter()
+                                        .filter(|id| !release_leader || **id != legacy[0].record.id)
+                                        .all(|id| after.complete_ids.contains(id))
+                                        && titles
+                                            .iter()
+                                            .all(|hit| after.complete_ids.contains(&hit.record.id))
+                                        && (!release_leader
+                                            || complete_focused_coverage(
+                                                query,
+                                                &names,
+                                                &trial,
+                                                &after.complete_ids,
+                                            ))
+                                    {
+                                        slots = trial_slots;
+                                        additions.extend(titles);
+                                        break;
+                                    }
                                 }
                             }
                             Ok(_) => {}
@@ -705,6 +742,72 @@ impl SemanticIndex {
         }
         Ok(found)
     }
+}
+
+// A leader may yield only to a complete, fully subscribed explicit request.
+// Canonical aliases and overlapping file hints do not create extra subjects.
+fn complete_focused_coverage(
+    query: &RetrievalQuery,
+    names: &[&str],
+    memories: &[RetrievedMemory],
+    complete_ids: &[uuid::Uuid],
+) -> bool {
+    let complete: Vec<_> = memories
+        .iter()
+        .filter(|hit| complete_ids.contains(&hit.record.id))
+        .map(|hit| &hit.record)
+        .collect();
+    let mut identifiers = Vec::new();
+    for name in names {
+        let clause = crate::retrieval::identifier_fts_query(&[name]);
+        if !identifiers.contains(&clause) {
+            if !complete
+                .iter()
+                .any(|record| crate::retrieval::identifier_title_matches(name, &record.title))
+            {
+                return false;
+            }
+            identifiers.push(clause);
+        }
+    }
+    let mut files: Vec<&str> = Vec::new();
+    for file in &query.files {
+        if files
+            .iter()
+            .any(|prior| crate::retrieval::path_overlap(prior, file))
+        {
+            continue;
+        }
+        if !complete.iter().any(|record| {
+            record
+                .files
+                .iter()
+                .any(|stored| crate::retrieval::path_overlap(stored, file))
+        }) {
+            return false;
+        }
+        files.push(file);
+    }
+    let mut literals = Vec::new();
+    for word in focused_words(&query.task) {
+        if !crate::retrieval::identifier_fts_query(&[word]).is_empty() {
+            continue;
+        }
+        let literal = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase();
+        if !crate::retrieval::is_distinctive(&literal) || literals.contains(&literal) {
+            continue;
+        }
+        if !complete
+            .iter()
+            .any(|record| record.title.eq_ignore_ascii_case(&literal))
+        {
+            return false;
+        }
+        literals.push(literal);
+    }
+    identifiers.len() + files.len() + literals.len() >= query.limit
 }
 
 fn focused_identifiers(task: &str, minimum_names: usize) -> Option<Vec<&str>> {

@@ -175,6 +175,18 @@ title fact may occupy another unprotected slot. Supplemental title matches use
 the specific requested-title explanation directly, retaining scores/components,
 claim text and evidence. Full protected-claim rendering checks remain unchanged.
 
+A narrow exception permits an unanchored leading result to supply one additional
+title slot when the ordinary placement cannot fit. Every explicitly requested
+canonical title, file and distinctive literal subject must then render in full,
+and their distinct count must reach the result limit. Canonical identifier aliases
+and overlapping file hints count once. An independently name-, file- or
+literal-anchored leader retains its rank, as do all other protected claims.
+Incomplete coverage retains the original plan. See the
+[full-subject report](../../../docs/design/long-term-memory-full-subject-coverage-nov10-2026.md).
+Automatic application recall also supplies validated explicit project-file
+references from matching current-message UI metadata, using the typed request as
+intent. An open editor alone does not supply a file hint.
+
 ## Development
 
 ```bash
