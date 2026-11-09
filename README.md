@@ -1666,6 +1666,13 @@ Tauri commands outside `rovik-protocol::Request` still need protocol adapters
 before their window-side services can be removed. Build the bootstrap host with
 `cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
 
+Agent controls, connector operations, chat mutations, and CLM commands now use
+`DesktopConnection`, which supplies the same typed replies in embedded and Unix
+IPC modes. The desktop currently selects embedded mode explicitly while the
+remaining commands and event subscriptions are migrated. IPC connection errors
+never create an embedded backend as a fallback. Checklists continue to read the
+local chat rows, including cached remote rows when their host is offline.
+
 ### Chat isolation
 
 If an isolated chat cannot mount or lock its overlay, the run stops with an

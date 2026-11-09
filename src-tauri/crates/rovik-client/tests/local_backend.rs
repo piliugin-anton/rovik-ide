@@ -124,6 +124,22 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .unwrap()
         .is_err());
     drop(stalled);
+    let adapter = rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+        .await
+        .unwrap();
+    let status: rovik_protocol::agent::AgentStatus = adapter
+        .call(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap();
+    assert!(status.runs.is_empty());
+    let _: () = adapter
+        .call(rovik_protocol::Request::ChatRename {
+            dialog_id: "a".into(),
+            title: "A through desktop adapter".into(),
+        })
+        .await
+        .unwrap();
+    drop(adapter);
     drop(client_a);
     assert!(matches!(
         client_b
@@ -157,7 +173,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     drop(first);
     drop(second);
     let db = rovik_core::chat_db::DbState::open(&data).unwrap();
-    for (id, title) in [("a", "A changed"), ("b", "B changed")] {
+    for (id, title) in [("a", "A through desktop adapter"), ("b", "B changed")] {
         let chat = rovik_core::chat_db::api::chat_get_dialog(&db, id.into())
             .await
             .unwrap()

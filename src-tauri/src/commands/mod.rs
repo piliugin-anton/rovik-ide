@@ -8,9 +8,7 @@
 //! `Request`: the core's `dispatch` answers it, as it does on the daemon
 //! (D3), or the chat's host does when the chat is there (`Remote`, 6.1).
 
-use rovik_client::Remote;
-use rovik_core::Core;
-use rovik_protocol::{Fail, Request, Response};
+use rovik_protocol::{Fail, Response};
 
 pub mod agent;
 pub mod browser;
@@ -27,24 +25,6 @@ pub mod tools;
 pub mod vfs;
 pub mod workload;
 pub mod wsl;
-
-/// A chat's operation, served by `dispatch` here: its reply as the type the
-/// command returns, or the error text the command returns.
-async fn call<T>(core: &Core, request: Request) -> Result<T, String>
-where
-    T: TryFrom<Response, Error = Fail>,
-{
-    answer(rovik_core::dispatch(core, request).await)
-}
-
-/// A chat's operation, served where the chat is (here, or on its host):
-/// its reply as the type the command returns, or the error text.
-async fn route<T>(remote: &Remote, dialog_id: &str, request: Request) -> Result<T, String>
-where
-    T: TryFrom<Response, Error = Fail>,
-{
-    answer(remote.route(dialog_id, request).await)
-}
 
 /// A reply as the type the command returns, or the error text it returns.
 fn answer<T>(reply: Result<Response, Fail>) -> Result<T, String>

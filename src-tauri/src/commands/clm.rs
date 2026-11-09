@@ -1,28 +1,26 @@
 //! Context Language Models (clm): a chat's context as a file the agent
 //! edits, and its revisions, which a chat on a host keeps there (6.1).
 
-use super::route;
-use rovik_client::Remote;
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::clm::{self, store::RevisionRow, ClmStatus};
 use rovik_core::Core;
 use rovik_protocol::Request;
-use std::sync::Arc;
 use tauri::State;
 
 #[tauri::command]
 pub async fn clm_status(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
 ) -> Result<ClmStatus, String> {
     let request = Request::ClmStatus {
         dialog_id: dialog_id.clone(),
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn clm_set_mode(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     mode: String,
 ) -> Result<(), String> {
@@ -30,32 +28,35 @@ pub async fn clm_set_mode(
         dialog_id: dialog_id.clone(),
         mode,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 /// Drops the agent's context; the chat is sent as stored again.
 #[tauri::command]
-pub async fn clm_reset(remote: State<'_, Arc<Remote>>, dialog_id: String) -> Result<(), String> {
+pub async fn clm_reset(
+    backend: State<'_, DesktopConnection>,
+    dialog_id: String,
+) -> Result<(), String> {
     let request = Request::ClmReset {
         dialog_id: dialog_id.clone(),
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn clm_list_revisions(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
 ) -> Result<Vec<RevisionRow>, String> {
     let request = Request::ClmListRevisions {
         dialog_id: dialog_id.clone(),
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn clm_read_revision(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     number: u64,
 ) -> Result<String, String> {
@@ -63,14 +64,14 @@ pub async fn clm_read_revision(
         dialog_id: dialog_id.clone(),
         number,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 /// Puts revision `number` back as the context file: it's read back like an
 /// edit before the next request.
 #[tauri::command]
 pub async fn clm_restore_revision(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     number: u64,
 ) -> Result<(), String> {
@@ -78,7 +79,7 @@ pub async fn clm_restore_revision(
         dialog_id: dialog_id.clone(),
         number,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 #[tauri::command]

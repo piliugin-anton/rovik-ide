@@ -111,6 +111,11 @@ impl DesktopBackend {
     ) -> Result<rovik_protocol::Response, rovik_protocol::Fail> {
         use rovik_protocol::{Request, Response, Target};
         match request {
+            // The desktop checklist reads the local rows (including remote
+            // mirrors), so it remains available while the host is offline.
+            request @ Request::ChatChecklist { .. } => {
+                return rovik_core::dispatch(&self.core, request).await
+            }
             Request::AgentStatus => return self.remote.status().await.map(Response::AgentStatus),
             Request::AgentStart(start) => return self.remote.start(*start).await,
             Request::AgentSteer { dialog_id, message } => {
@@ -272,6 +277,18 @@ mod routing_tests {
         assert!(fake.requests.lock().unwrap().contains(&update));
 
         fake.requests.lock().unwrap().clear();
+        backend
+            .dispatch(Request::ChatChecklist {
+                dialog_id: "remote".into(),
+            })
+            .await
+            .unwrap();
+        assert!(!fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, Request::ChatChecklist { .. })));
         assert!(matches!(
             backend.dispatch(Request::AgentStatus).await.unwrap(),
             Response::AgentStatus(_)

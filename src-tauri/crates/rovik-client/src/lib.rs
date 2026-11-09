@@ -33,6 +33,7 @@ pub mod connection_test;
 mod connector;
 pub mod deploy;
 pub mod desktop_backend;
+pub mod desktop_connection;
 pub mod host_settings;
 pub mod host_shell;
 mod hosts;

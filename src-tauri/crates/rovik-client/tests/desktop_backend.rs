@@ -1,6 +1,7 @@
 //! A separate test executable keeps backend process globals isolated from
 //! the client's unit tests.
 use rovik_client::desktop_backend::DesktopBackend;
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::chat_db::{api, store::NewDialog};
 use rovik_core::{EventSink, Paths};
@@ -25,6 +26,8 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     let backend = DesktopBackend::open(paths(), events.clone(), Arc::new(|_| {}), "test")
         .await
         .unwrap();
+    let backend = Arc::new(backend);
+    let connection = DesktopConnection::embedded(backend.clone());
     api::chat_create_dialog(
         &backend.core.db,
         NewDialog {
@@ -37,6 +40,28 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     )
     .await
     .unwrap();
+    let status: rovik_protocol::agent::AgentStatus = connection
+        .call(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap();
+    assert!(status.runs.is_empty());
+    let _: () = connection
+        .call(rovik_protocol::Request::ChatRename {
+            dialog_id: "shared-chat".into(),
+            title: "Renamed through adapter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(connection
+        .call_on::<()>(
+            Some("missing-host"),
+            rovik_protocol::Request::ChatRename {
+                dialog_id: "shared-chat".into(),
+                title: "Must not fall back".into(),
+            }
+        )
+        .await
+        .is_err());
     backend.core.emit(AgentEvent::Notice {
         dialog_id: Some("shared-chat".into()),
         kind: "info".into(),
@@ -45,6 +70,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     });
     assert_eq!(*events.0.lock().unwrap(), vec!["ready"]);
     backend.shutdown().await;
+    drop(connection);
     drop(backend);
 
     let reopened = DesktopBackend::open(paths(), events, Arc::new(|_| {}), "test")
@@ -54,6 +80,6 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(chat.title, "Saved without a window");
+    assert_eq!(chat.title, "Renamed through adapter");
     reopened.shutdown().await;
 }

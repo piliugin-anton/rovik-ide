@@ -2,8 +2,8 @@
 //! files attached in the chat input. A chat on a host is read from the
 //! mirror here, and written to on the host (6.1).
 
-use super::{answer, route};
 use crate::instances::Instances;
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_client::Remote;
 use rovik_core::agent_run::autopilot::{self, StageRow};
 use rovik_core::agent_run::StartRequest;
@@ -271,7 +271,7 @@ pub async fn chat_create_dialog(core: State<'_, Core>, dialog: NewDialog) -> Res
 
 #[tauri::command]
 pub async fn chat_update_message(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     message_id: String,
     patch: MessagePatch,
 ) -> Result<(), String> {
@@ -279,12 +279,12 @@ pub async fn chat_update_message(
         message_id: message_id.clone(),
         patch,
     };
-    answer(remote.route_message(&message_id, request).await)
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn chat_rename_dialog(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     title: String,
 ) -> Result<(), String> {
@@ -292,15 +292,15 @@ pub async fn chat_rename_dialog(
         dialog_id: dialog_id.clone(),
         title,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn chat_delete_dialog(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
 ) -> Result<(), String> {
-    remote.delete(&dialog_id).await.map_err(|fail| fail.message)
+    backend.call(Request::ChatDelete { dialog_id }).await
 }
 
 /// What moving the chat to `host` would do, and whether it can (6.8).
@@ -470,7 +470,7 @@ pub async fn chat_get_composer_draft(
 /// Saves the model and effort a chat uses, so reopening it continues with them.
 #[tauri::command]
 pub async fn chat_set_model(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     model: ChatModel,
 ) -> Result<(), String> {
@@ -478,7 +478,7 @@ pub async fn chat_set_model(
         dialog_id: dialog_id.clone(),
         model,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 /// The chat's saved model and effort, if any.

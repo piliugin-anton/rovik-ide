@@ -1,6 +1,7 @@
 use crate::filesystem::WatcherState;
 use crate::instances::Instances;
 use rovik_client::desktop_backend::DesktopBackend;
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
 use std::sync::Arc;
@@ -84,6 +85,8 @@ pub fn run() {
                 }),
                 env!("CARGO_PKG_VERSION"),
             ))?;
+            let backend = Arc::new(backend);
+            app.manage(DesktopConnection::embedded(backend.clone()));
             let core = backend.core.clone();
             let remote = backend.remote.clone();
             let hosts = backend.hosts.clone();
@@ -454,7 +457,7 @@ fn before_exit(app: &tauri::AppHandle) {
     if let Some(terminals) = &terminals {
         terminals.end_all();
     }
-    if let Some(backend) = app.try_state::<DesktopBackend>() {
+    if let Some(backend) = app.try_state::<Arc<DesktopBackend>>() {
         rt::block_on(backend.shutdown());
     }
     // Only once the core is done with the project's chats.
