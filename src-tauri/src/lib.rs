@@ -1,9 +1,6 @@
 use crate::filesystem::WatcherState;
 use crate::instances::Instances;
-use rovik_client::hosts_page::HostsPage;
-use rovik_client::provider_keys::ProviderKeys;
-use rovik_client::secrets::{SecretError, SecretName, SecretStore};
-use rovik_client::Remote;
+use rovik_client::desktop_backend::DesktopBackend;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
 use std::sync::Arc;
@@ -76,79 +73,26 @@ pub fn run() {
                 folder,
                 new_window: std::env::args().any(|a| a == NEW_WINDOW),
             });
-            // What only one process at a time can have (the virtual files'
-            // folder, ssh's sockets): each has its own, by its slot. And the
-            // chats each is at work on, which the others leave be.
-            rovik_core::os_lock::take_slot(&data.join("slots"));
-            rovik_core::chat_hold::init(data.join("chats-at-work"));
-            // The providers' API keys, in the keychain or the encrypted
-            // file in its place, out of ai-settings.json (H06).
-            let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
-            // Settings → Network (rovik_core::net) before anything connects:
-            // its file beside the AI settings, the proxies' passwords in the
-            // keychain, each read once a route that signs in to it is used.
-            let store = secrets.clone();
-            rovik_core::net::init(
-                config.join("network-settings.json"),
-                Arc::new(move |proxy: &str| {
-                    let name = SecretName::ProxyPassword {
-                        proxy: proxy.to_string(),
-                    };
-                    match store.get(&name) {
-                        Ok(password) => Ok(Some(password)),
-                        Err(SecretError::Missing(_)) => Ok(None),
-                        Err(e) => Err(e.to_string()),
+            let window = app.handle().clone();
+            let backend = rt::block_on(DesktopBackend::open(
+                Paths::new(data.clone(), config.clone()),
+                Arc::new(WindowEvents(app.handle().clone())),
+                Arc::new(move |event| {
+                    if let Err(e) = window.emit(CLOUD_EVENT, &event) {
+                        log::error!("cloud: could not send an event: {e}");
                     }
                 }),
-            );
-            app.manage(secrets.clone());
-            let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets.clone());
-            app.manage(Arc::new(keys));
-            let paths = Paths::new(data.clone(), config.clone());
-            let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
-            // Settings → MCP servers: a server's secret values, in the
-            // keychain, read as it starts (docs/design/mcp-plan.md, Q02).
-            let store = secrets.clone();
-            core.mcp
-                .set_secrets(Arc::new(move |server: &str, key: &str| {
-                    let name = SecretName::McpValue {
-                        server: server.to_string(),
-                        key: key.to_string(),
-                    };
-                    match store.get(&name) {
-                        Ok(value) => Ok(Some(value.0.clone())),
-                        Err(SecretError::Missing(_)) => Ok(None),
-                        Err(e) => Err(e.to_string()),
-                    }
-                }));
-            // Their sign-ins made here, refreshed here (mcp-plan-2.md, Q14).
-            let grants = rovik_client::mcp_sign_in::KeychainGrants(secrets.clone());
-            core.mcp.set_grants(Arc::new(grants));
-            // Chats on hosts (6.1): their requests go to the host, and its
-            // events come back through the core's sink.
-            let remote = Remote::new(core.clone());
-            let window = app.handle().clone();
-            remote.on_cloud(Arc::new(move |event| {
-                if let Err(e) = window.emit(CLOUD_EVENT, &event) {
-                    eprintln!("cloud: could not send an event: {e}");
-                }
-            }));
-            // The chats the database puts on hosts go there from the start.
-            if let Err(e) = rt::block_on(remote.load()) {
-                eprintln!("cloud: the chats on hosts couldn't be read: {e}");
-            }
-            // Settings → Cloud hosts (U01), and the hosts deployed there,
-            // connected from the start.
-            let hosts = Arc::new(HostsPage::new(
-                config,
-                data.join("ssh"),
-                secrets,
-                remote.clone(),
                 env!("CARGO_PKG_VERSION"),
-            ));
+            ))?;
+            let core = backend.core.clone();
+            let remote = backend.remote.clone();
+            let hosts = backend.hosts.clone();
+            app.manage(backend.secrets.clone());
+            app.manage(backend.keys.clone());
             app.manage(hosts.clone());
             app.manage(core.clone());
             app.manage(remote.clone());
+            app.manage(backend);
             // A project is open in one window (instances.rs): its remote
             // chats' results, rows and events are that window's.
             let windows = app.handle().clone();
@@ -171,17 +115,6 @@ pub fn run() {
                     open_url::open(page.address)
                 }
             }));
-            // Another window may change the hosts' settings: their policies
-            // are read again before one goes to a host.
-            let page = Arc::downgrade(&hosts);
-            remote.on_refresh(Arc::new(move || {
-                if let Some(hosts) = page.upgrade() {
-                    hosts.follow_policies();
-                }
-            }));
-            // The MCP sign-outs owed to hosts that were away are kept with
-            // their settings (mcp-plan-2.md, Q14).
-            remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();
@@ -521,8 +454,8 @@ fn before_exit(app: &tauri::AppHandle) {
     if let Some(terminals) = &terminals {
         terminals.end_all();
     }
-    if let Some(core) = app.try_state::<Core>() {
-        rt::block_on(core.shutdown());
+    if let Some(backend) = app.try_state::<DesktopBackend>() {
+        rt::block_on(backend.shutdown());
     }
     // Only once the core is done with the project's chats.
     if let Some(instances) = app.try_state::<Instances>() {

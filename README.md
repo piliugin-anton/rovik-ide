@@ -1640,6 +1640,18 @@ in the input.
   line for each step of a message's life, and the headless runner can send
   scripted messages (`--steer "TEXT@N"`).
 
+### Desktop backend migration
+
+`rovik-client::desktop_backend::DesktopBackend` initializes the desktop's core,
+credentials, MCP services, and remote-host routing without depending on Tauri.
+The desktop supplies event publishers and keeps native window callbacks in the
+application layer. Initialization fails if remote chat ownership cannot be
+loaded, rather than treating those chats as local.
+
+This is the service extraction stage: each window still hosts its own backend.
+A shared process, local IPC, event subscriptions, and coordinated shutdown are
+not enabled yet.
+
 ### Chat isolation
 
 If an isolated chat cannot mount or lock its overlay, the run stops with an
