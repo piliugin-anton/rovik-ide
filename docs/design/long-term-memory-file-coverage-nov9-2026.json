@@ -9,158 +9,7 @@
     "Unrequested trailing records may be replaced; fixture retention is not universal precision proof. Concurrent checks do not establish latency improvement.",
     "New complete-answer scores retain every primary, peer and file requirement, including short-component identifier misses."
   ],
-  "pending": [
-    {
-      "key": "cross",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 55
-    },
-    {
-      "key": "original",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 58
-    },
-    {
-      "key": "original",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 58
-    },
-    {
-      "key": "fresh",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 45
-    },
-    {
-      "key": "fresh",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 45
-    },
-    {
-      "key": "diagnostic",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 45
-    },
-    {
-      "key": "diagnostic",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 45
-    },
-    {
-      "key": "identifier",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 24
-    },
-    {
-      "key": "identifier",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 24
-    },
-    {
-      "key": "complex",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 40
-    },
-    {
-      "key": "complex",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 40
-    },
-    {
-      "key": "snake",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 40
-    },
-    {
-      "key": "snake",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 40
-    },
-    {
-      "key": "longfailure",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 45
-    },
-    {
-      "key": "longfailure",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 45
-    },
-    {
-      "key": "longguards",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 12
-    },
-    {
-      "key": "longguards",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 12
-    },
-    {
-      "key": "genericguards",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 12
-    },
-    {
-      "key": "genericguards",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 12
-    },
-    {
-      "key": "pluralguards",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 12
-    },
-    {
-      "key": "pluralguards",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 12
-    },
-    {
-      "key": "lists",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 40
-    },
-    {
-      "key": "lists",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 40
-    },
-    {
-      "key": "listguards",
-      "split": "heldout",
-      "policy": "lexical",
-      "cases": 12
-    },
-    {
-      "key": "listguards",
-      "split": "heldout",
-      "policy": "hybrid",
-      "cases": 12
-    }
-  ],
+  "pending": [],
   "historical": [
     {
       "key": "expanded",
@@ -809,6 +658,40 @@
       }
     },
     {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "identical": 55,
+      "primary_before": 33,
+      "primary_after": 33,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
       "key": "original",
       "split": "development",
       "policy": "lexical",
@@ -877,6 +760,74 @@
       }
     },
     {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 58,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "identical": 58,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 58,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "identical": 58,
+      "primary_before": 26,
+      "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
       "key": "fresh",
       "split": "development",
       "policy": "lexical",
@@ -945,6 +896,74 @@
       }
     },
     {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "identical": 45,
+      "primary_before": 23,
+      "primary_after": 23,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
       "key": "diagnostic",
       "split": "development",
       "policy": "lexical",
@@ -1004,6 +1023,74 @@
       "identical": 45,
       "primary_before": 27,
       "primary_after": 27,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "identical": 45,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
       "changes": {
         "gains": [],
         "losses": [],
@@ -1067,6 +1154,74 @@
         "mrr": 1,
         "ndcg_at_8": 1,
         "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
         "recall_at_8": 1
       },
       "identical": 24,
@@ -1134,6 +1289,74 @@
         "delivered_recall": 1,
         "mrr": 0.5238095238095238,
         "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "identical": 40,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
         "no_match_injection_rate": 0.6666666666666666,
         "recall_at_8": 1
       },
@@ -1217,6 +1440,74 @@
       }
     },
     {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "identical": 40,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
       "key": "longfailure",
       "split": "development",
       "policy": "lexical",
@@ -1276,6 +1567,74 @@
       "identical": 45,
       "primary_before": 26,
       "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
       "changes": {
         "gains": [],
         "losses": [],
@@ -1338,6 +1697,74 @@
         "delivered_recall": 0,
         "mrr": 0.27658730158730155,
         "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "identical": 12,
+      "primary_before": 9,
+      "primary_after": 9,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.44444444444444436,
+        "ndcg_at_8": 0.5166292762412937,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.44444444444444436,
+        "ndcg_at_8": 0.5166292762412937,
         "no_match_injection_rate": null,
         "recall_at_8": 0.75
       },
@@ -1421,6 +1848,74 @@
       }
     },
     {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
       "key": "pluralguards",
       "split": "development",
       "policy": "lexical",
@@ -1480,6 +1975,74 @@
       "identical": 12,
       "primary_before": 1,
       "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
       "changes": {
         "gains": [],
         "losses": [],
@@ -1557,6 +2120,74 @@
       }
     },
     {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 40,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5130952380952382,
+        "ndcg_at_8": 0.6257471923389127,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5130952380952382,
+        "ndcg_at_8": 0.6257471923389127,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
       "key": "listguards",
       "split": "development",
       "policy": "lexical",
@@ -1616,6 +2247,74 @@
       "identical": 12,
       "primary_before": 4,
       "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.20833333333333334,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.20833333333333334,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "identical": 12,
+      "primary_before": 4,
+      "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.2341269841269841,
+        "ndcg_at_8": 0.2995994033730207,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.2341269841269841,
+        "ndcg_at_8": 0.2995994033730207,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "identical": 12,
+      "primary_before": 6,
+      "primary_after": 6,
       "changes": {
         "gains": [],
         "losses": [],
@@ -4839,6 +5538,13 @@
       "candidate": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b"
     },
     {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d",
+      "candidate": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d"
+    },
+    {
       "key": "original",
       "split": "development",
       "policy": "lexical",
@@ -4851,6 +5557,20 @@
       "policy": "hybrid",
       "baseline": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28",
       "candidate": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf",
+      "candidate": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70",
+      "candidate": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70"
     },
     {
       "key": "fresh",
@@ -4867,6 +5587,20 @@
       "candidate": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d"
     },
     {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263",
+      "candidate": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e",
+      "candidate": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e"
+    },
+    {
       "key": "diagnostic",
       "split": "development",
       "policy": "lexical",
@@ -4879,6 +5613,20 @@
       "policy": "hybrid",
       "baseline": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274",
       "candidate": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238",
+      "candidate": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2",
+      "candidate": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2"
     },
     {
       "key": "identifier",
@@ -4895,6 +5643,20 @@
       "candidate": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d"
     },
     {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1",
+      "candidate": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a",
+      "candidate": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a"
+    },
+    {
       "key": "complex",
       "split": "development",
       "policy": "lexical",
@@ -4907,6 +5669,20 @@
       "policy": "hybrid",
       "baseline": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae",
       "candidate": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507",
+      "candidate": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3",
+      "candidate": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3"
     },
     {
       "key": "snake",
@@ -4923,6 +5699,20 @@
       "candidate": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877"
     },
     {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87",
+      "candidate": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b",
+      "candidate": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b"
+    },
+    {
       "key": "longfailure",
       "split": "development",
       "policy": "lexical",
@@ -4935,6 +5725,20 @@
       "policy": "hybrid",
       "baseline": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
       "candidate": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63",
+      "candidate": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63"
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63",
+      "candidate": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63"
     },
     {
       "key": "longguards",
@@ -4951,6 +5755,20 @@
       "candidate": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1"
     },
     {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "ef93023b414766e8f526bd6903a9fe8a107d9d4045d46c212dcd17987eda4d5d",
+      "candidate": "ef93023b414766e8f526bd6903a9fe8a107d9d4045d46c212dcd17987eda4d5d"
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "12b2fabc27a1837901783c0982ddaaf441ad25bd7db2f71c9337832f07dfbde3",
+      "candidate": "12b2fabc27a1837901783c0982ddaaf441ad25bd7db2f71c9337832f07dfbde3"
+    },
+    {
       "key": "genericguards",
       "split": "development",
       "policy": "lexical",
@@ -4965,6 +5783,20 @@
       "candidate": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
     },
     {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b",
+      "candidate": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b"
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b",
+      "candidate": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b"
+    },
+    {
       "key": "pluralguards",
       "split": "development",
       "policy": "lexical",
@@ -4977,6 +5809,20 @@
       "policy": "hybrid",
       "baseline": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
       "candidate": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451",
+      "candidate": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451"
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451",
+      "candidate": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451"
     },
     {
       "key": "lists",
@@ -4993,6 +5839,20 @@
       "candidate": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971"
     },
     {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "deddd1e4ec2220dfb7eda0e87be1724bba39ff07311bbea35f22b128f8d2585d",
+      "candidate": "deddd1e4ec2220dfb7eda0e87be1724bba39ff07311bbea35f22b128f8d2585d"
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "dd7d53dead04e24509bb2234b493d544ac11046d9fe65f49691ddce7545d905d",
+      "candidate": "dd7d53dead04e24509bb2234b493d544ac11046d9fe65f49691ddce7545d905d"
+    },
+    {
       "key": "listguards",
       "split": "development",
       "policy": "lexical",
@@ -5005,6 +5865,20 @@
       "policy": "hybrid",
       "baseline": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa",
       "candidate": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa"
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "f0e356d6bd463a9dc7e1cc7f1d04b9cdce9802b65897d7fdf1e4b7ae8d57c241",
+      "candidate": "f0e356d6bd463a9dc7e1cc7f1d04b9cdce9802b65897d7fdf1e4b7ae8d57c241"
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "2ed8e223aea9f67514e25b8d938d6732d7b7bb7e60b66f26a09185c1e28b46f7",
+      "candidate": "2ed8e223aea9f67514e25b8d938d6732d7b7bb7e60b66f26a09185c1e28b46f7"
     },
     {
       "key": "filefocus",
@@ -5120,15 +5994,16 @@
     }
   ],
   "audit": {
-    "historical_views": 1643,
-    "historical_identical": 1619,
+    "historical_views": 2468,
+    "historical_identical": 2444,
     "new_views": 240,
     "new_identical": 226,
     "complete_answer_gains": 29,
     "losses": [],
     "rank_losses": [],
     "negative_changes": [],
-    "safety": []
+    "safety": [],
+    "lexical_views_unchanged": 1354
   },
   "source_sha256": {
     "baseline": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
@@ -5151,11 +6026,17 @@
     "native_onnx_tests_passed": 2,
     "doctests_passed": 1,
     "clippy": "warnings denied",
-    "frontend_tests_passed": 1046,
+    "frontend_tests_passed": 1039,
     "typecheck": "passed",
-    "format": "Final check not run: user requested stopping tests and committing."
+    "format": "passed"
   },
-  "status": "Committed at user request after completed development and crate checks; reserved evaluation stopped before completion.",
+  "status": "Complete: all planned development and reserved views scored on the unchanged candidate.",
+  "resumption": {
+    "candidate_commit": "55266e4b32b3cb62bd7b8660cf00dce131161940",
+    "previously_completed_views": 1883,
+    "resumed_views": 825,
+    "source_unchanged": true
+  },
   "expected_policy_views": 2708,
   "baseline_harness": "Baseline evaluator rebuilt with optional case.files support and unchanged retrieval; no historical case used this field.",
   "trials": [
@@ -5438,5 +6319,6 @@
       "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
       "symbol": "RetrievedMemory"
     }
-  ]
+  ],
+  "completion_branch": "ltm-improvements-nov9-2026-2"
 }

@@ -1,6 +1,7 @@
 # Harder file-coverage cases and recall gains
 
 Baseline: `7854861`, branch `ltm-improvements-nov9-2026`.
+Completion branch: `ltm-improvements-nov9-2026-2`.
 
 The existing file-focused suite improves from **8/16 to 16/16 complete answers**
 on both development and exposed reserved splits. The historical dense suite stays
@@ -28,7 +29,7 @@ entering the complete-answer headline.
 
 The remaining failures are retained. The additional incidents and their query
 variants are correlated; the different split scores do not establish independent
-generalization. Existing negative result IDs/order remain unchanged in completed
+generalization. Existing negative result IDs/order remain unchanged in all
 evaluations, without requiring those pools to be empty.
 
 The evaluator now supports an optional case-level `files` array alongside legacy
@@ -62,29 +63,31 @@ trust, repository, tag and caller protections remain unchanged.
 No model, inference, cutoff, schema, stored claim, result limit or packet budget
 changes. The pinned model release and download behavior stay unchanged.
 
-## Completed validation and stopped work
+## Complete validation
 
 Before reserved scoring, all **1,406 development policy views** and the crate
-contracts passed. Across **1,883 completed development/reserved views**, there
+contracts passed. Across **2,708 completed development/reserved views**, there
 are **29 complete-answer gains**, no delivered-fact or rank losses, negative
 identity/order changes, prohibited results or eight-record/1,000-token overruns.
-Of 1,643 completed historical views, 1,619 deterministic outputs are identical;
-the other views gain required file facts or change unrequested file context.
+All **2,468 historical views** and **240 new views** are complete. Changed
+historical views gain required file facts or change unrequested file context.
+Every lexical output remains identical across all **1,354 lexical views**.
 
-At the user's explicit request, the remaining evaluation was stopped and this
-change was committed and pushed. **825 planned historical reserved views remain
-unscored**; this report does not claim a complete historical reserved regression
-pass. The final format check was not run after that instruction.
+The final 825 reserved views were resumed on the unchanged `55266e4` candidate,
+after the earlier interruption. They preserve all previously delivered facts and
+ranks and negative IDs/order. No planned groups remain unscored, and the final
+format check passes. Production code and frozen fixtures were not changed during
+this completion run.
 
 Already completed checks: **158 Rust all-target tests**, both explicitly enabled
-native ONNX tests, the doctest, clippy with warnings denied, **1,046 frontend
+native ONNX tests, the doctest, clippy with warnings denied, **1,039 frontend
 tests** and type checking. Twelve focused tests also passed ten runs with fresh
 UUIDs. Tests cover scarce capacity, multiple paths, duplicate hints, normalized
 whole-segment matching and filtering before the file pool bound. Rust crates were
 checked individually.
 
 The [machine-readable report](long-term-memory-file-coverage-nov9-2026.json)
-contains completed results, pending groups, source/fixture hashes, deterministic
+contains all results, an empty pending list, source/fixture hashes, deterministic
 fingerprints and rejected-trial evidence. Reproduction uses the existing native
 `evaluate_memory` example, deterministic splits, pinned 384-dimension MiniLM at
 threshold 0.3, short-query words two and scale 11/12, eight results and 1,000 tokens.
