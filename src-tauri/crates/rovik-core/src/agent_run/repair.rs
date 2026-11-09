@@ -945,6 +945,9 @@ impl Run {
     /// as its baseline (the first time in the run, R05) and in the open
     /// checkpoint (the first time in the round, R02).
     pub(super) fn note_before_write(&mut self, path: &str) {
+        if self.is_own_context_path(path) {
+            return;
+        }
         let Some(root) = self.root.clone() else {
             return;
         };
@@ -1212,7 +1215,7 @@ impl Run {
     }
 
     /// The files the run changed, relative to the root: those it wrote, and
-    /// in an isolated chat all its overlay's changes.
+    /// in an isolated chat all its overlay's changes, excluding context bookkeeping.
     pub(super) fn touched_keys(&self) -> BTreeSet<String> {
         let Some(root) = self.root.clone() else {
             return BTreeSet::new();
@@ -1220,6 +1223,7 @@ impl Run {
         let mut paths: BTreeSet<String> = self.verification.baseline().keys().cloned().collect();
         paths.extend(self.overlay_paths());
         paths.extend(self.changed_files.iter().map(|p| rel_key(&root, p)));
+        paths.retain(|path| !self.is_own_context_path(path));
         paths
     }
 

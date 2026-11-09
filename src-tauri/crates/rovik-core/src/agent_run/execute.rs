@@ -1241,10 +1241,28 @@ impl Run {
         .await
     }
 
+    /// Context bookkeeping is not a project change, whichever tool recorded it.
+    pub(super) fn is_own_context_path(&self, path: &str) -> bool {
+        let real_dir = crate::clm::real_paths(&self.core.vfs, &self.dialog_id).map(|(_, dir)| dir);
+        if is_context_path(Some(path), real_dir.as_deref()) {
+            return true;
+        }
+        self.root.as_deref().is_some_and(|root| {
+            is_context_path(Some(&super::repair::rel_key(root, path)), None)
+                || is_context_path(
+                    Some(&tools::to_absolute_path(path, root)),
+                    real_dir.as_deref(),
+                )
+        })
+    }
+
     /// A file the agent changed (`path` as its call named it; `abs_path`,
     /// where it is): one of the run's changed files, which the review and
     /// the checks run on next.
     pub(super) fn note_write(&mut self, path: &str, abs_path: Option<&str>) {
+        if self.is_own_context_path(path) || abs_path.is_some_and(|p| self.is_own_context_path(p)) {
+            return;
+        }
         if !self.changed_files.iter().any(|p| p == path) {
             self.changed_files.push(path.to_string());
         }
