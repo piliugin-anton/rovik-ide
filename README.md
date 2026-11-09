@@ -2241,3 +2241,8 @@ and project watches also use the backend. Each client has its own file-ID cache
 and watcher generation. Replacing or disconnecting one watch cannot stop another
 client's watch; delayed cleanup cannot stop a newer watch in the same client.
 Native filesystem events target only the window that requested them.
+
+Streamed model requests, MCP sign-in, and host-test progress now use private
+backend tasks. Stop remains available during a streamed request, and matching
+request IDs in different clients cannot cancel each other. Shared UI settings and
+WSL operations also use desktop RPC; native adapters retain browser/window actions.

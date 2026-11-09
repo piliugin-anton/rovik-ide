@@ -3,6 +3,8 @@
 
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
+#[path = "support/desktop_tasks.rs"]
+mod desktop_tasks;
 
 use rovik_client::local_backend::{connect, directory};
 use std::process::{Child, Command, Stdio};
@@ -21,6 +23,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("data");
     let config = root.path().join("config");
+    desktop_tasks::seed_secrets(&config);
     let db = rovik_core::chat_db::DbState::open(&data).unwrap();
     for id in ["a", "b"] {
         rovik_core::chat_db::api::chat_create_dialog(
@@ -145,6 +148,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .await
         .unwrap();
     desktop_operations::check_terminal_contract(&adapter, &other_adapter).await;
+    desktop_tasks::check(&adapter, &other_adapter).await;
     drop(other_adapter);
     let shared_volume = client_b
         .desktop(rovik_client::desktop_api::DesktopRequest::from(

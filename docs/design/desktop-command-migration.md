@@ -64,3 +64,19 @@ cleanup use generation checks so rapid project switches cannot stop a replacemen
 watch. The Tauri adapter delivers filesystem events to the requesting window.
 Per-client project registration and remaining chat/native callback adapters are
 still outstanding.
+
+## Finite operations and native callbacks
+
+One-off model completions, host-test progress, MCP OAuth sign-in, and terminal
+writes now run as client-owned backend tasks. Their startup replies release the
+request connection immediately, so Stop and terminal Close remain callable while
+work is pending. Progress and final results use the private event stream in order;
+callback loss or disconnect cancels only that client's task. Completion request
+IDs are scoped to the client. OAuth credentials remain in the backend; only the
+browser URL is forwarded to the native adapter. WSL setup and shared UI settings
+also use typed desktop requests. Local OAuth and streamed HTTP fixtures exercise
+the same contracts through embedded clients and real daemon connections.
+
+Per-client project registration and the remaining project/chat lifecycle commands
+are the remaining work in phases 3 and 4. Shared agent-event replay and automatic
+daemon activation remain separate follow-up phases.

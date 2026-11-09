@@ -1,52 +1,56 @@
-//! Settings → This computer → WSL (Windows): the WSL distribution Rovik's
-//! Linux side runs in, set up, tested, updated with the app and removed.
-//! Thin wrappers over `rovik_client::hosts_page`'s WSL part; the test's
-//! steps come on `host-test` with the host id `wsl`, as a cloud host's do.
+//! WSL setup and lifecycle are owned by the backend alongside other hosts.
+use rovik_client::{
+    desktop_api::hosts::HostsRequest, desktop_connection::DesktopConnection, hosts_page::WSL_HOST,
+};
+use serde_json::Value;
+use tauri::{State, WebviewWindow};
 
-use rovik_client::connection_test::Step;
-use rovik_client::hosts_page::{DeployFailure, HostsPage, WslStatus, WSL_HOST};
-use std::sync::Arc;
-use tauri::{AppHandle, State};
-
+/// Reads the backend's WSL status.
 #[tauri::command]
-pub async fn wsl_status(page: State<'_, Arc<HostsPage>>) -> Result<WslStatus, String> {
-    page.wsl_status().await
+pub async fn wsl_status(backend: State<'_, DesktopConnection>) -> Result<Value, Value> {
+    backend.desktop_raw(HostsRequest::WslStatus.into()).await
 }
 
-/// Sets `distro` up as this computer's Linux side, as `user` in it (its
-/// default user when none). Returns the daemon's version.
+/// Sets up the backend in the selected WSL distribution.
 #[tauri::command]
 pub async fn wsl_setup(
-    page: State<'_, Arc<HostsPage>>,
+    backend: State<'_, DesktopConnection>,
     distro: String,
     user: Option<String>,
-) -> Result<String, DeployFailure> {
-    page.wsl_setup(distro, user).await
+) -> Result<Value, Value> {
+    backend
+        .desktop_raw(HostsRequest::WslSetup { distro, user }.into())
+        .await
 }
 
+/// Reports WSL test progress only to the requesting window.
 #[tauri::command]
 pub async fn wsl_test(
-    app: AppHandle,
-    page: State<'_, Arc<HostsPage>>,
-) -> Result<Vec<Step>, String> {
-    super::hosts::hosts_test(app, page, WSL_HOST.into()).await
+    window: WebviewWindow,
+    backend: State<'_, DesktopConnection>,
+) -> Result<Value, Value> {
+    super::hosts::hosts_test(window, backend, WSL_HOST.into()).await
 }
 
-/// Installs WSL itself, with `distro` (Ubuntu when none), as an
-/// administrator: Windows asks for permission. The computer may have to
-/// restart before it's set up.
+/// Runs the OS installer; Windows still asks the user for elevation.
 #[tauri::command]
-pub async fn wsl_install(distro: Option<String>) -> Result<rovik_client::wsl::Installed, String> {
-    rovik_client::wsl::install(distro.as_deref()).await
+pub async fn wsl_install(
+    backend: State<'_, DesktopConnection>,
+    distro: Option<String>,
+) -> Result<Value, Value> {
+    backend
+        .desktop_raw(HostsRequest::WslInstall { distro }.into())
+        .await
 }
 
-/// Rovik in the distribution brought to this app's version.
+/// Updates Rovik in its WSL distribution.
 #[tauri::command]
-pub async fn wsl_update(page: State<'_, Arc<HostsPage>>) -> Result<(), DeployFailure> {
-    page.wsl_update().await
+pub async fn wsl_update(backend: State<'_, DesktopConnection>) -> Result<Value, Value> {
+    backend.desktop_raw(HostsRequest::WslUpdate.into()).await
 }
 
+/// Removes Rovik from its WSL distribution.
 #[tauri::command]
-pub async fn wsl_remove(page: State<'_, Arc<HostsPage>>) -> Result<(), DeployFailure> {
-    page.wsl_remove().await
+pub async fn wsl_remove(backend: State<'_, DesktopConnection>) -> Result<Value, Value> {
+    backend.desktop_raw(HostsRequest::WslRemove.into()).await
 }

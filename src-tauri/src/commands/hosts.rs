@@ -3,26 +3,15 @@
 //! says. Thin wrappers over `rovik_client::hosts_page`. A connection
 //! test's steps come on `host-test` as each one ends.
 
-use rovik_client::connection_test::Step;
 use rovik_client::deploy::Removal;
 use rovik_client::desktop_api::{hosts::HostsRequest, DesktopRequest};
 use rovik_client::desktop_connection::DesktopConnection;
 use rovik_client::host_settings::Host;
-use rovik_client::hosts_page::{HostSecrets, HostsPage};
+use rovik_client::hosts_page::HostSecrets;
 use rovik_client::ApprovalPolicy;
-use serde::Serialize;
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State, WebviewWindow};
 /// The event a connection test's steps come on.
 const TEST_EVENT: &str = "host-test";
-
-/// A step of `host_id`'s connection test, as it ends.
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct TestStep {
-    host_id: String,
-    step: Step,
-}
 
 #[tauri::command]
 pub async fn hosts_list(
@@ -73,21 +62,20 @@ pub async fn hosts_remove(
 /// Tests the host's connection, each step on `host-test` as it ends.
 #[tauri::command]
 pub async fn hosts_test(
-    app: AppHandle,
-    page: State<'_, Arc<HostsPage>>,
+    window: WebviewWindow,
+    backend: State<'_, DesktopConnection>,
     id: String,
-) -> Result<Vec<Step>, String> {
-    let host_id = id.clone();
-    let report = move |step: &Step| {
-        let told = TestStep {
-            host_id: host_id.clone(),
-            step: step.clone(),
-        };
-        if let Err(e) = app.emit(TEST_EVENT, told) {
-            eprintln!("hosts: a test's step couldn't be told: {e}");
-        }
-    };
-    page.test(&id, &report).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_task(
+            |sink| HostsRequest::Test { id, sink }.into(),
+            move |step| {
+                window
+                    .emit_to(window.label(), TEST_EVENT, step)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await
 }
 
 /// Pins the host's key, once the user compared its fingerprint.

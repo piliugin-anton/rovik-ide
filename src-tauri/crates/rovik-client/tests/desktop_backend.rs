@@ -2,6 +2,8 @@
 //! the client's unit tests.
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
+#[path = "support/desktop_tasks.rs"]
+mod desktop_tasks;
 
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
@@ -24,6 +26,7 @@ impl EventSink for Events {
 #[tokio::test]
 async fn desktop_services_persist_chats_and_publish_without_a_window() {
     let dir = tempfile::tempdir().unwrap();
+    desktop_tasks::seed_secrets(&dir.path().join("config"));
     let paths = || Paths::new(dir.path().join("data"), dir.path().join("config"));
     let events = Arc::new(Events::default());
     let backend = DesktopBackend::open(paths(), events.clone(), Arc::new(|_| {}), "test")
@@ -76,6 +79,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     );
     #[cfg(unix)]
     desktop_operations::check_terminal_contract(&connection, &other).await;
+    desktop_tasks::check(&connection, &other).await;
     drop(other);
     api::chat_create_dialog(
         &backend.core.db,

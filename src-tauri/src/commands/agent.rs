@@ -1,18 +1,14 @@
 //! The agent's runs (agent_run), and the requests the frontend makes itself
 //! (agent.rs). A chat on a host runs there (6.1).
 
+use rovik_client::desktop_api::agent::{AgentRequest, CompletionArgs, EstimateArgs};
 use rovik_client::desktop_connection::DesktopConnection;
-use rovik_core::agent::{
-    self, ChatParams, ChatStreamEvent, ContextEstimate, OpenAIChatOptions, ReasoningEffort,
-    RemoteModel, WireChatMessage,
-};
+use rovik_core::agent::{OpenAIChatOptions, ReasoningEffort, WireChatMessage};
 use rovik_core::agent_run::checklist::CurrentChecklist;
 use rovik_core::agent_run::questions::QuestionsOutcome;
 use rovik_core::agent_run::{
     AgentConfig, AgentStatus, ApprovalDecision, StartRequest, SteerReply, UserMessage,
 };
-use rovik_core::chat_request::ChatRequests;
-use rovik_core::Core;
 use rovik_protocol::connectors::{
     ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
 };
@@ -194,8 +190,7 @@ pub async fn chat_dismiss_checklist(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_chat_message(
-    core: State<'_, Core>,
-    requests: State<'_, ChatRequests>,
+    backend: State<'_, DesktopConnection>,
     base_url: String,
     api_key: String,
     model: String,
@@ -218,9 +213,9 @@ pub async fn send_chat_message(
     context_mode: Option<String>,
     api_route: Option<String>,
     chat_id: Option<String>,
-    on_event: Channel<ChatStreamEvent>,
-) -> Result<(), String> {
-    let params = ChatParams {
+    on_event: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let params = Box::new(CompletionArgs {
         base_url,
         api_key,
         model,
@@ -241,28 +236,38 @@ pub async fn send_chat_message(
         context_mode,
         api_route,
         chat_id,
-        ..Default::default()
-    };
-    agent::send_chat_message(&core, &requests, request_id, params, move |event| {
-        let _ = on_event.send(event);
-    })
-    .await
+    });
+    backend
+        .desktop_task(
+            |sink| {
+                AgentRequest::Send {
+                    request_id,
+                    params,
+                    sink,
+                }
+                .into()
+            },
+            move |event| on_event.send(event).map_err(|e| e.to_string()),
+        )
+        .await
 }
 
 /// Async so it runs off the main thread: Stop must work even if the main
 /// thread is busy.
 #[tauri::command]
 pub async fn cancel_chat_request(
-    requests: State<'_, ChatRequests>,
+    backend: State<'_, DesktopConnection>,
     request_id: String,
-) -> Result<bool, String> {
-    Ok(requests.cancel(&request_id))
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(AgentRequest::Cancel { request_id }.into())
+        .await
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_context_estimate(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     base_url: String,
     model: String,
@@ -274,22 +279,27 @@ pub async fn chat_context_estimate(
     root: Option<String>,
     mode: Option<String>,
     extra_chars: Option<usize>,
-) -> Result<ContextEstimate, String> {
-    agent::chat_context_estimate(
-        &core,
-        dialog_id,
-        base_url,
-        model,
-        context_tokens,
-        reasoning_effort,
-        vision,
-        pdf,
-        no_tools,
-        root,
-        mode,
-        extra_chars,
-    )
-    .await
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(
+            AgentRequest::Estimate {
+                args: Box::new(EstimateArgs {
+                    dialog_id,
+                    base_url,
+                    model,
+                    context_tokens,
+                    reasoning_effort,
+                    vision,
+                    pdf,
+                    no_tools,
+                    root,
+                    mode,
+                    extra_chars,
+                }),
+            }
+            .into(),
+        )
+        .await
 }
 
 /// "Test & refresh models" on a connector (Settings → Connectors): whether
@@ -336,8 +346,11 @@ pub async fn connector_commands(
 /// `GET {base_url}/models` on an OpenAI-compatible server.
 #[tauri::command]
 pub async fn list_models(
+    backend: State<'_, DesktopConnection>,
     base_url: String,
     api_key: Option<String>,
-) -> Result<Vec<RemoteModel>, String> {
-    agent::list_models(base_url, api_key).await
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(AgentRequest::ListModels { base_url, api_key }.into())
+        .await
 }

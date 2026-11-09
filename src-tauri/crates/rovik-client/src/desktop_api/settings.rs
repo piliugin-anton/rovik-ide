@@ -11,6 +11,18 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum SettingsRequest {
+    /// Reads a shared UI state map.
+    ReadShared { name: String },
+    /// Initializes a shared UI state map only if no window has saved it.
+    StartShared {
+        name: String,
+        entries: crate::shared_state::Entries,
+    },
+    /// Changes only the entries supplied by this client.
+    MergeShared {
+        name: String,
+        patch: crate::shared_state::Entries,
+    },
     /// Load AI settings and provider credentials.
     LoadAi,
     /// The AI settings modification stamp.
@@ -29,7 +41,17 @@ pub enum SettingsRequest {
 
 impl SettingsRequest {
     pub(super) async fn dispatch(self, backend: &DesktopBackend) -> DesktopResult {
+        let shared = backend.core.db.data_dir().join("shared");
         match self {
+            Self::ReadShared { name } => {
+                encode_result(blocking(move || crate::shared_state::read(&shared, &name)).await)
+            }
+            Self::StartShared { name, entries } => encode_result(
+                blocking(move || crate::shared_state::start(&shared, &name, entries)).await,
+            ),
+            Self::MergeShared { name, patch } => encode_result(
+                blocking(move || crate::shared_state::merge(&shared, &name, patch)).await,
+            ),
             Self::LoadAi => {
                 let keys = backend.keys.clone();
                 encode_result(blocking(move || keys.load()).await)

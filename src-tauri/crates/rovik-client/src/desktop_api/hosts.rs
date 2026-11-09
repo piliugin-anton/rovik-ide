@@ -17,6 +17,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum HostsRequest {
+    /// Reads this computer's WSL setup status.
+    WslStatus,
+    /// Configures this computer's backend in a WSL distribution.
+    WslSetup {
+        distro: String,
+        user: Option<String>,
+    },
+    /// Requests the operating system's WSL installer.
+    WslInstall { distro: Option<String> },
+    /// Updates the WSL backend to the current version.
+    WslUpdate,
+    /// Removes Rovik from its WSL distribution.
+    WslRemove,
+    /// Tests a host with progress scoped to this client.
+    Test { id: String, sink: String },
     /// hosts_list on the backend.
     List,
     /// hosts_summaries on the backend.
@@ -82,8 +97,39 @@ pub enum HostsRequest {
 }
 
 impl HostsRequest {
-    pub(super) async fn dispatch(self, backend: &DesktopBackend) -> super::DesktopResult {
+    pub(super) async fn dispatch(
+        self,
+        backend: &DesktopBackend,
+        session: Option<&Arc<crate::desktop_session::Session>>,
+    ) -> super::DesktopResult {
         match self {
+            Self::WslStatus => super::encode_result(backend.hosts.wsl_status().await),
+            Self::WslSetup { distro, user } => {
+                super::encode_result(backend.hosts.wsl_setup(distro, user).await)
+            }
+            Self::WslInstall { distro } => {
+                super::encode_result(crate::wsl::install(distro.as_deref()).await)
+            }
+            Self::WslUpdate => super::encode_result(backend.hosts.wsl_update().await),
+            Self::WslRemove => super::encode_result(backend.hosts.wsl_remove().await),
+            Self::Test { id, sink } => {
+                let owner = session.ok_or_else(|| {
+                    serde_json::Value::String(
+                        "A client session is required for host test progress".into(),
+                    )
+                })?;
+                let page = backend.hosts.clone();
+                super::encode_result(crate::desktop_task::start(
+                    owner,
+                    sink,
+                    move |output| async move {
+                        let report = |step: &crate::connection_test::Step| {
+                            output.emit(serde_json::json!({ "hostId": id, "step": step }));
+                        };
+                        super::encode_result(page.test(&id, &report).await)
+                    },
+                ))
+            }
             Self::List => super::encode_result(hosts_list(backend).await),
             Self::Summaries => super::encode_result(hosts_summaries(backend).await),
             Self::Save { host, secrets } => {

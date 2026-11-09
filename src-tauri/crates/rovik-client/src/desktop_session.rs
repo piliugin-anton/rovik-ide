@@ -49,6 +49,7 @@ struct Resource {
 /// A client's registered resources and event queue, owned by its RPC lease.
 pub struct Session {
     id: String,
+    pub(crate) chat_requests: Arc<rovik_core::chat_request::ChatRequests>,
     pub(crate) filesystem: Arc<crate::filesystem::WatcherState>,
     closed: AtomicBool,
     failure: watch::Sender<Option<String>>,
@@ -66,6 +67,7 @@ impl Session {
         Self {
             id,
             filesystem: Default::default(),
+            chat_requests: Default::default(),
             closed: AtomicBool::new(false),
             failure,
             queued_bytes: Mutex::new(0),

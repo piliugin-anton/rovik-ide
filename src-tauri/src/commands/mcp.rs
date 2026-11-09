@@ -10,15 +10,9 @@
 
 use rovik_client::desktop_api::{mcp::McpRequest, DesktopRequest};
 use rovik_client::desktop_connection::DesktopConnection;
-use rovik_client::mcp_sign_in::{KeychainGrants, KeychainRegistrations};
-use rovik_client::secrets::SecretStore;
-use rovik_client::Remote;
-use rovik_core::mcp::oauth::GrantStore;
 use rovik_core::mcp::McpServer;
-use rovik_core::Core;
 use rovik_protocol::Secret;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tauri::State;
 
 /// Where the secret values go: the keychain, or the encrypted file in its
@@ -126,107 +120,59 @@ pub async fn mcp_project_prefill(
         .await
 }
 
-/// The values typed on the page that were given, by key.
-fn typed(values: HashMap<String, Secret>) -> HashMap<String, String> {
-    (values.into_iter())
-        .filter(|(_, value)| !value.0.is_empty())
-        .map(|(key, value)| (key, value.0.clone()))
-        .collect()
-}
-
-/// Signs in to URL server `server` in the browser (mcp-plan-2.md, Q14),
-/// its values as typed on the page over the saved ones: for this computer,
-/// or for `host`, whose daemon keeps the grant and refreshes it from then
-/// on, asking for the scopes the server asked that place for too. Each
-/// place has a sign-in of its own: refresh tokens rotate, and two places
-/// sharing one would sign each other out.
+/// Signs in through the requesting window's browser while the backend owns OAuth and credentials.
 #[tauri::command]
 pub async fn mcp_sign_in(
-    secrets: State<'_, Arc<SecretStore>>,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     server: McpServer,
     values: HashMap<String, Secret>,
     host: Option<String>,
-) -> Result<(), String> {
-    let wants = wanted(&secrets, &remote, &server.id, host.as_deref()).await?;
-    let registrations = Arc::new(KeychainRegistrations(Arc::clone(&secrets)));
-    let grant = core
-        .mcp
-        .sign_in(
-            &server,
-            &typed(values),
-            wants.as_deref(),
-            registrations,
-            &crate::open_url::open,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_task(
+            |sink| {
+                McpRequest::SignIn {
+                    server,
+                    values,
+                    host,
+                    sink,
+                }
+                .into()
+            },
+            open_sign_in,
         )
-        .await?;
-    if let Some(host) = host {
-        return remote
-            .mcp_sign_in(&host, &server.id, Some(grant))
-            .await
-            .map_err(|e| e.message);
-    }
-    let (grants, id) = (KeychainGrants(Arc::clone(&secrets)), server.id.clone());
-    rovik_core::rt::spawn_blocking(move || grants.put(&id, &grant))
         .await
-        .map_err(|e| e.to_string())??;
-    core.mcp.forget(&server.id);
-    Ok(())
 }
 
-/// The scopes the server `server` (its id) asked for at `host`, or here,
-/// that its sign-in there lacks: what a new sign-in there asks for too. A
-/// sign-in here that can't be read wants none: the new one replaces it.
-async fn wanted(
-    secrets: &Arc<SecretStore>,
-    remote: &Remote,
-    server: &str,
-    host: Option<&str>,
-) -> Result<Option<String>, String> {
-    if let Some(host) = host {
-        let signed = remote.mcp_signed_in(host).await.map_err(|e| e.message)?;
-        let there = signed.into_iter().find(|s| s.server == server);
-        return Ok(there.and_then(|s| s.wants));
-    }
-    let (grants, id) = (KeychainGrants(Arc::clone(secrets)), server.to_string());
-    let kept = rovik_core::rt::spawn_blocking(move || grants.get(&id))
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(kept.ok().flatten().and_then(|grant| grant.wants))
-}
-
-/// Signs in to the project's own URL server `hash` (Q12, Q14), as the
-/// files at `root` set it up and the values saved for `project`'s
-/// variables fill it: for this computer, or for `host`, as `mcp_sign_in`
-/// does for the user's. Kept under the server's id there.
+/// Resolves a project server and signs in through the requesting window.
 #[tauri::command]
 pub async fn mcp_project_sign_in(
-    secrets: State<'_, Arc<SecretStore>>,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
     project: String,
     hash: String,
     host: Option<String>,
-) -> Result<(), String> {
-    use rovik_core::mcp::project as files;
-    let folder = std::path::PathBuf::from(&root);
-    let read_from = folder.clone();
-    let found = rovik_core::rt::spawn_blocking(move || files::read(&read_from, &[]))
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_task(
+            |sink| {
+                McpRequest::ProjectSignIn {
+                    root,
+                    project,
+                    hash,
+                    host,
+                    sink,
+                }
+                .into()
+            },
+            open_sign_in,
+        )
         .await
-        .map_err(|e| e.to_string())?;
-    let server = (found.servers.into_iter())
-        .find(|s| s.hash == hash)
-        .ok_or("The project's files no longer set up this server as it was allowed.")?;
-    let names = server.variables.iter().map(|v| v.name.clone()).collect();
-    let values = core.mcp.project_values(&project, &names).await;
-    let (server, given) =
-        files::resolved(&server, &project, &folder, |name| values.get(name).cloned()).ok_or(
-            "A variable of the server has no value: allow it again from its chat, giving one.",
-        )?;
-    let given: HashMap<String, Secret> = given.into_iter().map(|(k, v)| (k, Secret(v))).collect();
-    mcp_sign_in(secrets, core, remote, server, given, host).await
+}
+
+fn open_sign_in(value: serde_json::Value) -> Result<(), String> {
+    let url = value.as_str().ok_or("Invalid sign-in browser request")?;
+    crate::open_url::open(url)
 }
 
 /// Signs MCP server `server` (its id) out of every place (Q14): this

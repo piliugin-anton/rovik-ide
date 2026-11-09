@@ -23,7 +23,11 @@ pub enum TerminalRequest {
         sink: String,
     },
     /// Writes input to a terminal owned by this client.
-    Write { id: String, data: String },
+    Write {
+        id: String,
+        data: String,
+        sink: String,
+    },
     /// Resizes a terminal owned by this client.
     Resize { id: String, cols: u16, rows: u16 },
     /// Closes one terminal; an already closed terminal is a no-op.
@@ -78,9 +82,13 @@ impl TerminalRequest {
                 }
                 encode(result?)
             }
-            Self::Write { id, data } => {
+            Self::Write { id, data, sink } => {
                 require_owner(owner, &id)?;
-                encode(terminal::write_to_terminal(&backend.terminals, id, data).await?)
+                let terminals = backend.terminals.clone();
+                crate::desktop_task::start(owner, sink, move |_| async move {
+                    super::encode_result(terminal::write_to_terminal(&terminals, id, data).await)
+                })?;
+                encode(())
             }
             Self::Resize { id, cols, rows } => {
                 require_owner(owner, &id)?;

@@ -83,6 +83,50 @@ impl DesktopConnection {
         result
     }
 
+    /// Waits for a finite operation's result after delivering all its progress.
+    /// The startup RPC completes immediately, leaving controls such as Stop usable.
+    pub async fn desktop_task(
+        &self,
+        request: impl FnOnce(String) -> crate::desktop_api::DesktopRequest,
+        callback: impl Fn(serde_json::Value) -> Result<(), String> + Send + Sync + 'static,
+    ) -> crate::desktop_api::DesktopResult {
+        use crate::desktop_task::TaskEvent;
+        use serde_json::Value;
+        let (done, result) = tokio::sync::oneshot::channel();
+        let done = std::sync::Mutex::new(Some(done));
+        self.desktop_stream(request, move |value| {
+            let (complete, accepted) = match serde_json::from_value::<TaskEvent>(value) {
+                Ok(TaskEvent::Event(event)) => match callback(event) {
+                    Ok(()) => return true,
+                    Err(error) => (Err(Value::String(error)), false),
+                },
+                Ok(TaskEvent::Complete(result)) => (result, true),
+                Err(error) => (
+                    Err(Value::String(format!(
+                        "Invalid desktop task event: {error}"
+                    ))),
+                    false,
+                ),
+            };
+            if let Some(done) = done
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = done.send(complete);
+            }
+            accepted
+        })
+        .await?;
+        result.await.map_err(|_| {
+            Value::String(
+                self.events.failure().unwrap_or_else(|| {
+                    "Desktop task callback ended before its result arrived".into()
+                }),
+            )
+        })?
+    }
+
     /// Runs a desktop operation and preserves its existing UI reply shape.
     pub async fn desktop(
         &self,

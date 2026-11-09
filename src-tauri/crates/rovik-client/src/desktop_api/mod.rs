@@ -5,6 +5,7 @@
 use crate::desktop_backend::DesktopBackend;
 use serde::{Deserialize, Serialize};
 
+pub mod agent;
 pub mod chat;
 pub mod clm;
 pub mod filesystem;
@@ -24,6 +25,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Client-scoped model requests and estimates.
+    Agent(Box<agent::AgentRequest>),
     /// Client-scoped file operations and watches.
     Filesystem(Box<filesystem::FilesystemRequest>),
     /// Backend-owned clm operations.
@@ -63,6 +66,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Agent(request) => request.dispatch(backend, session).await,
                 Self::Filesystem(request) => request
                     .dispatch(backend, session)
                     .await
@@ -74,8 +78,8 @@ impl DesktopRequest {
                 Self::Clm(request) => request.dispatch(backend).await,
                 Self::Chat(request) => request.dispatch(backend).await,
                 Self::Settings(request) => request.dispatch(backend).await,
-                Self::Mcp(request) => request.dispatch(backend).await,
-                Self::Hosts(request) => request.dispatch(backend).await,
+                Self::Mcp(request) => request.dispatch(backend, session).await,
+                Self::Hosts(request) => request.dispatch(backend, session).await,
                 Self::Overlay(request) => request
                     .dispatch(backend)
                     .await

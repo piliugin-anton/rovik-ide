@@ -60,9 +60,12 @@ pub async fn write_to_terminal(
     backend: State<'_, DesktopConnection>,
     id: String,
     data: String,
-) -> Result<Value, String> {
+) -> Result<Value, Value> {
     backend
-        .desktop(TerminalRequest::Write { id, data }.into())
+        .desktop_task(
+            |sink| TerminalRequest::Write { id, data, sink }.into(),
+            |_| Ok(()),
+        )
         .await
 }
 

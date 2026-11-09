@@ -5,7 +5,7 @@ use crate::instances::Instances;
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
-use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
+use rovik_core::{chat_db, process, rt, Core, EventSink, Paths};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -43,7 +43,6 @@ pub fn run() {
         .plugin(updates::plugin())
         .manage(updates::Updates::default())
         .manage(lsp::servers())
-        .manage(chat_request::ChatRequests::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;

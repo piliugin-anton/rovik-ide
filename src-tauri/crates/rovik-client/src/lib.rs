@@ -70,3 +70,7 @@ pub mod terminal;
 pub mod util;
 
 pub mod filesystem;
+
+mod desktop_task;
+
+pub mod shared_state;

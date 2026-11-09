@@ -1,7 +1,9 @@
 //! Backend-owned mcp operations.
 
-use crate::mcp_sign_in::KeychainGrants;
+use crate::mcp_sign_in::{KeychainGrants, KeychainRegistrations};
+use crate::secrets::SecretStore;
 use crate::secrets::{SecretName, StoreKind};
+use crate::Remote;
 use rovik_core::mcp::oauth::GrantStore;
 use rovik_core::mcp::{McpServer, Tested};
 use rovik_protocol::mcp::{is_secret_key, SignedInServer};
@@ -17,6 +19,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum McpRequest {
+    /// Signs in using a browser callback delivered only to this client.
+    SignIn {
+        server: McpServer,
+        values: HashMap<String, Secret>,
+        host: Option<String>,
+        sink: String,
+    },
+    /// Resolves a project server and signs in through this client's browser.
+    ProjectSignIn {
+        root: String,
+        project: String,
+        hash: String,
+        host: Option<String>,
+        sink: String,
+    },
     /// mcp_store on the backend.
     Store,
     /// mcp_save_secrets on the backend.
@@ -50,8 +67,53 @@ pub enum McpRequest {
 }
 
 impl McpRequest {
-    pub(super) async fn dispatch(self, backend: &DesktopBackend) -> super::DesktopResult {
+    pub(super) async fn dispatch(
+        self,
+        backend: &DesktopBackend,
+        session: Option<&Arc<crate::desktop_session::Session>>,
+    ) -> super::DesktopResult {
         match self {
+            Self::SignIn {
+                server,
+                values,
+                host,
+                sink,
+            } => {
+                let owner = session.ok_or_else(|| {
+                    serde_json::Value::String("A client session is required for sign-in".into())
+                })?;
+                let context = SignIn::new(backend);
+                super::encode_result(crate::desktop_task::start(
+                    owner,
+                    sink,
+                    move |output| async move {
+                        super::encode_result(
+                            mcp_sign_in(&context, server, values, host, &output).await,
+                        )
+                    },
+                ))
+            }
+            Self::ProjectSignIn {
+                root,
+                project,
+                hash,
+                host,
+                sink,
+            } => {
+                let owner = session.ok_or_else(|| {
+                    serde_json::Value::String("A client session is required for sign-in".into())
+                })?;
+                let context = SignIn::new(backend);
+                super::encode_result(crate::desktop_task::start(
+                    owner,
+                    sink,
+                    move |output| async move {
+                        super::encode_result(
+                            mcp_project_sign_in(&context, root, project, hash, host, &output).await,
+                        )
+                    },
+                ))
+            }
             Self::Store => super::encode_result(mcp_store(backend).await),
             Self::SaveSecrets { server, values } => {
                 super::encode_result(mcp_save_secrets(backend, server, values).await)
@@ -270,4 +332,129 @@ async fn mcp_signed_in(
         here,
         hosts: on_hosts,
     })
+}
+
+struct SignIn {
+    core: rovik_core::Core,
+    secrets: Arc<SecretStore>,
+    remote: Arc<crate::Remote>,
+}
+
+impl SignIn {
+    fn new(backend: &DesktopBackend) -> Self {
+        Self {
+            core: backend.core.clone(),
+            secrets: backend.secrets.clone(),
+            remote: backend.remote.clone(),
+        }
+    }
+}
+
+/// The values typed on the page that were given, by key.
+fn typed(values: HashMap<String, Secret>) -> HashMap<String, String> {
+    (values.into_iter())
+        .filter(|(_, value)| !value.0.is_empty())
+        .map(|(key, value)| (key, value.0.clone()))
+        .collect()
+}
+
+/// Signs in to URL server `server` in the browser (mcp-plan-2.md, Q14),
+/// its values as typed on the page over the saved ones: for this computer,
+/// or for `host`, whose daemon keeps the grant and refreshes it from then
+/// on, asking for the scopes the server asked that place for too. Each
+/// place has a sign-in of its own: refresh tokens rotate, and two places
+/// sharing one would sign each other out.
+async fn mcp_sign_in(
+    context: &SignIn,
+    server: McpServer,
+    values: HashMap<String, Secret>,
+    host: Option<String>,
+    output: &crate::desktop_task::TaskOutput,
+) -> Result<(), String> {
+    let secrets = &context.secrets;
+    let core = &context.core;
+    let remote = &context.remote;
+    let wants = wanted(secrets, remote, &server.id, host.as_deref()).await?;
+    let registrations = Arc::new(KeychainRegistrations(Arc::clone(secrets)));
+    let grant = core
+        .mcp
+        .sign_in(
+            &server,
+            &typed(values),
+            wants.as_deref(),
+            registrations,
+            &|url| {
+                if output.emit(url) {
+                    Ok(())
+                } else {
+                    Err("Sign-in window disconnected".into())
+                }
+            },
+        )
+        .await?;
+    if let Some(host) = host {
+        return remote
+            .mcp_sign_in(&host, &server.id, Some(grant))
+            .await
+            .map_err(|e| e.message);
+    }
+    let (grants, id) = (KeychainGrants(Arc::clone(secrets)), server.id.clone());
+    rovik_core::rt::spawn_blocking(move || grants.put(&id, &grant))
+        .await
+        .map_err(|e| e.to_string())??;
+    core.mcp.forget(&server.id);
+    Ok(())
+}
+
+/// The scopes the server `server` (its id) asked for at `host`, or here,
+/// that its sign-in there lacks: what a new sign-in there asks for too. A
+/// sign-in here that can't be read wants none: the new one replaces it.
+async fn wanted(
+    secrets: &Arc<SecretStore>,
+    remote: &Remote,
+    server: &str,
+    host: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(host) = host {
+        let signed = remote.mcp_signed_in(host).await.map_err(|e| e.message)?;
+        let there = signed.into_iter().find(|s| s.server == server);
+        return Ok(there.and_then(|s| s.wants));
+    }
+    let (grants, id) = (KeychainGrants(Arc::clone(secrets)), server.to_string());
+    let kept = rovik_core::rt::spawn_blocking(move || grants.get(&id))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(kept.ok().flatten().and_then(|grant| grant.wants))
+}
+
+/// Signs in to the project's own URL server `hash` (Q12, Q14), as the
+/// files at `root` set it up and the values saved for `project`'s
+/// variables fill it: for this computer, or for `host`, as `mcp_sign_in`
+/// does for the user's. Kept under the server's id there.
+async fn mcp_project_sign_in(
+    context: &SignIn,
+    root: String,
+    project: String,
+    hash: String,
+    host: Option<String>,
+    output: &crate::desktop_task::TaskOutput,
+) -> Result<(), String> {
+    let core = &context.core;
+    use rovik_core::mcp::project as files;
+    let folder = std::path::PathBuf::from(&root);
+    let read_from = folder.clone();
+    let found = rovik_core::rt::spawn_blocking(move || files::read(&read_from, &[]))
+        .await
+        .map_err(|e| e.to_string())?;
+    let server = (found.servers.into_iter())
+        .find(|s| s.hash == hash)
+        .ok_or("The project's files no longer set up this server as it was allowed.")?;
+    let names = server.variables.iter().map(|v| v.name.clone()).collect();
+    let values = core.mcp.project_values(&project, &names).await;
+    let (server, given) =
+        files::resolved(&server, &project, &folder, |name| values.get(name).cloned()).ok_or(
+            "A variable of the server has no value: allow it again from its chat, giving one.",
+        )?;
+    let given: HashMap<String, Secret> = given.into_iter().map(|(k, v)| (k, Secret(v))).collect();
+    mcp_sign_in(context, server, given, host, output).await
 }

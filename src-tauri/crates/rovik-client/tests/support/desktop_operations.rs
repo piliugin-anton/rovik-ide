@@ -173,12 +173,14 @@ pub async fn check_terminal_contract(owner: &DesktopConnection, other: &DesktopC
         .unwrap();
     let id = terminal["id"].as_str().unwrap().to_string();
     assert!(other
-        .desktop(
-            TerminalRequest::Write {
+        .desktop_task(
+            |sink| TerminalRequest::Write {
                 id: id.clone(),
-                data: "must not run".into()
+                data: "must not run".into(),
+                sink,
             }
-            .into()
+            .into(),
+            |_| Ok(())
         )
         .await
         .is_err());
@@ -211,12 +213,16 @@ pub async fn check_terminal_contract(owner: &DesktopConnection, other: &DesktopC
         .unwrap();
     // The marker never appears verbatim in echoed input: only execution can produce it.
     owner
-        .desktop(
-            TerminalRequest::Write {
-                id: id.clone(),
-                data: "printf 'rpc-%s\\n' terminal-ok\nexit 7\n".into(),
-            }
-            .into(),
+        .desktop_task(
+            |sink| {
+                TerminalRequest::Write {
+                    id: id.clone(),
+                    data: "printf 'rpc-%s\\n' terminal-ok\nexit 7\n".into(),
+                    sink,
+                }
+                .into()
+            },
+            |_| Ok(()),
         )
         .await
         .unwrap();
@@ -239,12 +245,14 @@ pub async fn check_terminal_contract(owner: &DesktopConnection, other: &DesktopC
     assert!(text.contains("rpc-terminal-ok"), "{text}");
     assert_eq!(code, Some(7));
     assert!(owner
-        .desktop(
-            TerminalRequest::Write {
+        .desktop_task(
+            |sink| TerminalRequest::Write {
                 id: id.clone(),
-                data: "late".into()
+                data: "late".into(),
+                sink,
             }
-            .into()
+            .into(),
+            |_| Ok(())
         )
         .await
         .is_err());
