@@ -1,5 +1,5 @@
-//! The local desktop backend host. The initial endpoint advertises
-//! readiness only; execution RPC is enabled by the command-routing phase.
+//! The local desktop backend host, serving authenticated typed RPC.
+//! Window attachment and event subscription are separate migration steps.
 
 #[cfg(unix)]
 fn main() {
@@ -53,30 +53,63 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         // Another launcher won. It alone initializes the database and mounts.
         return Ok(());
     };
-    let backend = DesktopBackend::open(
-        Paths::new(data, config),
-        Arc::new(Events),
-        Arc::new(|_| {}),
-        env!("CARGO_PKG_VERSION"),
-    )
-    .await
-    .map_err(std::io::Error::other)?;
+    let backend = Arc::new(
+        DesktopBackend::open(
+            Paths::new(data, config),
+            Arc::new(Events),
+            Arc::new(|_| {}),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await
+        .map_err(std::io::Error::other)?,
+    );
     let result = async {
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut clients = tokio::task::JoinSet::new();
+        let mut refresh = tokio::task::JoinSet::new();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             tokio::select! {
-                result = listener.accept() => {
+                result = listener.accept_pending(), if clients.len() < 64 => {
                     match result {
-                        Ok(stream) => drop(stream),
+                        Ok(pending) => {
+                            let backend = backend.clone();
+                            clients.spawn(async move {
+                                let result = async {
+                                    let stream = pending.finish().await?;
+                                    local_backend::rpc::serve(stream, backend).await
+                                }.await;
+                                if let Err(error) = result {
+                                    eprintln!("Local backend RPC: {error}");
+                                }
+                            });
+                        },
                         Err(error) => eprintln!("Local backend connection: {error}"),
+                    }
+                },
+                result = clients.join_next(), if !clients.is_empty() => {
+                    if let Some(Err(error)) = result {
+                        eprintln!("Local backend client task: {error}");
+                    }
+                },
+                _ = tick.tick(), if refresh.is_empty() => {
+                    let hosts = backend.hosts.clone();
+                    refresh.spawn_blocking(move || hosts.follow());
+                },
+                result = refresh.join_next(), if !refresh.is_empty() => {
+                    if let Some(Err(error)) = result {
+                        eprintln!("Local backend host refresh: {error}");
                     }
                 },
                 _ = terminate.recv() => break,
                 result = tokio::signal::ctrl_c() => { result?; break; },
             }
         }
+        while refresh.join_next().await.is_some() {}
+        clients.abort_all();
+        while clients.join_next().await.is_some() {}
         Ok::<_, std::io::Error>(())
     }
     .await;

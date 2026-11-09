@@ -4,6 +4,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 /// Exclusive ownership of a backend directory. Held for the daemon's
@@ -91,25 +92,58 @@ pub struct Listener<'a> {
 impl Listener<'_> {
     /// Accepts a same-user client and sends its bounded readiness handshake.
     pub async fn accept(&self) -> io::Result<UnixStream> {
-        let (mut stream, _) = self.socket.accept().await?;
+        self.accept_pending().await?.finish().await
+    }
+
+    /// Accepts and checks peer ownership without waiting for handshake IO.
+    /// Safe to use in a select loop: handshake work belongs to its client task.
+    pub async fn accept_pending(&self) -> io::Result<Pending> {
+        let (stream, _) = self.socket.accept().await?;
         if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Backend client belongs to another user",
             ));
         }
-        let ready = Ready {
-            protocol: PROTOCOL,
-            boot: self.boot.clone(),
-            version: self.version.clone(),
-            session: uuid::Uuid::new_v4().to_string(),
-        };
-        tokio::time::timeout(Duration::from_secs(5), write_ready(&mut stream, &ready))
-            .await
-            .map_err(|_| {
-                io::Error::new(io::ErrorKind::TimedOut, "Backend handshake timed out")
-            })??;
-        Ok(stream)
+        Ok(Pending {
+            stream,
+            ready: Ready {
+                protocol: PROTOCOL,
+                boot: self.boot.clone(),
+                version: self.version.clone(),
+                session: uuid::Uuid::new_v4().to_string(),
+            },
+        })
+    }
+}
+
+/// A same-user connection awaiting protocol acknowledgement.
+pub struct Pending {
+    stream: UnixStream,
+    ready: Ready,
+}
+
+impl Pending {
+    /// Completes a bounded handshake before any operation can be dispatched.
+    pub async fn finish(mut self) -> io::Result<UnixStream> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            write_ready(&mut self.stream, &self.ready).await?;
+            let protocol = self.stream.read_u32().await?;
+            if protocol != PROTOCOL {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Incompatible local client protocol",
+                ));
+            }
+            Ok(self.stream)
+        })
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Backend client did not complete its handshake",
+            )
+        })?
     }
 }
 
@@ -135,6 +169,7 @@ pub async fn connect(directory: &Path) -> io::Result<(UnixStream, Ready)> {
             ));
         }
         let ready = read_ready(&mut stream).await?;
+        stream.write_u32(PROTOCOL).await?;
         Ok((stream, ready))
     })
     .await

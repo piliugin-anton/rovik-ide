@@ -1653,9 +1653,17 @@ The `rovik-desktopd` binary now provides Unix singleton ownership and a private
 readiness socket. `local_backend::ensure_backend` connects first or starts that
 binary, then waits for initialization. The handshake identifies the protocol,
 backend boot, and client session; the daemon retains ownership through shutdown.
-The endpoint currently advertises readiness only. Windows named pipes,
-execution requests, event subscriptions, and automatic desktop attachment are
-not enabled yet. Build the bootstrap host with
+The Unix endpoint also serves bounded typed request/reply calls through
+`local_backend::rpc::Client`. Requests route by their chat or message identity;
+run start, steering, deletion, and configuration use the existing remote-routing
+operations. Status includes connected hosts, and `call_host` explicitly targets
+a host for operations such as connector setup. Protocol 2 requires client
+acknowledgement before accepting operations; a stalled handshake cannot block
+other clients. A lost or cancelled reply invalidates the client connection, and
+mutations are never retried automatically. Windows named pipes, event
+subscriptions, and automatic desktop attachment are not enabled yet. Native
+Tauri commands outside `rovik-protocol::Request` still need protocol adapters
+before their window-side services can be removed. Build the bootstrap host with
 `cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
 
 ### Chat isolation
