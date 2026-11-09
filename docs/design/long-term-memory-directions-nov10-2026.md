@@ -204,3 +204,33 @@ additions on already answered positive queries as well; the current fact/rank
 comparator alone does not measure that precision cost. Capture and paired agent
 usefulness still require separate evaluations. No heldout candidate scoring or
 production second model was introduced.
+
+## Joint query-document reranking completed
+
+The [cross-encoder study](long-term-memory-cross-encoder-nov10-2026.md) tests official
+pinned `cross-encoder/ms-marco-MiniLM-L6-v2` with true paired tokenization and raw
+classification logits. Native inference reproduces both published reference scores
+within 0.000004. All 11 missed primaries are in label-independent eligible pools;
+no pool truncates. Candidate availability therefore does not explain this result.
+
+The initial 45 policies leave every case unchanged. After observing low coding
+logits, two registered adaptive trials test 84 lower-cutoff title/body policies
+and 84 body-only policies. Neither produces a safe gain. Correct cancellation
+and reservoir winners appear at lower cutoffs, but every gaining policy changes
+negative packets: at least 11 for title/body and six for body-only. An unrelated
+isolation fact for TLS renewal dominates the correct winners on both logit and
+margin while fitting in full. Further monotone cutoffs on these features cannot
+separate those examples.
+
+The new native pair scorer and bounded pool export remain evaluation-only, with
+no production model/dependency/release change. Empty-result admission preserves
+already answered positive queries; a further audit catches unrequired additions
+to other missed positives. These checks complement the unchanged fact/rank and
+negative-packet comparator. No candidate heldout or historical replay is justified
+after development rejection.
+
+The next model trial should change the relevance training/domain, such as a
+coding- or instruction-oriented reranker, instead of repeating thresholds or
+title projections on this MS MARCO model. Keep the same pools, frozen queries,
+strong negative examples and conservative positive-extra audit. Actual captured
+problem/remedy accuracy and paired agent usefulness still need separate evidence.

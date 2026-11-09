@@ -1,0 +1,48 @@
+{
+  "baseline": "960612e035a41585080f351608ff6f273c325e88",
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-retrieval-encoder-cases.json": "143c57de93c6b67863f92ad222851a91503dd010ace39121ad8bab9191bdfe93"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "model": {
+    "id": "cross-encoder/ms-marco-MiniLM-L6-v2",
+    "revision": "233902d25c440f23af6f7d6e94d2946bac0bee0a",
+    "model_sha256": "5d3e70fd0c9ff14b9b5169a51e957b7a9c74897afd0a35ce4bd318150c1d4d4a",
+    "tokenizer_sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+    "model_bytes": 91011230,
+    "preprocessing": "BERT paired query/document encoding, max 512 tokens, longest-first truncation, single example without padding; raw classification logit, no sigmoid or pooling.",
+    "provenance": "Official upstream float32 ONNX, pinned commit and LFS hash."
+  },
+  "scope": "Evaluation only; adaptive development calibration after observing initial title/body logits. No heldout or production change.",
+  "pool": "First 32 eligible distinct primary-index records in actual MiniLM cosine/UUID order. No gold insertion or query-specific aliases. Export full stored title/newline/content as each document. All records, including negative placeholders, retain existing fixture semantics.",
+  "admission": "Only queries with zero MiniLM returned records and no query files. Rank eligible pool by pairwise cross-encoder logit, UUID tie break. Require a runner-up. Gate top winner by raw logit and top-minus-second logit margin; append at most one source record in unused slots with native packet guard. Do not promote another candidate if the winner is already present or fails.",
+  "logit_grid": [-11.5, -11.25, -11, -10.75, -10.5, -10, -9.5, -9, -8, -6, -4, -2],
+  "margin_grid": [0, 0.05, 0.1, 0.2, 0.5, 1, 2],
+  "policy": {
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_claim_age_hours": 36,
+    "minilm_threshold": 0.3,
+    "minilm_short_query_scale": 0.9166666666666666,
+    "diagnostic_pool_limit": 32
+  },
+  "selection": "Original/fresh/new development only. Evaluate all 45 policies using actual native packet previews and unchanged per-record comparator. Pick maximum safe complete-answer gains, ties higher logit then higher margin. Any potential improvement must pass historical development then heldout before production consideration. No changed negative packet identities, prior delivered fact/rank loss, scope/trust/filter/fallback/budget failure. No change to a previously answered positive (empty-baseline admission enforces this). Additional conservative scoring audit rejects additions on positive queries when the ID is not a required fact. This is an acceptance audit only, never an admission feature.",
+  "compatibility": "First compare both official README Berlin query/document logits [8.607138,-4.320078] within 0.01; no fixture scoring if that fails.",
+  "fallback": "If no safe gain, reject family and retain results. No heldout scoring after development rejection.",
+  "registered_after": "All initial nonnegative-logit policies leave all cases unchanged. Coding-task expected snippets score near -11, although both published Berlin reference scores match. Calibrate low raw-logit cutoffs, then separately remove title prefixes from scored passages without editing stored claims or queries.",
+  "registered_before_new_view_scores": true,
+  "phases": [
+    {
+      "name": "title-body-low-logit",
+      "uses_existing_scores": true
+    },
+    {
+      "name": "body-only-low-logit",
+      "uses_existing_scores": false,
+      "document": "Stored content only; retain the exact stored title/content/hash in the delivered memory."
+    }
+  ]
+}

@@ -29,6 +29,18 @@ native append packet previews. Previews retain incumbent positions and full
 claims, and reject duplicate, result-limit or packet-budget failures. They do
 not modify retrieval results or enable a second application model.
 
+The [cross-encoder study](../../docs/design/long-term-memory-cross-encoder-nov10-2026.md)
+tests a joint query/document relevance model and records its rejected policies.
+Native evaluation accepts `diagnostic_pool_limit` (1–128, requires diagnostics)
+to export a broader filtered candidate pool without changing returned results.
+Pool rows include the stored title/body as `document` for model comparisons.
+The Rust `score_memory_pairs` example accepts `--model <directory> --pairs <file>`;
+the pairs file is a JSON array of `{ "id", "query", "document" }` objects with
+unique IDs. It emits JSONL `{ "id", "logit", "tokens" }` rows using paired BERT
+inputs and a single raw classification output. Models are provisioned externally;
+unit tests never download or load weights. The report supplies pinned artifacts,
+reference checks, score grids and reproduction commands.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

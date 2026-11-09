@@ -9,6 +9,21 @@ use verified_code_memory::{
 type Error = Box<dyn std::error::Error>;
 type Scored = Vec<(MemoryRecord, f32)>;
 
+/// Validates an optional research pool bound without changing retrieval limits.
+pub(super) fn pool_limit(config: &Value, enabled: bool) -> Result<Option<usize>, Error> {
+    let Some(value) = config.get("diagnostic_pool_limit") else {
+        return Ok(None);
+    };
+    if !enabled {
+        return Err("diagnostic_pool_limit requires diagnostics".into());
+    }
+    let limit = value
+        .as_u64()
+        .filter(|n| (1..=128).contains(n))
+        .ok_or("diagnostic_pool_limit must be an integer from 1 to 128")?;
+    Ok(Some(limit as usize))
+}
+
 fn similarity(a: &[f32], b: &[f32]) -> Result<f32, Error> {
     if a.len() != b.len() || a.is_empty() || a.iter().chain(b).any(|v| !v.is_finite()) {
         return Err("invalid diagnostic vector".into());
@@ -186,6 +201,7 @@ pub(super) fn collect(
     full: &[Uuid],
     accept: impl Fn(&MemoryRecord) -> bool,
 ) -> Result<Value, Error> {
+    let candidate_limit = pool_limit(config, true)?.unwrap_or(query.limit);
     let connection = rusqlite::Connection::open(uri)?;
     let text = format!("{}\n{}", query.task, query.failure.as_deref().unwrap_or(""));
     let words = text.split_whitespace().count();
@@ -230,8 +246,8 @@ pub(super) fn collect(
                 .collect();
             let candidate_pool: Vec<_> = eligible
                 .iter()
-                .take(query.limit)
-                .map(|(r, s)| json!({"id":r.id,"title":r.title,"claim_hash":r.claim_hash,"cosine":s,"append_preview":append_preview(store,query,found,full,r,config["memory_budget"].as_u64().unwrap_or(1000) as usize)}))
+                .take(candidate_limit)
+                .map(|(r, s)| json!({"id":r.id,"title":r.title,"document":format!("{}\n{}",r.title,r.content),"claim_hash":r.claim_hash,"cosine":s,"append_preview":append_preview(store,query,found,full,r,config["memory_budget"].as_u64().unwrap_or(1000) as usize)}))
                 .collect();
             let competitors: Vec<_> = eligible
                 .iter()
@@ -270,6 +286,26 @@ pub(super) fn collect(
 mod tests {
     use super::*;
     use verified_code_memory::{semantic::SemanticIndex, NewMemory};
+
+    #[test]
+    fn research_pool_bounds_require_diagnostics_and_a_small_positive_integer() {
+        assert_eq!(pool_limit(&json!({}), false).unwrap(), None);
+        assert_eq!(
+            pool_limit(&json!({"diagnostic_pool_limit":32}), true).unwrap(),
+            Some(32)
+        );
+        assert!(pool_limit(&json!({"diagnostic_pool_limit":32}), false).is_err());
+        for value in [
+            json!(0),
+            json!(129),
+            json!(-1),
+            json!(1.5),
+            json!("32"),
+            Value::Null,
+        ] {
+            assert!(pool_limit(&json!({"diagnostic_pool_limit":value}), true).is_err());
+        }
+    }
 
     struct Model;
     impl MemoryEmbedder for Model {
@@ -445,7 +481,41 @@ mod tests {
             assert_eq!(leader["id"], json!(record.id));
             assert_eq!(leader["claim_hash"], json!(record.claim_hash));
             assert_eq!(leader["cosine"], json!(score));
+            assert_eq!(
+                leader["document"],
+                format!("{}\n{}", record.title, record.content)
+            );
         }
+        let expanded = collect(
+            &uri,
+            &store,
+            &query,
+            &Model,
+            "test",
+            0.3,
+            &json!({"diagnostic_pool_limit":5}),
+            &[copies[0].id],
+            &[],
+            &[],
+            &[],
+            accept,
+        )
+        .unwrap();
+        assert_eq!(
+            expanded["views"][0]["candidate_pool"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(expanded["views"][0]["best_eligible"], *leaders);
+        assert_eq!(
+            index
+                .search_filtered(&query, &[1.0, 0.0], 0.3, accept)
+                .unwrap()
+                .len(),
+            4
+        );
         assert_eq!(store.list("p", "").unwrap(), before);
     }
 

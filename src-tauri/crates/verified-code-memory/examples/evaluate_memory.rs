@@ -486,6 +486,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => false,
         Some(value) => value.as_bool().ok_or("diagnostics must be a boolean")?,
     };
+    diagnostics::pool_limit(&config, diagnostics)?;
     if diagnostics
         && (config["deterministic"] != true
             || backend.is_none()
