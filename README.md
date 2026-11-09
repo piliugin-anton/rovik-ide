@@ -2087,6 +2087,26 @@ the name plan. One eligible claim can cover each known supplied path, including
 normalized duplicate hints. If the file additions cannot all fit, the name plan
 keeps its original results and ranks. See the
 [harder file-coverage cases](docs/design/long-term-memory-file-coverage-nov9-2026.md).
+Complete symbol lookup also supports a literal two-letter terminal component,
+such as `OnnxMiniLm`, when two distinct longer words anchor the name. The suffix
+must match too; generic words, middle short components and one-letter fragments
+keep their previous rejection. See the
+[short-suffix experiment](docs/design/long-term-memory-short-suffix-nov9-2026.md).
+
+Automatic recall also supplies its 2,000-token packet allowance. Within the same
+focused scope, optional whole-title matches can recover a named fact when a broad
+prose reference already satisfies its component words. These additions must fit
+as complete claims and preserve every previously complete protected name, file
+and context claim. Otherwise recall retains its existing plan. Callers that omit
+the packet allowance retain the earlier behavior. See the
+[title-coverage experiment and regression review](docs/design/long-term-memory-title-coverage-nov9-2026.md).
+
+Native evaluation reports each required record's ID, claim hash, rank and full
+delivery, distinguishing complete claims from fetch hints. Compare two saved
+native results with `node scripts/eval/memory-regressions.mjs baseline.json candidate.json`
+(append `2000` for application-budget profiles). The comparator rejects individual
+fact losses and negative packet changes; its mutation checks run in the existing
+`npm run test:eval` CI job.
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline

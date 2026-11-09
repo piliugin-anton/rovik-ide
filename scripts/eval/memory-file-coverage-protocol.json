@@ -26,5 +26,20 @@
     "selected_hypothesis": "Keep the original atomic name plan and slot assignment. Plan missing file coverage separately using only slots remaining after named additions. If file coverage is too large or fails, keep the exact name-only plan; no partial file additions.",
     "guard_timing": "The new capacity counterexample was added during development after the first trial and before the followup or any candidate reserved scoring."
   },
-  "execution_status": "Development and required Rust checks passed; reserved run stopped at explicit user request to commit and push. No further tests or final format check."
+  "execution_status": "Complete: all 2708 planned development and reserved policy views scored on the unchanged 55266e4 candidate, including 825 resumed views; no measured regressions.",
+  "execution_history": [
+    {
+      "state": "interrupted",
+      "completed_views": 1883,
+      "pending_views": 825,
+      "commit": "55266e4",
+      "reason": "Explicit user request to stop tests and commit."
+    },
+    {
+      "state": "complete",
+      "resumed_views": 825,
+      "completion_branch": "ltm-improvements-nov9-2026-2",
+      "source_unchanged": true
+    }
+  ]
 }

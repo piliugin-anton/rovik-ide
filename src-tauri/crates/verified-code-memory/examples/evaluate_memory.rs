@@ -147,6 +147,7 @@ fn fixture_query(
         );
     }
     query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+    query = query.with_packet_budget(config["memory_budget"].as_u64().unwrap_or(1000) as usize);
     if !case["verifications"].is_null() {
         query.verifications = serde_json::from_value(case["verifications"].clone())?;
     }
@@ -196,6 +197,7 @@ struct RequiredEvidence {
     count: usize,
     delivered: usize,
     ranks: serde_json::Map<String, Value>,
+    facts: Vec<Value>,
 }
 
 fn required_evidence(
@@ -225,12 +227,23 @@ fn required_evidence(
                 .position(|h| h.record.id == record.id)
                 .map(|i| i + 1)),
         );
+        evidence.facts.push(json!({
+            "id":record.id,"title":title,"claim_hash":record.claim_hash,
+            "rank":found.iter().position(|hit| hit.record.id==record.id).map(|i|i+1),
+            "delivered":shown.contains(&record.id)&&packet.contains(content)
+        }));
     }
     Ok(evidence)
 }
 
-/// Fixes fixture IDs and claim times before indexing: randomly generated UUIDs
-/// otherwise change reciprocal-rank ties between identical experiment replays.
+fn fixture_claim_time(now: chrono::DateTime<chrono::Utc>) -> String {
+    // Keep recency at one whole day with twelve hours of margin. A fixed
+    // calendar date changed floating-point ranking ties as the benchmark aged.
+    (now - chrono::Duration::hours(36)).to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
+/// Fixes fixture IDs and claim ages before indexing: random UUIDs or a changing
+/// recency bonus otherwise change rank ties between identical replays.
 fn stabilize_fixture(
     uri: &str,
     expected: uuid::Uuid,
@@ -238,6 +251,7 @@ fn stabilize_fixture(
     let mut connection = rusqlite::Connection::open(uri)?;
     connection.pragma_update(None, "foreign_keys", false)?;
     let transaction = connection.transaction()?;
+    let claim_time = fixture_claim_time(chrono::Utc::now());
     let ids = {
         let mut statement = transaction
             .prepare("SELECT id FROM memories ORDER BY repo,title,verification,content")?;
@@ -254,7 +268,7 @@ fn stabilize_fixture(
             "UPDATE memory_files SET memory_id=?1 WHERE memory_id=?2",
             rusqlite::params![id.to_string(), old],
         )?;
-        transaction.execute("UPDATE memories SET id=?1,created_at=?3,updated_at=?3,content_updated_at=?3 WHERE id=?2", rusqlite::params![id.to_string(),old,"2026-11-07T00:00:00+00:00"])?;
+        transaction.execute("UPDATE memories SET id=?1,created_at=?3,updated_at=?3,content_updated_at=?3 WHERE id=?2", rusqlite::params![id.to_string(),old,&claim_time])?;
     }
     transaction.commit()?;
     new_expected.ok_or_else(|| "expected fixture record disappeared".into())
@@ -538,13 +552,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|at| at + 1);
         found.truncate(8);
         let memory_budget = config["memory_budget"].as_u64().unwrap_or(1000) as usize;
-        let (packet, shown) = store.render_packet_traced(&found, memory_budget);
-        let primary_delivered = shown.contains(&expected) && packet.contains(text("content")?);
+        let evidence = store.render_packet_with_evidence(&found, memory_budget);
+        let (packet, shown, complete) =
+            (evidence.text, evidence.rendered_ids, evidence.complete_ids);
+        let primary_delivered = complete.contains(&expected) && packet.contains(text("content")?);
         let live = store.list("project", "")?;
-        let additional = required_evidence(&case["required"], &live, &found, &packet, &shown)?;
+        let additional = required_evidence(&case["required"], &live, &found, &packet, &complete)?;
         let required_count = 1 + additional.count;
         let required_delivered = usize::from(primary_delivered) + additional.delivered;
         let required_ranks = additional.ranks;
+        let required_facts = additional.facts;
         let answer_delivered = required_delivered == required_count;
         let rank = found
             .iter()
@@ -562,7 +579,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .iter()
                     .any(|tag| query.excluded_tags.contains(tag))
         });
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        let full_text_ids = complete;
+        let primary_claim_hash = store.get(expected)?.claim_hash;
+        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"primary_id":expected,"primary_claim_hash":primary_claim_hash,"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"required_facts":required_facts,"rendered_ids":shown,"full_text_ids":full_text_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -615,6 +634,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deterministic_claim_age_stays_one_day_across_calendar_boundaries() {
+        for text in [
+            "2026-11-08T00:00:00+00:00",
+            "2026-11-09T23:59:59+00:00",
+            "2027-01-01T00:00:00+00:00",
+        ] {
+            let now = chrono::DateTime::parse_from_rfc3339(text)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            let stamp = fixture_claim_time(now);
+            let claim = chrono::DateTime::parse_from_rfc3339(&stamp)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert_eq!((now - claim).num_days(), 1);
+            assert_eq!(stamp.len(), 25);
+        }
+    }
 
     #[test]
     fn multiple_fixture_files_reach_lookup_and_intent_only_omits_both_file_fields() {
@@ -675,6 +713,34 @@ mod tests {
             &shown
         )
         .is_err());
+    }
+
+    #[test]
+    fn same_title_requirements_keep_separate_packet_delivery_evidence() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let corpus = json!([
+            {"title":"Context","content":"First constraint.","verified":true},
+            {"title":"Context","content":"Second constraint.","verified":true}
+        ]);
+        populate_corpus(&store, &corpus, "none").unwrap();
+        let hits = store
+            .retrieve(&RetrievalQuery::new("project", "Context"))
+            .unwrap();
+        let (_, shown) = store.render_packet_traced(&hits, 1000);
+        let evidence = required_evidence(
+            &corpus,
+            &store.list("project", "").unwrap(),
+            &hits,
+            "First constraint.",
+            &shown,
+        )
+        .unwrap();
+        assert_eq!((evidence.count, evidence.delivered), (2, 1));
+        assert_eq!(evidence.facts.len(), 2);
+        assert_ne!(evidence.facts[0]["id"], evidence.facts[1]["id"]);
+        assert_eq!(evidence.facts[0]["delivered"], true);
+        assert_eq!(evidence.facts[1]["delivered"], false);
+        assert!(evidence.facts.iter().all(|fact| fact["rank"].is_number()));
     }
 
     #[test]

@@ -1,0 +1,27 @@
+{
+  "baseline": "68069012445f65f482f6776410ada2f3f106d589",
+  "frozen_before_trials": true,
+  "new_cases": false,
+  "inputs_sha256": {
+    "scripts/eval/memory-file-coverage-cases.json": "75ff31a901ff9d960da3f52575c4d89c81f961d4d10e98baccd0eedd67deefa2",
+    "scripts/eval/memory-file-coverage-retention-cases.json": "bfaeaed2b7ac772c5749ee1a6cc685db14e88fe59408f3316c00c7698f28e8e8"
+  },
+  "review": "Existing generic/short-component rejection intentionally avoids ambiguous fragments. New source-grounded OnnxMiniLm cases expose the terminal Lm component. Retry only literal terminal two-letter components with two distinct longer anchors, without dropping any component or changing HttpIOState/middle-short rejection.",
+  "hypothesis": "Permit a non-generic two-letter terminal identifier component only after at least two distinct distinctive long components. Every component, including the suffix, remains conjunctive and literal. Other generic/short/numeric/middle-component guards stay intact.",
+  "policy": {
+    "threshold": 0.3,
+    "limit": 8,
+    "memory_budget": 1000,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666
+  },
+  "selection": "New development coverage plus all historical development views and unchanged crate contracts before exposed reserved scoring. Reject each delivered-fact/rank loss, negative ID/order change, scope/trust/tag/caller violation or budget overrun.",
+  "limitations": "Repair on exposed source incidents; no independent semantic, precision or live-agent claim.",
+  "clock_control": {
+    "registered_before_controlled_replays": true,
+    "diagnosis": "The archived fixed November 7 claim timestamp aged across a UTC-day boundary. An unchanged baseline rerun reproduces the changed overflow negative IDs, so stored baseline reuse is time-dependent.",
+    "policy": "Use the same evaluator for baseline and candidate, setting all fixture claim times to 36 hours before the case starts. This fixes whole-day recency at one with twelve hours of margin, without changing production scoring, inputs, IDs, cutoffs or labels.",
+    "comparison": "Rebuild baseline with unchanged retrieval and the shared clock fix, then replay all baseline and candidate views afresh. Do not use the earlier uncontrolled-clock candidate outputs for acceptance.",
+    "fix_commit": "1948138"
+  }
+}

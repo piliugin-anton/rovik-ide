@@ -1,7 +1,7 @@
 use crate::error::{Result, VcmError};
 use crate::model::{
-    claim_hash, Applicability, MemoryKind, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery,
-    RetrievedMemory, SourceKind, Verification,
+    claim_hash, Applicability, MemoryKind, MemoryPacket, MemoryRecord, MemoryStats, NewMemory,
+    RetrievalQuery, RetrievedMemory, SourceKind, Verification,
 };
 use crate::retrieval::{
     bm25_relevance, build_fts_query, collect_ranked_candidates, compare_memories,
@@ -1157,9 +1157,20 @@ impl MemoryStore {
         memories: &[RetrievedMemory],
         tokens: usize,
     ) -> (String, Vec<Uuid>) {
+        let packet = self.render_packet_with_evidence(memories, tokens);
+        (packet.text, packet.rendered_ids)
+    }
+
+    /// Renders a packet and distinguishes complete claims from fetch hints.
+    #[must_use]
+    pub fn render_packet_with_evidence(
+        &self,
+        memories: &[RetrievedMemory],
+        tokens: usize,
+    ) -> MemoryPacket {
         let mut output = String::from("## Relevant prior work\n\n");
         if estimate_tokens(&output) > tokens {
-            return (String::new(), Vec::new());
+            return MemoryPacket::default();
         }
 
         if memories.is_empty() {
@@ -1167,10 +1178,14 @@ impl MemoryStore {
             if estimate_tokens(&output) + estimate_tokens(empty) <= tokens {
                 output.push_str(empty);
             }
-            return (output, Vec::new());
+            return MemoryPacket {
+                text: output,
+                ..MemoryPacket::default()
+            };
         }
 
         let mut emitted = Vec::new();
+        let mut complete = Vec::new();
         let mut seen: Vec<&MemoryRecord> = Vec::new();
         let mut used = estimate_tokens(&output);
         let mut omitted = Vec::new();
@@ -1188,6 +1203,7 @@ impl MemoryStore {
                 output.push_str(&block);
                 used += cost;
                 emitted.push(memory.record.id);
+                complete.push(memory.record.id);
                 continue;
             }
             // A long source episode must not hide shorter claims later in the
@@ -1211,7 +1227,11 @@ impl MemoryStore {
         if !omitted.is_empty() && used + estimate_tokens(footer) <= tokens {
             output.push_str(footer);
         }
-        (output, emitted)
+        MemoryPacket {
+            text: output,
+            rendered_ids: emitted,
+            complete_ids: complete,
+        }
     }
 
     /// One record as the packet shows it.
@@ -1661,6 +1681,22 @@ impl SharedMemoryStore {
         self.lock().map_or_else(
             |_| ("Memory store unavailable.".to_string(), Vec::new()),
             |store| store.render_packet_traced(memories, tokens),
+        )
+    }
+
+    /// See [`MemoryStore::render_packet_with_evidence`].
+    #[must_use]
+    pub fn render_packet_with_evidence(
+        &self,
+        memories: &[RetrievedMemory],
+        tokens: usize,
+    ) -> MemoryPacket {
+        self.lock().map_or_else(
+            |_| MemoryPacket {
+                text: "Memory store unavailable.".to_string(),
+                ..MemoryPacket::default()
+            },
+            |store| store.render_packet_with_evidence(memories, tokens),
         )
     }
 

@@ -520,9 +520,9 @@ impl SemanticIndex {
                         }
                     }
                     let mut additions: Vec<RetrievedMemory> = Vec::new();
-                    for name in names {
+                    for name in &names {
                         let mut lookup = query.clone();
-                        lookup.task = name.to_owned();
+                        lookup.task = (*name).to_owned();
                         let represented =
                             self.store
                                 .identifier_candidates_filtered(&lookup, |record| {
@@ -596,6 +596,86 @@ impl SemanticIndex {
                         Err(error) => eprintln!(
                             "memory: file coverage unavailable; preserving name plan: {error}"
                         ),
+                    }
+                    if let Some(budget) = query.packet_budget {
+                        let title_coverage = (|| -> Result<_> {
+                            let mut titles: Vec<RetrievedMemory> = Vec::new();
+                            for name in names {
+                                if found.iter().chain(&additions).chain(&titles).any(|hit| {
+                                    crate::retrieval::identifier_title_matches(
+                                        name,
+                                        &hit.record.title,
+                                    )
+                                }) {
+                                    continue;
+                                }
+                                let mut lookup = query.clone();
+                                lookup.task = name.to_owned();
+                                if let Some(mut hit) = self
+                                    .store
+                                    .identifier_candidates_filtered(&lookup, |record| {
+                                        accept(record)
+                                            && crate::retrieval::identifier_title_matches(
+                                                name,
+                                                &record.title,
+                                            )
+                                    })?
+                                    .into_iter()
+                                    .next()
+                                {
+                                    hit.reason.push_str(", requested symbol title");
+                                    titles.push(hit);
+                                }
+                            }
+                            Ok(titles)
+                        })();
+                        match title_coverage {
+                            Ok(titles)
+                                if !titles.is_empty()
+                                    && additions.len() + titles.len() <= slots.len() =>
+                            {
+                                // Preserve the complete protected claims from the exact
+                                // legacy plan, including names/files added to that plan.
+                                let mut legacy = found.clone();
+                                for (slot, hit) in slots.iter().copied().zip(&additions) {
+                                    let mut hit = hit.clone();
+                                    hit.score = legacy[slot].score;
+                                    legacy[slot] = hit;
+                                }
+                                let before = self.store.render_packet_with_evidence(&legacy, budget);
+                                let protected_ids: Vec<_> = legacy
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| {
+                                        protected[*i]
+                                            || slots.iter().take(additions.len()).any(|slot| slot == i)
+                                    })
+                                    .map(|(_, hit)| hit.record.id)
+                                    .filter(|id| before.complete_ids.contains(id))
+                                    .collect();
+                                let mut trial = legacy;
+                                for (slot, hit) in slots
+                                    .iter()
+                                    .copied()
+                                    .skip(additions.len())
+                                    .zip(&titles)
+                                {
+                                    let mut hit = hit.clone();
+                                    hit.score = trial[slot].score;
+                                    trial[slot] = hit;
+                                }
+                                let after = self.store.render_packet_with_evidence(&trial, budget);
+                                if protected_ids.iter().all(|id| after.complete_ids.contains(id))
+                                    && titles
+                                        .iter()
+                                        .all(|hit| after.complete_ids.contains(&hit.record.id))
+                                {
+                                    additions.extend(titles);
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(error) => eprintln!("memory: title coverage unavailable; preserving legacy plan: {error}"),
+                        }
                     }
                     Ok(Some((slots, additions)))
                 })();

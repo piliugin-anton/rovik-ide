@@ -1,0 +1,1440 @@
+{
+  "version": 1,
+  "description": "Feasible context/file retention plus impossible all-file retention; protect each previously delivered fact and rank. Includes same-title distinct claims and long rendered context under pressure.",
+  "corpus": [
+    {
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      }
+    },
+    {
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      }
+    },
+    {
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      }
+    },
+    {
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      }
+    },
+    {
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      }
+    },
+    {
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      }
+    },
+    {
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      }
+    },
+    {
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      }
+    },
+    {
+      "title": "Crowding observation 0",
+      "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 1",
+      "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 2",
+      "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 3",
+      "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 4",
+      "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 5",
+      "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 6",
+      "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 7",
+      "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 8",
+      "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions.",
+      "verified": true
+    },
+    {
+      "title": "Cross references",
+      "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. ",
+      "verified": true
+    },
+    {
+      "title": "crowding",
+      "content": "Crowding is contextual evidence about observed workload pressure.",
+      "verified": true
+    },
+    {
+      "title": "File context",
+      "content": "This file configures logging destinations.",
+      "files": ["src/noise.rs"],
+      "verified": true
+    },
+    {
+      "title": "File context",
+      "content": "This file assigns incoming commands to available executors.",
+      "files": ["src/dispatch.rs"],
+      "verified": true
+    },
+    {
+      "title": "onnx mini lm",
+      "content": "hidden duplicate: Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "onnx mini lm",
+      "content": "provisional duplicate: Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": false
+    },
+    {
+      "title": "onnx mini lm",
+      "content": "foreign duplicate: Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "ONNX MINI LM",
+      "content": "denied duplicate: Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": true
+    },
+    {
+      "title": "semantic index",
+      "content": "hidden duplicate: Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "semantic index",
+      "content": "provisional duplicate: Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": false
+    },
+    {
+      "title": "semantic index",
+      "content": "foreign duplicate: Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "SEMANTIC INDEX",
+      "content": "denied duplicate: Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": true
+    },
+    {
+      "title": "retrieval weights",
+      "content": "hidden duplicate: Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "retrieval weights",
+      "content": "provisional duplicate: Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": false
+    },
+    {
+      "title": "retrieval weights",
+      "content": "foreign duplicate: Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "RETRIEVAL WEIGHTS",
+      "content": "denied duplicate: Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": true
+    },
+    {
+      "title": "retrieval telemetry",
+      "content": "hidden duplicate: Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "retrieval telemetry",
+      "content": "provisional duplicate: Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": false
+    },
+    {
+      "title": "retrieval telemetry",
+      "content": "foreign duplicate: Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "RETRIEVAL TELEMETRY",
+      "content": "denied duplicate: Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": true
+    },
+    {
+      "title": "memory settings",
+      "content": "hidden duplicate: The project flag enables memory by default until the user turns it off.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "memory settings",
+      "content": "provisional duplicate: The project flag enables memory by default until the user turns it off.",
+      "verified": false
+    },
+    {
+      "title": "memory settings",
+      "content": "foreign duplicate: The project flag enables memory by default until the user turns it off.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "MEMORY SETTINGS",
+      "content": "denied duplicate: The project flag enables memory by default until the user turns it off.",
+      "verified": true
+    },
+    {
+      "title": "memory state",
+      "content": "hidden duplicate: Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "memory state",
+      "content": "provisional duplicate: Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": false
+    },
+    {
+      "title": "memory state",
+      "content": "foreign duplicate: Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "MEMORY STATE",
+      "content": "denied duplicate: Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": true
+    },
+    {
+      "title": "memory entry",
+      "content": "hidden duplicate: Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "memory entry",
+      "content": "provisional duplicate: Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": false
+    },
+    {
+      "title": "memory entry",
+      "content": "foreign duplicate: Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "MEMORY ENTRY",
+      "content": "denied duplicate: Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": true
+    },
+    {
+      "title": "retrieved memory",
+      "content": "hidden duplicate: Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "retrieved memory",
+      "content": "provisional duplicate: Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": false
+    },
+    {
+      "title": "retrieved memory",
+      "content": "foreign duplicate: Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": true,
+      "repo": "other"
+    },
+    {
+      "title": "RETRIEVED MEMORY",
+      "content": "denied duplicate: Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": true
+    },
+    {
+      "title": "ONNX Mini DB",
+      "content": "A separate database observation with the wrong suffix.",
+      "verified": true
+    }
+  ],
+  "cases": [
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-OnnxMiniLm-feasible",
+      "category": "feasible",
+      "task": "OnnxMiniLm,SemanticIndex,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-OnnxMiniLm-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing OnnxMiniLm,SemanticIndex,RetrievalWeights",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-SemanticIndex-feasible",
+      "category": "feasible",
+      "task": "SemanticIndex,OnnxMiniLm,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-SemanticIndex-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing SemanticIndex,OnnxMiniLm,RetrievalWeights",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-RetrievalWeights-feasible",
+      "category": "feasible",
+      "task": "RetrievalWeights,OnnxMiniLm,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-RetrievalWeights-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing RetrievalWeights,OnnxMiniLm,SemanticIndex",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-RetrievalTelemetry-feasible",
+      "category": "feasible",
+      "task": "RetrievalTelemetry,OnnxMiniLm,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-RetrievalTelemetry-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing RetrievalTelemetry,OnnxMiniLm,SemanticIndex",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-MemorySettings-feasible",
+      "category": "feasible",
+      "task": "MemorySettings,MemoryState,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-MemorySettings-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing MemorySettings,MemoryState,MemoryEntry",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-MemoryState-feasible",
+      "category": "feasible",
+      "task": "MemoryState,MemorySettings,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-MemoryState-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing MemoryState,MemorySettings,MemoryEntry",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-MemoryEntry-feasible",
+      "category": "feasible",
+      "task": "MemoryEntry,MemorySettings,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-MemoryEntry-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing MemoryEntry,MemorySettings,MemoryState",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-RetrievedMemory-feasible",
+      "category": "feasible",
+      "task": "RetrievedMemory,MemorySettings,CrossReferences crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ],
+      "capacity_feasible": true
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "exclude_titles": [
+        "ONNX MINI LM",
+        "SEMANTIC INDEX",
+        "RETRIEVAL WEIGHTS",
+        "RETRIEVAL TELEMETRY",
+        "MEMORY SETTINGS",
+        "MEMORY STATE",
+        "MEMORY ENTRY",
+        "RETRIEVED MEMORY"
+      ],
+      "id": "title-guard-RetrievedMemory-capacity",
+      "category": "capacity",
+      "task": "Keep every crowding observation while reviewing RetrievedMemory,MemorySettings,MemoryState",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Cross references",
+          "content": "Crowding cross references mention ONNX Mini LM, Semantic index, Retrieval weights, Retrieval telemetry, Memory settings, Memory state, Memory entry, Retrieved memory. These references describe navigation between code symbols, not the individual facts asserted by those symbols. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. Captured context preserves an independent observation. "
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "File context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance. The independent observation also preserves captured diagnostic context for later inspection. This provenance is retained separately from symbol descriptions."
+        }
+      ],
+      "capacity_feasible": false
+    }
+  ]
+}
