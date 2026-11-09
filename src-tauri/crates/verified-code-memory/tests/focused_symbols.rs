@@ -871,3 +871,139 @@ fn optional_title_coverage_preserves_the_legacy_packet_when_protected_full_text_
         .complete_ids
         .contains(&file.id));
 }
+
+#[test]
+fn oversized_incumbents_keep_their_ranks_without_hiding_a_compact_title_claim() {
+    struct ArchiveModel;
+    impl MemoryEmbedder for ArchiveModel {
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+            Ok(if text.contains("Archive") {
+                vec![1.0, 0.0]
+            } else if text.contains("lock") {
+                vec![0.0, 1.0]
+            } else if text.starts_with("Crowding") {
+                vec![0.9, 0.4358899]
+            } else if text.starts_with("Cross references") {
+                vec![0.95, 0.3122499]
+            } else {
+                vec![1.0, 0.0]
+            })
+        }
+    }
+    let store = SharedMemoryStore::new(
+        verified_code_memory::MemoryStore::open_in_memory()
+            .unwrap()
+            .with_weights(verified_code_memory::RetrievalWeights {
+                file_match: 10.0,
+                ..Default::default()
+            }),
+    );
+    let mut compact = Vec::new();
+    for title in ["Shared memory store", "Retrieval query"] {
+        let record = store
+            .remember(NewMemory::procedure("a", title, "Use a lock for state."))
+            .unwrap();
+        store.verify(record.id, "current source").unwrap();
+        compact.push(record.id);
+    }
+    for n in 0..7 {
+        let record = store
+            .remember(NewMemory::procedure(
+                "a",
+                format!("Crowding observation {n}"),
+                format!("Independent crowding observation {n}."),
+            ))
+            .unwrap();
+        store.verify(record.id, "independent source").unwrap();
+    }
+    let reference = store
+        .remember(
+            NewMemory::procedure(
+                "a",
+                "Cross references",
+                "Shared memory store and retrieval query crowding references.",
+            )
+            .with_files(["src/archive.rs"]),
+        )
+        .unwrap();
+    store.verify(reference.id, "navigation source").unwrap();
+    let archive = store
+        .remember(
+            NewMemory::procedure(
+                "a",
+                "SHARED memory STORE",
+                format!(
+                    "Archive: {}",
+                    "Shared memory store references; ".repeat(400)
+                ),
+            )
+            .with_files(["src/archive.rs"]),
+        )
+        .unwrap();
+    store.verify(archive.id, "archived source").unwrap();
+    let index = SemanticIndex::new(store.clone(), "archive-incumbent", 2).unwrap();
+    index.backfill("a", &ArchiveModel).unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore,RetrievalQuery crowding")
+        .with_files(["src/archive.rs"]);
+    let legacy = index.retrieve(&query, &ArchiveModel, 0.8).unwrap();
+    let archive_rank = ids(&legacy)
+        .iter()
+        .position(|id| *id == archive.id)
+        .unwrap();
+    assert!(!compact.iter().any(|id| ids(&legacy).contains(id)));
+    let after = index
+        .retrieve(&query.clone().with_packet_budget(1000), &ArchiveModel, 0.8)
+        .unwrap();
+    assert_eq!(after[archive_rank].record.id, archive.id);
+    assert!(compact.iter().all(|id| ids(&after).contains(id)));
+    let packet = store.render_packet_with_evidence(&after, 1000);
+    assert!(compact.iter().all(|id| packet.complete_ids.contains(id)));
+    assert!(!packet.complete_ids.contains(&archive.id));
+    assert!(packet.rendered_ids.contains(&archive.id));
+    assert!(packet.complete_ids.contains(&reference.id));
+    // Keep the actual claims and evidence intact while making the redundant
+    // match metadata the only difference at this packet boundary.
+    let mut concise = after.clone();
+    for hit in &mut concise {
+        if compact.contains(&hit.record.id) {
+            hit.reason = "requested symbol title".to_owned();
+        }
+    }
+    let mut verbose = concise.clone();
+    for hit in &mut verbose {
+        if compact.contains(&hit.record.id) {
+            hit.reason = format!("BM25 lexical match, {}", hit.reason);
+        }
+    }
+    let tight_budget = (100..1000)
+        .find(|budget| {
+            let short = store.render_packet_with_evidence(&concise, *budget);
+            let long = store.render_packet_with_evidence(&verbose, *budget);
+            short.complete_ids.contains(&reference.id)
+                && compact.iter().all(|id| short.complete_ids.contains(id))
+                && !compact.iter().all(|id| long.complete_ids.contains(id))
+        })
+        .expect("fixture must expose redundant metadata hiding a complete claim");
+    let tight = index
+        .retrieve(
+            &query.clone().with_packet_budget(tight_budget),
+            &ArchiveModel,
+            0.8,
+        )
+        .unwrap();
+    let packet = store.render_packet_with_evidence(&tight, tight_budget);
+    assert!(compact.iter().all(|id| packet.complete_ids.contains(id)));
+    assert!(packet.complete_ids.contains(&reference.id));
+    assert_eq!(tight[archive_rank].record.id, archive.id);
+    let failure = index
+        .retrieve(
+            &query.with_packet_budget(1000).with_failure(""),
+            &ArchiveModel,
+            0.8,
+        )
+        .unwrap();
+    assert_eq!(ids(&failure), ids(&legacy));
+}

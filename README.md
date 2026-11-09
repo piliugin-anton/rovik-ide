@@ -2106,6 +2106,11 @@ allowance before filling its bounded candidate pool. This lets a shorter eligibl
 claim be considered; the complete-plan rendering protections still decide whether
 it can be added. See the
 [oversized-title experiment](docs/design/long-term-memory-title-fit-nov9-2026.md).
+An oversized title already in the result pool keeps its rank and fetch opportunity,
+but cannot suppress lookup of a shorter complete fact. Supplemental title matches
+use a concise explanation so duplicate matching metadata does not consume claim
+space. The same protected-packet checks apply. See the
+[denser context experiment](docs/design/long-term-memory-context-completion-nov10-2026.md).
 
 Native evaluation reports each required record's ID, claim hash, rank and full
 delivery, distinguishing complete claims from fetch hints. Compare two saved

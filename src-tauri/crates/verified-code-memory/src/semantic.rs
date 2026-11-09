@@ -606,6 +606,10 @@ impl SemanticIndex {
                                         name,
                                         &hit.record.title,
                                     )
+                                        // Keep oversized incumbents in place, but they
+                                        // cannot supply complete title coverage.
+                                        && crate::retrieval::estimate_tokens(&hit.record.content)
+                                            <= budget
                                 }) {
                                     continue;
                                 }
@@ -629,7 +633,7 @@ impl SemanticIndex {
                                     .into_iter()
                                     .next()
                                 {
-                                    hit.reason.push_str(", requested symbol title");
+                                    hit.reason = "requested symbol title".to_owned();
                                     titles.push(hit);
                                 }
                             }

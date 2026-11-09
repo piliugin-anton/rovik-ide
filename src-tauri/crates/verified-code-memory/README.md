@@ -169,6 +169,11 @@ Optional title candidates whose claim text alone exceeds that allowance are
 rejected before the collector's bound. This necessary size check permits later
 eligible claims to be considered; the full rendering preview remains authoritative.
 Existing incumbents and ordinary lexical/vector candidate eligibility are unchanged.
+An incumbent title whose claim alone exceeds the allowance still keeps its
+position, but does not count as complete title coverage. A shorter eligible
+title fact may occupy another unprotected slot. Supplemental title matches use
+the specific requested-title explanation directly, retaining scores/components,
+claim text and evidence. Full protected-claim rendering checks remain unchanged.
 
 ## Development
 
