@@ -270,7 +270,11 @@ fn a_known_complete_match_beyond_the_supplementary_pool_is_not_replaced() {
             ))
             .unwrap();
     }
-    for n in 0..8 {
+    // Seven crowding records plus the wanted record fill the semantic pool.
+    // An eighth crowding record could lead the lexical pool but fall outside
+    // the semantic limit, tying the wanted record's single-pool RRF score.
+    // UUID ordering then decided whether this test reached its precondition.
+    for n in 0..7 {
         store
             .remember(NewMemory::procedure(
                 "a",
@@ -282,6 +286,9 @@ fn a_known_complete_match_beyond_the_supplementary_pool_is_not_replaced() {
     let index = SemanticIndex::new(store, "dense-fixture", 2).unwrap();
     index.backfill("a", &DenseModel).unwrap();
     let query = RetrievalQuery::new("a", "SharedMemoryStore crowding");
+    let semantic = index.search(&query, &[1.0, 0.0], 0.8).unwrap();
+    assert_eq!(semantic.len(), 8);
+    assert_eq!(semantic[0].0.id, wanted.id);
     let before = index
         .retrieve(&query.clone().with_failure(""), &DenseModel, 0.8)
         .unwrap();
