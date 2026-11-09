@@ -1559,6 +1559,108 @@ async fn an_unreadable_review_is_skipped_never_clean() {
 }
 
 #[tokio::test]
+async fn context_paths_are_excluded_from_tracking_and_review_diffs() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    h.core.vfs.pretend_mounted(h.project.join("volume"));
+    let (url, _) = model(vec![Reply::Text("Unused.")]).await;
+    let core = h.core.clone();
+    let request = h.request(&url, Harness::send("Update notes"), checks_on());
+    core.agents.set_config(request.config.clone().unwrap());
+    let controls = core.agents.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = core.agents.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, dir) = crate::clm::real_paths(&core.vfs, &h.dialog_id).unwrap();
+    for path in [
+        "@context/TASK.md".to_string(),
+        "@context/LIVE_CONTEXT.md".to_string(),
+        h.project
+            .join("@context/TASK.md")
+            .to_string_lossy()
+            .into_owned(),
+        format!("{dir}/TASK.md"),
+        format!("{dir}/LIVE_CONTEXT.md"),
+    ] {
+        assert!(run.is_own_context_path(&path), "{path}");
+        run.note_write(&path, None);
+        // A baseline recorded by another source must not feed the reviewer.
+        run.note_original(&path, None);
+    }
+    assert!(run.changed_files.is_empty());
+    assert!(run.touched_keys().is_empty());
+    assert!(run.change_set().is_empty());
+    assert!(!run.review_change().await.unwrap());
+    for path in ["TASK.md", "LIVE_CONTEXT.md", "@context-other/TASK.md"] {
+        assert!(!run.is_own_context_path(path), "{path}");
+    }
+    run.note_write("a.txt", None);
+    assert_eq!(run.changed_files, ["a.txt"]);
+}
+
+#[tokio::test]
+async fn context_bookkeeping_without_fuse_does_not_trigger_a_change_review() {
+    let h = harness(&[
+        ("@context/TASK.md", "old\n"),
+        ("@context/LIVE_CONTEXT.md", "old\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write_call(
+            "task",
+            "@context/TASK.md",
+            "Goal: investigate\nNEXT: inspect\n",
+        ),
+        write_call("live", "@context/LIVE_CONTEXT.md", "Compacted context\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    assert!(crate::clm::availability(&h.core.vfs).is_err());
+    let mut request = h.with_subagents(
+        &url,
+        "Update your notes",
+        checks_on(),
+        reviewer_on(json!({})),
+    );
+    request.context_mode = Some(crate::clm::MODE_CLM.into());
+    h.start(request).await;
+    h.run_end().await;
+    assert_eq!(
+        std::fs::read_to_string(h.project.join("@context/TASK.md")).unwrap(),
+        "Goal: investigate\nNEXT: inspect\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.project.join("@context/LIVE_CONTEXT.md")).unwrap(),
+        "Compacted context\n"
+    );
+    assert!(reviews(&h.messages().await).is_empty());
+}
+
+#[tokio::test]
+async fn project_files_named_like_context_files_still_get_reviewed() {
+    let h = harness(&[("TASK.md", "old\n"), ("LIVE_CONTEXT.md", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(REVIEW, vec![Reply::Text(NO_FINDINGS)])],
+        vec![
+            write_call("task", "TASK.md", "Project task\n"),
+            write_call("live", "LIVE_CONTEXT.md", "Project document\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(
+        &url,
+        "Update project documents",
+        checks_on(),
+        reviewer_on(json!({})),
+    ))
+    .await;
+    h.run_end().await;
+    assert_eq!(reviews(&h.messages().await)[0]["status"], "clean");
+}
+
+#[tokio::test]
 async fn small_changes_get_no_review() {
     let h = harness(&[("a.txt", "old\n")]).await;
     let (url, _) = model(vec![

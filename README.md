@@ -1799,6 +1799,7 @@ How CLM mode works:
   scope, decisions, progress, next step). It's saved in the chat database
   and survives restarts. The root `context/` directory belongs to the chat:
   its files are excluded from the landing list and never land in the project.
+  Context and task-card edits are bookkeeping and do not trigger change reviews.
 - Every state of the file is a revision the agent can read
   (`@context/revisions/<n>.md`) or restore (`restore_context`). The context
   row in the UI shows the current revision and size, and lets you view or
