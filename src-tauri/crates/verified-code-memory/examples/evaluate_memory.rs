@@ -1,4 +1,7 @@
 //! Reproducible retrieval baseline over incident-separated synthetic cases.
+#[path = "evaluate_memory/diagnostics.rs"]
+mod diagnostics;
+
 use serde_json::{json, Value};
 use verified_code_memory::{MemoryEmbedder, NewMemory, RetrievalQuery, SharedMemoryStore};
 
@@ -414,6 +417,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             threshold,
         )
     });
+    let diagnostics = match config.get("diagnostics") {
+        None => false,
+        Some(value) => value.as_bool().ok_or("diagnostics must be a boolean")?,
+    };
+    if diagnostics
+        && (config["deterministic"] != true
+            || backend.is_none()
+            || config["semantic_only"] == true
+            || config["rerank_lexical"] == true)
+    {
+        return Err(
+            "diagnostics requires deterministic fixtures and the hybrid embedding backend".into(),
+        );
+    }
     let mut cases = dataset["cases"].as_array().ok_or("missing cases")?.clone();
     if let Some(path) = config["controls_file"].as_str() {
         let controls: Value = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -491,6 +508,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             |record: &verified_code_memory::MemoryRecord| !excluded.contains(&record.title);
         let started = std::time::Instant::now();
         let (baseline, telemetry) = store.retrieve_filtered_with_telemetry(&query, accept)?;
+        let lexical_ids: Vec<_> = if diagnostics {
+            baseline.iter().map(|hit| hit.record.id).collect()
+        } else {
+            Vec::new()
+        };
         let mut embedding_fallback = false;
         let mut found = if let Some((embedder, revision, dimensions, threshold)) = &backend {
             let index = verified_code_memory::semantic::SemanticIndex::new(
@@ -592,7 +614,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         let full_text_ids = complete;
         let primary_claim_hash = store.get(expected)?.claim_hash;
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"primary_id":expected,"primary_claim_hash":primary_claim_hash,"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"required_facts":required_facts,"rendered_ids":shown,"full_text_ids":full_text_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        let mut row = json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"primary_id":expected,"primary_claim_hash":primary_claim_hash,"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"required_facts":required_facts,"rendered_ids":shown,"full_text_ids":full_text_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry});
+        if diagnostics {
+            let (embedder, revision, _, threshold) =
+                backend.as_ref().ok_or("missing diagnostic backend")?;
+            if embedding_fallback {
+                return Err("diagnostics requires successful embedding retrieval".into());
+            }
+            let mut targets = vec![expected];
+            for fact in row["required_facts"]
+                .as_array()
+                .ok_or("missing required facts")?
+            {
+                targets.push(uuid::Uuid::parse_str(
+                    fact["id"].as_str().ok_or("missing fact id")?,
+                )?);
+            }
+            row["diagnostics"] = diagnostics::collect(
+                fixture_uri,
+                &store,
+                &query,
+                embedder,
+                revision,
+                *threshold,
+                &config,
+                &targets,
+                &lexical_ids,
+                &found,
+                &full_text_ids,
+                accept,
+            )?;
+        }
+        rows.push(row);
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {

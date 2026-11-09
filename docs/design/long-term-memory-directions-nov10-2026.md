@@ -134,3 +134,18 @@ separate into three delivery and six matching/selection failures across correlat
 variants. Preserve these cases instead of revising their questions after scoring.
 Measure expected/distractor similarities and admission stages before another
 representation trial; additional grounded text alone did not establish a gain.
+
+## Diagnostic step completed
+
+The [diagnostic implementation and measurements](long-term-memory-diagnostics-nov10-2026.md)
+add opt-in read-only index probes and preserve all 272 measured development
+outcomes. Expected primary similarities for the eight original/fresh misses are
+0.147–0.222, below cutoffs of 0.275/0.300; every one has a higher-scoring eligible
+nonrequired competitor. These are not small cutoff-boundary misses.
+
+The oversized four-name example selects four new name additions whose individual
+content sizes exceed the whole packet. Later optional-title filtering cannot
+recover all four compact facts with the remaining slots. The next distinct trial
+is packet-feasible selection for new name additions, preserving existing anchors
+and full-packet rollback. This follows the observed addition path, rather than
+assuming every oversized selected record was an original incumbent.

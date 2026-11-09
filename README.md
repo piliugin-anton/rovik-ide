@@ -2135,6 +2135,12 @@ native results with `node scripts/eval/memory-regressions.mjs baseline.json cand
 fact losses and negative packet changes; its mutation checks run in the existing
 `npm run test:eval` CI job.
 
+For index and admission analysis, the native evaluator accepts `"diagnostics": true`
+with deterministic fixtures and the hybrid embedding backend. It reports stored
+vector scores, eligible ranks, competing matches and selected/full claim state.
+See the [diagnostic measurements](docs/design/long-term-memory-diagnostics-nov10-2026.md)
+for probe limitations and reproduction. The flag is off by default.
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;
