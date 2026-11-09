@@ -13,6 +13,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum VfsRequest {
+    /// Subscribe before a producer starts sending events to this client's sink.
+    Subscribe {
+        kinds: Option<Vec<String>>,
+        sink: String,
+    },
+    /// Stop only a subscription owned by this client.
+    Unsubscribe { id: u64 },
     /// vfs_status on the backend.
     Status,
     /// vfs_install_driver on the backend.
@@ -52,8 +59,37 @@ impl VfsRequest {
     pub(super) async fn dispatch(
         self,
         backend: &DesktopBackend,
+        session: Option<&std::sync::Arc<crate::desktop_session::Session>>,
     ) -> Result<serde_json::Value, String> {
         match self {
+            Self::Subscribe { kinds, sink } => {
+                let session = session.ok_or("A client session is required for VFS events")?;
+                session.begin(&sink)?;
+                let target = std::sync::Arc::downgrade(session);
+                let channel = sink.clone();
+                let id = vfs::vfs_subscribe(&backend.core.vfs, kinds, move |batch| {
+                    target
+                        .upgrade()
+                        .is_some_and(|session| session.emit(&channel, batch))
+                })
+                .await;
+                let id = match id {
+                    Ok(id) => id,
+                    Err(error) => {
+                        session.end(&sink);
+                        return Err(error);
+                    }
+                };
+                let volume = backend.core.vfs.clone();
+                session.register(format!("vfs:{id}"), sink, move || {
+                    volume.unsubscribe(rovik_core::vfs::SubscriptionId(id));
+                })?;
+                encode(id)
+            }
+            Self::Unsubscribe { id } => {
+                let session = session.ok_or("A client session is required for VFS events")?;
+                encode(session.remove(&format!("vfs:{id}")))
+            }
             Self::Status => encode(vfs_status(backend).await?),
             Self::InstallDriver => encode(vfs_install_driver(backend).await?),
             Self::Mount { mountpoint } => encode(vfs_mount(backend, mountpoint).await?),

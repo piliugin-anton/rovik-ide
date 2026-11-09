@@ -124,6 +124,11 @@ pub struct Pending {
 }
 
 impl Pending {
+    /// The identity used by handlers and the separate private event stream.
+    pub fn session(&self) -> &str {
+        &self.ready.session
+    }
+
     /// Completes a bounded handshake before any operation can be dispatched.
     pub async fn finish(mut self) -> io::Result<UnixStream> {
         tokio::time::timeout(Duration::from_secs(5), async {

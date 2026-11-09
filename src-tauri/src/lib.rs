@@ -86,7 +86,20 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
             ))?;
             let backend = Arc::new(backend);
-            app.manage(DesktopConnection::embedded(backend.clone()));
+            let connection = DesktopConnection::embedded(backend.clone());
+            let window = app.handle().clone();
+            connection.on_event_error(move |message| {
+                let notice = AgentEvent::Notice {
+                    dialog_id: None,
+                    kind: "error".into(),
+                    title: "Desktop backend disconnected".into(),
+                    message,
+                };
+                if let Err(error) = window.emit(EVENT, notice) {
+                    log::error!("Could not report desktop event loss: {error}");
+                }
+            });
+            app.manage(connection);
             let core = backend.core.clone();
             let remote = backend.remote.clone();
             let hosts = backend.hosts.clone();

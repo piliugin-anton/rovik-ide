@@ -43,7 +43,16 @@ pub enum DesktopRequest {
 }
 
 impl DesktopRequest {
+    #[cfg(test)]
     pub(crate) async fn dispatch(self, backend: &DesktopBackend) -> DesktopResult {
+        self.dispatch_in(backend, None).await
+    }
+
+    pub(crate) async fn dispatch_in(
+        self,
+        backend: &DesktopBackend,
+        session: Option<&std::sync::Arc<crate::desktop_session::Session>>,
+    ) -> DesktopResult {
         match self {
             Self::Clm(request) => request.dispatch(backend).await,
             Self::Chat(request) => request.dispatch(backend).await,
@@ -55,7 +64,7 @@ impl DesktopRequest {
                 .await
                 .map_err(serde_json::Value::String),
             Self::Vfs(request) => request
-                .dispatch(backend)
+                .dispatch(backend, session)
                 .await
                 .map_err(serde_json::Value::String),
             Self::Memory(request) => request.dispatch(backend).await,

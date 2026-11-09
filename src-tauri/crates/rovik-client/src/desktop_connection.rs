@@ -6,15 +6,83 @@ use rovik_protocol::{Fail, Request, Response};
 use std::sync::Arc;
 
 /// One explicit backend destination for a window's adapted commands.
-pub struct DesktopConnection(Backend);
+pub struct DesktopConnection {
+    backend: Backend,
+    events: crate::desktop_events::EventRouter,
+}
 
 enum Backend {
-    Embedded(Arc<DesktopBackend>),
+    Embedded {
+        backend: Arc<DesktopBackend>,
+        lease: crate::desktop_session::SessionLease,
+    },
     #[cfg(unix)]
     Local(crate::local_backend::rpc::Client),
 }
 
 impl DesktopConnection {
+    /// Reports event loss to the native UI. A failed session must be reconnected.
+    pub fn on_event_error(&self, report: impl Fn(String) + Send + Sync + 'static) {
+        self.events.on_error(report);
+    }
+
+    /// Starts a resource with its callback already registered. Closing the
+    /// native callback stops only that resource, using the private event link.
+    pub async fn desktop_stream(
+        &self,
+        request: impl FnOnce(String) -> crate::desktop_api::DesktopRequest,
+        callback: impl Fn(serde_json::Value) -> bool + Send + Sync + 'static,
+    ) -> crate::desktop_api::DesktopResult {
+        use crate::desktop_events::EventSource;
+        self.events
+            .start(|| async {
+                match &self.backend {
+                    Backend::Embedded { lease, .. } => {
+                        lease.session.events().map(EventSource::Embedded)
+                    }
+                    #[cfg(unix)]
+                    Backend::Local(client) => client
+                        .events()
+                        .await
+                        .map(EventSource::Local)
+                        .map_err(|e| e.to_string()),
+                }
+            })
+            .await
+            .map_err(serde_json::Value::String)?;
+        let sink = self
+            .events
+            .register(callback)
+            .map_err(serde_json::Value::String)?;
+        // Cancellation can happen before the start reply. Do not leave its
+        // native callback (or an embedded producer) alive with no caller.
+        struct Pending<'a> {
+            connection: &'a DesktopConnection,
+            sink: String,
+            active: bool,
+        }
+        impl Drop for Pending<'_> {
+            fn drop(&mut self) {
+                if self.active {
+                    self.connection.events.remove(&self.sink);
+                    match &self.connection.backend {
+                        Backend::Embedded { lease, .. } => lease.session.cancel_sink(&self.sink),
+                        #[cfg(unix)]
+                        Backend::Local(_) => {}
+                    }
+                }
+            }
+        }
+        let mut pending = Pending {
+            connection: self,
+            sink: sink.clone(),
+            active: true,
+        };
+        let result = self.desktop_raw(request(sink)).await;
+        pending.active = result.is_err();
+        result
+    }
+
     /// Runs a desktop operation and preserves its existing UI reply shape.
     pub async fn desktop(
         &self,
@@ -33,8 +101,18 @@ impl DesktopConnection {
         &self,
         request: crate::desktop_api::DesktopRequest,
     ) -> crate::desktop_api::DesktopResult {
-        match &self.0 {
-            Backend::Embedded(backend) => request.dispatch(backend).await,
+        if let Some(error) = self.events.failure() {
+            return Err(serde_json::Value::String(error));
+        }
+        match &self.backend {
+            Backend::Embedded { backend, lease } => {
+                if lease.session.is_closed() {
+                    return Err(serde_json::Value::String(
+                        "Desktop client session ended".into(),
+                    ));
+                }
+                request.dispatch_in(backend, Some(&lease.session)).await
+            }
             #[cfg(unix)]
             Backend::Local(client) => client
                 .desktop(request)
@@ -45,7 +123,11 @@ impl DesktopConnection {
 
     /// Uses the application's existing backend during command migration.
     pub fn embedded(backend: Arc<DesktopBackend>) -> Self {
-        Self(Backend::Embedded(backend))
+        let lease = backend.sessions.create();
+        Self {
+            backend: Backend::Embedded { backend, lease },
+            events: Default::default(),
+        }
     }
 
     /// Attaches to an existing local backend. Failure is returned to the
@@ -53,13 +135,27 @@ impl DesktopConnection {
     #[cfg(unix)]
     pub async fn connect(directory: &std::path::Path) -> std::io::Result<Self> {
         let client = crate::local_backend::rpc::Client::connect(directory).await?;
-        Ok(Self(Backend::Local(client)))
+        Ok(Self {
+            backend: Backend::Local(client),
+            events: Default::default(),
+        })
     }
 
     /// Runs a typed operation using the backend's authoritative routing.
     pub async fn request(&self, request: Request) -> Result<Response, Fail> {
-        match &self.0 {
-            Backend::Embedded(backend) => backend.dispatch(request).await,
+        if let Some(error) = self.events.failure() {
+            return Err(Fail::new(rovik_protocol::FailCode::Unreachable, error));
+        }
+        match &self.backend {
+            Backend::Embedded { backend, lease } => {
+                if lease.session.is_closed() {
+                    return Err(Fail::new(
+                        rovik_protocol::FailCode::Unreachable,
+                        "Desktop client session ended",
+                    ));
+                }
+                backend.dispatch(request).await
+            }
             #[cfg(unix)]
             Backend::Local(client) => client.call(request).await.map_err(transport)?,
         }
@@ -67,14 +163,25 @@ impl DesktopConnection {
 
     /// Runs an operation on an explicitly selected remote host.
     pub async fn host_request(&self, host: &str, request: Request) -> Result<Response, Fail> {
+        if let Some(error) = self.events.failure() {
+            return Err(Fail::new(rovik_protocol::FailCode::Unreachable, error));
+        }
         if host.is_empty() {
             return Err(Fail::new(
                 rovik_protocol::FailCode::BadRequest,
                 "A remote host ID is required",
             ));
         }
-        match &self.0 {
-            Backend::Embedded(backend) => backend.remote.host_call(host, request).await,
+        match &self.backend {
+            Backend::Embedded { backend, lease } => {
+                if lease.session.is_closed() {
+                    return Err(Fail::new(
+                        rovik_protocol::FailCode::Unreachable,
+                        "Desktop client session ended",
+                    ));
+                }
+                backend.remote.host_call(host, request).await
+            }
             #[cfg(unix)]
             Backend::Local(client) => client.call_host(host, request).await.map_err(transport)?,
         }

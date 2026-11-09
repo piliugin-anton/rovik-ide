@@ -1660,8 +1660,8 @@ operations. Status includes connected hosts, and `call_host` explicitly targets
 a host for operations such as connector setup. The handshake requires client
 acknowledgement before accepting operations; a stalled handshake cannot block
 other clients. A lost or cancelled reply invalidates the client connection, and
-mutations are never retried automatically. Windows named pipes, event
-subscriptions, and automatic desktop attachment are not enabled yet. Native
+mutations are never retried automatically. Windows named pipes, global agent
+event subscriptions, and automatic desktop attachment are not enabled yet. Native
 Tauri commands outside `rovik-protocol::Request` still need protocol adapters
 before their window-side services can be removed. Build the bootstrap host with
 `cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
@@ -1674,9 +1674,11 @@ never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 4 adds explicit desktop requests and forwards
-the backend’s serialized replies unchanged. VFS subscriptions still use the
-embedded backend until client-scoped event delivery is available. See the
+use the adapter. Local protocol 5 adds private client event connections alongside
+explicit desktop requests. VFS subscriptions now use this transport in both
+embedded and IPC modes. Each client owns its subscriptions; disconnecting it
+cleans up only its resources. Bounded queues fail explicitly if a consumer falls
+behind, and native callback loss cancels its producer. See the
 [remaining command migration phases](docs/design/desktop-command-migration.md).
 
 Chat data and drafts, attachments, CLM tools, memory, AI/project/network settings,

@@ -33,6 +33,43 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     let connection = DesktopConnection::embedded(backend.clone());
     desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
     desktop_operations::check_settings_and_chat_contract(&connection).await;
+    use rovik_client::desktop_api::vfs::VfsRequest;
+    let other = DesktopConnection::embedded(backend.clone());
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let subscription = connection
+        .desktop_stream(
+            |sink| VfsRequest::Subscribe { kinds: None, sink }.into(),
+            move |batch| sent.send(batch).is_ok(),
+        )
+        .await
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        other
+            .desktop(VfsRequest::Unsubscribe { id: subscription }.into())
+            .await
+            .unwrap(),
+        false
+    );
+    backend
+        .core
+        .vfs
+        .write_unmounted("event-test.txt", b"private delivery")
+        .unwrap();
+    let batch = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(batch.to_string().contains("event-test.txt"), "{batch}");
+    assert_eq!(
+        connection
+            .desktop(VfsRequest::Unsubscribe { id: subscription }.into())
+            .await
+            .unwrap(),
+        true
+    );
+    drop(other);
     api::chat_create_dialog(
         &backend.core.db,
         NewDialog {

@@ -35,6 +35,8 @@ pub mod deploy;
 pub mod desktop_api;
 pub mod desktop_backend;
 pub mod desktop_connection;
+mod desktop_events;
+pub mod desktop_session;
 pub mod host_settings;
 pub mod host_shell;
 mod hosts;

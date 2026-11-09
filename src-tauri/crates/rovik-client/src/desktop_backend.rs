@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Client resource lifetimes and private event streams.
+    pub sessions: crate::desktop_session::Sessions,
     /// Chat persistence, execution, MCP, and virtual files.
     pub core: Core,
     /// Credentials shared by provider, MCP, and host services.
@@ -95,6 +97,7 @@ impl DesktopBackend {
         }));
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
+            sessions: Default::default(),
             core,
             secrets,
             keys,
@@ -154,6 +157,7 @@ impl DesktopBackend {
     /// hosting process exits. Window disconnection must not call this
     /// once the service moves into a shared process.
     pub async fn shutdown(&self) {
+        self.sessions.close_all();
         self.core.shutdown().await;
     }
 }
@@ -195,6 +199,7 @@ mod routing_tests {
             "test",
         ));
         DesktopBackend {
+            sessions: Default::default(),
             core,
             secrets,
             keys,

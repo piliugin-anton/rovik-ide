@@ -152,8 +152,52 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         })
         .await
         .unwrap();
+    // A private event connection cannot control another window's subscription.
+    use rovik_client::desktop_api::vfs::VfsRequest;
+    use rovik_client::desktop_session::EventBody;
+    let mut events = client_a.events().await.unwrap();
+    let subscription = client_a
+        .desktop(
+            VfsRequest::Subscribe {
+                kinds: None,
+                sink: "window-a".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        client_b
+            .desktop(VfsRequest::Unsubscribe { id: subscription }.into())
+            .await
+            .unwrap()
+            .unwrap(),
+        false
+    );
+    assert_eq!(
+        client_a
+            .desktop(VfsRequest::Unsubscribe { id: subscription }.into())
+            .await
+            .unwrap()
+            .unwrap(),
+        true
+    );
+    let ended = tokio::time::timeout(Duration::from_secs(10), events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended.sink, "window-a");
+    assert!(matches!(ended.body, EventBody::End));
+    // Losing the owner connection terminates its event stream, without touching B.
     drop(adapter);
     drop(client_a);
+    assert!(tokio::time::timeout(Duration::from_secs(10), events.next())
+        .await
+        .unwrap()
+        .is_err());
     assert!(matches!(
         client_b
             .call(rovik_protocol::Request::AgentStatus)

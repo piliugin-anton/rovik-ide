@@ -78,8 +78,9 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
                             let backend = backend.clone();
                             clients.spawn(async move {
                                 let result = async {
+                                    let session = pending.session().to_string();
                                     let stream = pending.finish().await?;
-                                    local_backend::rpc::serve(stream, backend).await
+                                    local_backend::rpc::serve(stream, backend, session).await
                                 }.await;
                                 if let Err(error) = result {
                                     eprintln!("Local backend RPC: {error}");

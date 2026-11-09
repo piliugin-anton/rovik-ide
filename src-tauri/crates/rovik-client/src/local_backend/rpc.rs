@@ -4,6 +4,7 @@
 use super::{connect, Ready};
 use crate::desktop_api::DesktopRequest;
 use crate::desktop_backend::DesktopBackend;
+use crate::desktop_session::{DesktopEvent, SessionEvents};
 #[cfg(test)]
 use rovik_protocol::Frame;
 use rovik_protocol::{Fail, Request, Response};
@@ -40,6 +41,12 @@ enum ClientFrame {
         id: u64,
         req: Box<DesktopRequest>,
     },
+    Subscribe {
+        session: String,
+    },
+    CancelSink {
+        sink: String,
+    },
     Ping,
 }
 
@@ -53,6 +60,15 @@ enum ServerFrame {
     DesktopReply {
         id: u64,
         res: Result<serde_json::Value, serde_json::Value>,
+    },
+    Subscribed {
+        result: Result<(), String>,
+    },
+    Event {
+        event: DesktopEvent,
+    },
+    EventFailure {
+        message: String,
     },
     Pong,
 }
@@ -97,16 +113,51 @@ pub struct Client {
     /// The backend instance and session this connection belongs to.
     pub ready: Ready,
     stream: Mutex<Option<UnixStream>>,
+    directory: std::path::PathBuf,
 }
 
 impl Client {
     /// Attaches to an existing backend without constructing a local Core.
     pub async fn connect(directory: &Path) -> io::Result<Self> {
         let (stream, ready) = connect(directory).await?;
-        Ok(Self {
+        let client = Self {
             ready,
             stream: Mutex::new(Some(stream)),
+            directory: directory.to_path_buf(),
+        };
+        // The owner session must exist before its separate event connection
+        // can attach. A reply also proves the server has entered its dispatcher.
+        client.exchange(ClientFrame::Ping).await?;
+        Ok(client)
+    }
+
+    /// Attaches an independent event stream, so output never waits behind a call.
+    pub async fn events(&self) -> io::Result<EventStream> {
+        let (mut stream, _) = connect(&self.directory).await?;
+        tokio::time::timeout(IO_WAIT, async {
+            write(
+                &mut stream,
+                &ClientFrame::Subscribe {
+                    session: self.ready.session.clone(),
+                },
+            )
+            .await?;
+            match read(&mut stream).await? {
+                ServerFrame::Subscribed { result: Ok(()) } => Ok(EventStream { stream }),
+                ServerFrame::Subscribed { result: Err(error) } => Err(io::Error::other(error)),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Unexpected event subscription reply",
+                )),
+            }
         })
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Desktop event subscription timed out",
+            )
+        })?
     }
 
     /// Sends exactly one call. An IO error leaves completion uncertain;
@@ -210,13 +261,15 @@ impl Client {
             };
             let matches = matches!(
                 (&frame, &reply),
-                (
-                    ClientFrame::Call { id: 1, .. },
-                    ServerFrame::Reply { id: 1, .. }
-                ) | (
-                    ClientFrame::Desktop { id: 1, .. },
-                    ServerFrame::DesktopReply { id: 1, .. }
-                )
+                (ClientFrame::Ping, ServerFrame::Pong)
+                    | (
+                        ClientFrame::Call { id: 1, .. },
+                        ServerFrame::Reply { id: 1, .. }
+                    )
+                    | (
+                        ClientFrame::Desktop { id: 1, .. },
+                        ServerFrame::DesktopReply { id: 1, .. }
+                    )
             );
             if !matches {
                 return Err(io::Error::new(
@@ -236,11 +289,22 @@ impl Client {
 
 /// Serves requests after the listener has authenticated the peer. A
 /// disconnected client does not cancel an already accepted operation.
-pub async fn serve(mut stream: UnixStream, backend: Arc<DesktopBackend>) -> io::Result<()> {
+pub async fn serve(
+    mut stream: UnixStream,
+    backend: Arc<DesktopBackend>,
+    session_id: String,
+) -> io::Result<()> {
+    let lease = backend
+        .sessions
+        .register(session_id)
+        .map_err(io::Error::other)?;
     loop {
         // An idle window may stay connected indefinitely. Once bytes arrive,
         // bound the time allowed to finish a frame to reject stalled senders.
-        stream.readable().await?;
+        tokio::select! {
+            _ = lease.session.closed() => return Ok(()),
+            ready = stream.readable() => ready?,
+        }
         let frame: ClientFrame = match tokio::time::timeout(IO_WAIT, read(&mut stream)).await {
             Ok(Ok(frame)) => frame,
             Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
@@ -262,8 +326,33 @@ pub async fn serve(mut stream: UnixStream, backend: Arc<DesktopBackend>) -> io::
             },
             ClientFrame::Desktop { id, req } => ServerFrame::DesktopReply {
                 id,
-                res: req.dispatch(&backend).await,
+                res: req.dispatch_in(&backend, Some(&lease.session)).await,
             },
+            ClientFrame::Subscribe { session } => {
+                let events = backend
+                    .sessions
+                    .get(&session)
+                    .and_then(|session| session.events());
+                let result = events.as_ref().map(|_| ()).map_err(Clone::clone);
+                tokio::time::timeout(
+                    IO_WAIT,
+                    write(&mut stream, &ServerFrame::Subscribed { result }),
+                )
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "Event client stopped reading")
+                })??;
+                return match events {
+                    Ok(events) => serve_events(stream, events).await,
+                    Err(_) => Ok(()),
+                };
+            }
+            ClientFrame::CancelSink { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Callback cancellation requires the event connection",
+                ))
+            }
             ClientFrame::Ping => ServerFrame::Pong,
         };
         tokio::time::timeout(IO_WAIT, write(&mut stream, &reply))
@@ -271,6 +360,92 @@ pub async fn serve(mut stream: UnixStream, backend: Arc<DesktopBackend>) -> io::
             .map_err(|_| {
                 io::Error::new(io::ErrorKind::TimedOut, "Backend client stopped reading")
             })??;
+    }
+}
+
+/// The private event connection of one desktop client.
+pub struct EventStream {
+    stream: UnixStream,
+}
+
+impl EventStream {
+    /// Stops the producer when its native UI callback disappears.
+    pub async fn reject(&mut self, sink: String) -> Result<(), String> {
+        tokio::time::timeout(
+            IO_WAIT,
+            write(&mut self.stream, &ClientFrame::CancelSink { sink }),
+        )
+        .await
+        .map_err(|_| "Desktop event cancellation timed out".to_string())?
+        .map_err(|e| e.to_string())
+    }
+
+    /// Reads in source order. Loss is explicit and requires a new client session.
+    pub async fn next(&mut self) -> Result<DesktopEvent, String> {
+        match read(&mut self.stream)
+            .await
+            .map_err(|e| format!("Desktop event connection failed: {e}"))?
+        {
+            ServerFrame::Event { event } => Ok(event),
+            ServerFrame::EventFailure { message } => Err(message),
+            _ => Err("Unexpected desktop event frame".into()),
+        }
+    }
+}
+
+async fn serve_events(stream: UnixStream, mut events: SessionEvents) -> io::Result<()> {
+    let (mut input, mut output) = stream.into_split();
+    let session = events.session();
+    // Read complete cancellation frames independently: selecting directly on
+    // read() would discard partially read frames whenever an event arrived.
+    let mut reader = tokio::spawn(async move {
+        loop {
+            input.readable().await?;
+            match tokio::time::timeout(IO_WAIT, read(&mut input))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Event client stalled"))??
+            {
+                ClientFrame::CancelSink { sink } => session.cancel_sink(&sink),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Unexpected event-stream input",
+                    ))
+                }
+            }
+        }
+    });
+    struct Abort(tokio::task::AbortHandle);
+    impl Drop for Abort {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _abort = Abort(reader.abort_handle());
+    loop {
+        let event = tokio::select! {
+            event = events.next() => event,
+            result = &mut reader => return match result {
+                Ok(Err(error)) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
+                Ok(result) => result,
+                Err(error) => Err(io::Error::other(error)),
+            },
+        };
+        let (frame, ended) = match event {
+            Ok(event) => (ServerFrame::Event { event }, false),
+            Err(message) => (ServerFrame::EventFailure { message }, true),
+        };
+        tokio::time::timeout(IO_WAIT, write(&mut output, &frame))
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Desktop event consumer stopped reading",
+                )
+            })??;
+        if ended {
+            return Ok(());
+        }
     }
 }
 
@@ -320,6 +495,7 @@ mod tests {
                     session: "test".into(),
                 },
                 stream: Mutex::new(Some(client)),
+                directory: std::path::PathBuf::new(),
             },
             server,
         )

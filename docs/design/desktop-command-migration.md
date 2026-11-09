@@ -16,7 +16,7 @@ existing protocol and routing. Native window actions stay in Tauri.
 1. **Completed (`be2bb55`)**: Overlay operations and non-streaming VFS mount, file, and history commands.
    Preserve remote imported-result behavior and idle checks. Validate embedded
    and real-daemon calls, errors, and connection reuse.
-2. Chat data, memory, non-browser MCP, host, and settings request/reply operations.
+2. **Completed (`c4879f7`)**: Chat data, memory, non-browser MCP, host, and settings request/reply operations.
    Preserve credentials handling, remote routing, and local mirror reads.
 3. Per-client project registration, filesystem and execution ownership, including
    terminal controls. Separate
@@ -35,3 +35,12 @@ pretend they are ready for IPC. The UI remains embedded until these are complete
 Automatic daemon packaging/start/attach; per-window event routing and reconnect
 recovery; lifecycle, crash, and upgrade behavior; Windows named pipes; real
 multi-window FUSE and execution isolation tests.
+
+## Private event transport prerequisite
+
+VFS subscriptions now use client sessions and a separate authenticated event
+connection, so output does not wait behind an RPC call. Embedded clients use
+the same resource ownership and callback routing. Disconnect and callback-loss
+cleanup cannot cancel another client's resources. Queues are bounded by event
+count and bytes; overflow fails the session explicitly. This is the foundation
+for phases 3 and 4, not global agent event replay or reconnect recovery.

@@ -5,10 +5,9 @@ use rovik_client::desktop_api::{vfs::VfsRequest, DesktopRequest};
 use rovik_client::desktop_connection::DesktopConnection;
 use tauri::State;
 
+use rovik_core::vfs;
 use rovik_core::vfs::history::HistoryLimits;
 use rovik_core::vfs::problem::SettingsPane;
-use rovik_core::vfs::{self, EventBatch};
-use rovik_core::Core;
 use tauri::ipc::Channel;
 
 #[tauri::command]
@@ -97,16 +96,24 @@ pub async fn vfs_list(
 /// until the page that subscribed is gone.
 #[tauri::command]
 pub async fn vfs_subscribe(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     kinds: Option<Vec<String>>,
-    on_events: Channel<EventBatch>,
-) -> Result<u64, String> {
-    vfs::vfs_subscribe(&core.vfs, kinds, move |batch| on_events.send(batch).is_ok()).await
+    on_events: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_stream(
+            |sink| VfsRequest::Subscribe { kinds, sink }.into(),
+            move |batch| on_events.send(batch).is_ok(),
+        )
+        .await
 }
 
 #[tauri::command]
-pub async fn vfs_unsubscribe(core: State<'_, Core>, id: u64) -> Result<bool, String> {
-    vfs::vfs_unsubscribe(&core.vfs, id).await
+pub async fn vfs_unsubscribe(
+    backend: State<'_, DesktopConnection>,
+    id: u64,
+) -> Result<serde_json::Value, String> {
+    backend.desktop(VfsRequest::Unsubscribe { id }.into()).await
 }
 
 /// A file's revisions, oldest first.
