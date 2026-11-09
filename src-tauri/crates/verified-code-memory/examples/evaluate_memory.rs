@@ -229,8 +229,14 @@ fn required_evidence(
     Ok(evidence)
 }
 
-/// Fixes fixture IDs and claim times before indexing: randomly generated UUIDs
-/// otherwise change reciprocal-rank ties between identical experiment replays.
+fn fixture_claim_time(now: chrono::DateTime<chrono::Utc>) -> String {
+    // Keep recency at one whole day with twelve hours of margin. A fixed
+    // calendar date changed floating-point ranking ties as the benchmark aged.
+    (now - chrono::Duration::hours(36)).to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
+/// Fixes fixture IDs and claim ages before indexing: random UUIDs or a changing
+/// recency bonus otherwise change rank ties between identical replays.
 fn stabilize_fixture(
     uri: &str,
     expected: uuid::Uuid,
@@ -238,6 +244,7 @@ fn stabilize_fixture(
     let mut connection = rusqlite::Connection::open(uri)?;
     connection.pragma_update(None, "foreign_keys", false)?;
     let transaction = connection.transaction()?;
+    let claim_time = fixture_claim_time(chrono::Utc::now());
     let ids = {
         let mut statement = transaction
             .prepare("SELECT id FROM memories ORDER BY repo,title,verification,content")?;
@@ -254,7 +261,7 @@ fn stabilize_fixture(
             "UPDATE memory_files SET memory_id=?1 WHERE memory_id=?2",
             rusqlite::params![id.to_string(), old],
         )?;
-        transaction.execute("UPDATE memories SET id=?1,created_at=?3,updated_at=?3,content_updated_at=?3 WHERE id=?2", rusqlite::params![id.to_string(),old,"2026-11-07T00:00:00+00:00"])?;
+        transaction.execute("UPDATE memories SET id=?1,created_at=?3,updated_at=?3,content_updated_at=?3 WHERE id=?2", rusqlite::params![id.to_string(),old,&claim_time])?;
     }
     transaction.commit()?;
     new_expected.ok_or_else(|| "expected fixture record disappeared".into())
@@ -615,6 +622,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deterministic_claim_age_stays_one_day_across_calendar_boundaries() {
+        for text in [
+            "2026-11-08T00:00:00+00:00",
+            "2026-11-09T23:59:59+00:00",
+            "2027-01-01T00:00:00+00:00",
+        ] {
+            let now = chrono::DateTime::parse_from_rfc3339(text)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            let stamp = fixture_claim_time(now);
+            let claim = chrono::DateTime::parse_from_rfc3339(&stamp)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert_eq!((now - claim).num_days(), 1);
+            assert_eq!(stamp.len(), 25);
+        }
+    }
 
     #[test]
     fn multiple_fixture_files_reach_lookup_and_intent_only_omits_both_file_fields() {
