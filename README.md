@@ -2112,6 +2112,13 @@ use a concise explanation so duplicate matching metadata does not consume claim
 space. The same protected-packet checks apply. See the
 [denser context experiment](docs/design/long-term-memory-context-completion-nov10-2026.md).
 
+New name additions also use the supplied packet allowance. If the legacy plan
+adds oversized canonical-title claims, recall can retry compact eligible
+alternatives for those names. Every replacement must render in full, and every
+other legacy identity, context and position must survive. Missing alternatives
+or packet pressure retain the original plan. See the
+[name-addition experiment](docs/design/long-term-memory-name-fit-nov10-2026.md).
+
 For a fully subscribed focused request, an independently unrelated leading result
 may supply one additional title slot. This exception requires complete delivery
 of every explicit symbol title, file and distinctive literal subject, with at

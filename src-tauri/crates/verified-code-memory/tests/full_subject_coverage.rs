@@ -13,9 +13,7 @@ impl MemoryEmbedder for SubjectModel {
         Ok(
             if text.contains("lock") || text.starts_with("File context") {
                 vec![0.0, 1.0]
-            } else if text.starts_with("crowding") {
-                vec![0.95, 0.3122499]
-            } else if text.starts_with("SHARED MEMORY STORE") {
+            } else if text.starts_with("crowding") || text.starts_with("SHARED MEMORY STORE") {
                 vec![0.95, 0.3122499]
             } else if text.starts_with("Cross references") {
                 vec![0.9, 0.4358899]

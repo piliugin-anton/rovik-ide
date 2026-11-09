@@ -175,6 +175,15 @@ title fact may occupy another unprotected slot. Supplemental title matches use
 the specific requested-title explanation directly, retaining scores/components,
 claim text and evidence. Full protected-claim rendering checks remain unchanged.
 
+With a packet allowance, the name planner can retry newly planned oversized
+whole-title matches using fitting canonical alternatives from the same filtered
+collector. It keeps the exact legacy plan unless all oversized new name additions
+are replaced together, each replacement renders completely, every other record
+retains its identity/context/position, and all previously complete claims remain
+complete. Original incumbents are preserved. Already complete canonical coverage
+skips the retry. See the
+[name-fit experiment](../../../docs/design/long-term-memory-name-fit-nov10-2026.md).
+
 A narrow exception permits an unanchored leading result to supply one additional
 title slot when the ordinary placement cannot fit. Every explicitly requested
 canonical title, file and distinctive literal subject must then render in full,

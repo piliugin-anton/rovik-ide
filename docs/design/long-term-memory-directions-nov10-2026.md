@@ -149,3 +149,15 @@ recover all four compact facts with the remaining slots. The next distinct trial
 is packet-feasible selection for new name additions, preserving existing anchors
 and full-packet rollback. This follows the observed addition path, rather than
 assuming every oversized selected record was an original incumbent.
+
+## Packet-feasible name additions completed
+
+The [name-fit change](long-term-memory-name-fit-nov10-2026.md) resolves the remaining
+four-name oversized development category, 0/4 → 4/4. Both the standard and full
+720-record cohorts improve 28/32 → 32/32 at each packet budget; reserved scores
+remain 32/32. All 5,700 compared policy views pass, with 16 correlated complete-answer
+gains and no measured regression. Only newly planned oversized canonical name
+additions can change; every other legacy identity/context/position and previously
+complete claim is preserved. Missing alternatives or packet pressure keep the
+exact old plan. Implicit semantic matching, capture accuracy, paired agent
+usefulness and judged precision remain separate priorities.

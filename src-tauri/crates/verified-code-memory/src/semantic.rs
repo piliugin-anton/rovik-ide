@@ -499,7 +499,7 @@ impl SemanticIndex {
         {
             let minimum_names = if query.files.is_empty() { 2 } else { 1 };
             if let Some(names) = focused_identifiers(&query.task, minimum_names) {
-                let supplementary = (|| -> Result<_> {
+                let plan = |prefer_fitting_names: bool| -> Result<_> {
                     let mut protected = vec![false; found.len()];
                     protected[0] = true;
                     let mut anchored_leader = names.iter().any(|name| {
@@ -524,6 +524,7 @@ impl SemanticIndex {
                         }
                     }
                     let mut additions: Vec<RetrievedMemory> = Vec::new();
+                    let mut oversized_names = Vec::new();
                     for name in &names {
                         let mut lookup = query.clone();
                         lookup.task = (*name).to_owned();
@@ -556,6 +557,41 @@ impl SemanticIndex {
                             else {
                                 return Ok(None);
                             };
+                            if let Some(budget) = query.packet_budget {
+                                if crate::retrieval::estimate_tokens(&candidate.record.content)
+                                    > budget
+                                {
+                                    if prefer_fitting_names
+                                        && crate::retrieval::identifier_title_matches(
+                                            name,
+                                            &candidate.record.title,
+                                        )
+                                    {
+                                        if let Some(fitting) = self
+                                            .store
+                                            .identifier_candidates_filtered(&lookup, |record| {
+                                                accept(record)
+                                                    && crate::retrieval::identifier_title_matches(
+                                                        name,
+                                                        &record.title,
+                                                    )
+                                                    && crate::retrieval::estimate_tokens(
+                                                        &record.content,
+                                                    ) <= budget
+                                            })?
+                                            .into_iter()
+                                            .next()
+                                        {
+                                            candidate = fitting;
+                                        }
+                                    }
+                                    if crate::retrieval::estimate_tokens(&candidate.record.content)
+                                        > budget
+                                    {
+                                        oversized_names.push(candidate.record.id);
+                                    }
+                                }
+                            }
                             candidate
                                 .reason
                                 .push_str(", requested complete symbol match");
@@ -724,10 +760,79 @@ impl SemanticIndex {
                             Err(error) => eprintln!("memory: title coverage unavailable; preserving legacy plan: {error}"),
                         }
                     }
-                    Ok(Some((slots, additions)))
+                    Ok(Some((slots, additions, oversized_names)))
+                };
+                let supplementary = (|| -> Result<_> {
+                    let legacy = plan(false)?;
+                    let Some((slots, additions, oversized)) = &legacy else {
+                        return Ok(None);
+                    };
+                    let Some(budget) = query.packet_budget.filter(|_| !oversized.is_empty()) else {
+                        return Ok(legacy);
+                    };
+                    let assemble = |slots: &[usize], additions: &[RetrievedMemory]| {
+                        let mut result = found.clone();
+                        for (slot, hit) in slots.iter().copied().zip(additions) {
+                            let mut hit = hit.clone();
+                            hit.score = result[slot].score;
+                            result[slot] = hit;
+                        }
+                        result
+                    };
+                    let before = assemble(slots, additions);
+                    let old_packet = self.store.render_packet_with_evidence(&before, budget);
+                    if names.iter().all(|name| {
+                        before.iter().any(|hit| {
+                            old_packet.complete_ids.contains(&hit.record.id)
+                                && crate::retrieval::identifier_title_matches(
+                                    name,
+                                    &hit.record.title,
+                                )
+                        })
+                    }) {
+                        return Ok(legacy);
+                    }
+                    let trial = match plan(true) {
+                        Ok(Some(trial)) => trial,
+                        Ok(None) => return Ok(legacy),
+                        Err(error) => {
+                            eprintln!("memory: fitting name lookup unavailable; preserving legacy plan: {error}");
+                            return Ok(legacy);
+                        }
+                    };
+                    let after = assemble(&trial.0, &trial.1);
+                    let new_packet = self.store.render_packet_with_evidence(&after, budget);
+                    // Replace the oversized additions atomically. Only new,
+                    // individually undeliverable name additions may
+                    // change. Retain every other identity and position, and
+                    // require full replacements without losing complete claims.
+                    if !before.iter().any(|old| {
+                        oversized.contains(&old.record.id)
+                            && after.iter().any(|new| new.record.id == old.record.id)
+                    }) && before.iter().zip(&after).all(|(old, new)| {
+                        (old.record.id == new.record.id
+                            && old.record.same_context_claim(&new.record))
+                            || (old.record.id != new.record.id
+                                && oversized.contains(&old.record.id)
+                                && new_packet.complete_ids.contains(&new.record.id)
+                                && names.iter().any(|name| {
+                                    crate::retrieval::identifier_title_matches(
+                                        name,
+                                        &new.record.title,
+                                    )
+                                }))
+                    }) && old_packet
+                        .complete_ids
+                        .iter()
+                        .all(|id| new_packet.complete_ids.contains(id))
+                    {
+                        Ok(Some(trial))
+                    } else {
+                        Ok(legacy)
+                    }
                 })();
                 match supplementary {
-                    Ok(Some((slots, additions))) => {
+                    Ok(Some((slots, additions, _))) => {
                         for (slot, mut hit) in slots.into_iter().zip(additions) {
                             hit.score = found[slot].score;
                             found[slot] = hit;
