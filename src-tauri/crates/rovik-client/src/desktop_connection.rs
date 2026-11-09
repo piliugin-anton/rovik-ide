@@ -15,6 +15,21 @@ enum Backend {
 }
 
 impl DesktopConnection {
+    /// Runs a desktop operation and preserves its existing UI reply shape.
+    pub async fn desktop(
+        &self,
+        request: crate::desktop_api::DesktopRequest,
+    ) -> Result<serde_json::Value, String> {
+        match &self.0 {
+            Backend::Embedded(backend) => request.dispatch(backend).await,
+            #[cfg(unix)]
+            Backend::Local(client) => client
+                .desktop(request)
+                .await
+                .map_err(|e| transport(e).message)?,
+        }
+    }
+
     /// Uses the application's existing backend during command migration.
     pub fn embedded(backend: Arc<DesktopBackend>) -> Self {
         Self(Backend::Embedded(backend))

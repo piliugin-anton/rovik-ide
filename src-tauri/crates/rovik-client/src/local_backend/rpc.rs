@@ -2,8 +2,11 @@
 //! automatically retried: a lost reply may follow a committed mutation.
 
 use super::{connect, Ready};
+use crate::desktop_api::DesktopRequest;
 use crate::desktop_backend::DesktopBackend;
-use rovik_protocol::{Fail, Frame, Request, Response};
+#[cfg(test)]
+use rovik_protocol::Frame;
+use rovik_protocol::{Fail, Request, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{io, path::Path, sync::Arc, time::Duration};
 use tokio::{
@@ -24,7 +27,25 @@ enum ClientFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host: Option<String>,
     },
+    Desktop {
+        id: u64,
+        req: Box<DesktopRequest>,
+    },
     Ping,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "camelCase")]
+enum ServerFrame {
+    Reply {
+        id: u64,
+        res: Box<Result<Response, Fail>>,
+    },
+    DesktopReply {
+        id: u64,
+        res: Result<serde_json::Value, String>,
+    },
+    Pong,
 }
 
 async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<T> {
@@ -106,6 +127,49 @@ impl Client {
         host: Option<String>,
         request: Request,
     ) -> io::Result<Result<Response, Fail>> {
+        match self
+            .exchange(ClientFrame::Call {
+                id: 1,
+                req: Box::new(request),
+                host,
+            })
+            .await?
+        {
+            ServerFrame::Reply { id: 1, res } => Ok(*res),
+            _ => {
+                self.stream.lock().await.take();
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Unexpected backend reply",
+                ))
+            }
+        }
+    }
+
+    /// Runs a desktop-only operation without changing cloud protocol routing.
+    pub async fn desktop(
+        &self,
+        request: DesktopRequest,
+    ) -> io::Result<Result<serde_json::Value, String>> {
+        match self
+            .exchange(ClientFrame::Desktop {
+                id: 1,
+                req: Box::new(request),
+            })
+            .await?
+        {
+            ServerFrame::DesktopReply { id: 1, res } => Ok(res),
+            _ => {
+                self.stream.lock().await.take();
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Unexpected desktop reply",
+                ))
+            }
+        }
+    }
+
+    async fn exchange(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
         let mut slot = self.stream.lock().await;
         let mut stream = slot.take().ok_or_else(|| {
             io::Error::new(
@@ -113,25 +177,28 @@ impl Client {
                 "Backend connection lost; refresh state before retrying",
             )
         })?;
-        // Only one call is outstanding per connection; no reuse after an
-        // uncertain reply, so a fixed correlation ID is sufficient.
+        // Restore only after a complete matching response. Cancellation leaves
+        // the connection unusable and never retries a possibly completed write.
         let result = tokio::time::timeout(IO_WAIT, async {
-            write(
-                &mut stream,
-                &ClientFrame::Call {
-                    id: 1,
-                    req: Box::new(request),
-                    host,
-                },
-            )
-            .await?;
-            match read(&mut stream).await? {
-                Frame::Reply { id: 1, res } => Ok(res),
-                _ => Err(io::Error::new(
+            write(&mut stream, &frame).await?;
+            let reply: ServerFrame = read(&mut stream).await?;
+            let matches = matches!(
+                (&frame, &reply),
+                (
+                    ClientFrame::Call { id: 1, .. },
+                    ServerFrame::Reply { id: 1, .. }
+                ) | (
+                    ClientFrame::Desktop { id: 1, .. },
+                    ServerFrame::DesktopReply { id: 1, .. }
+                )
+            );
+            if !matches {
+                return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Unexpected backend reply",
-                )),
+                ));
             }
+            Ok(reply)
         })
         .await
         .map_err(|_| {
@@ -166,14 +233,18 @@ pub async fn serve(mut stream: UnixStream, backend: Arc<DesktopBackend>) -> io::
             }
         };
         let reply = match frame {
-            ClientFrame::Call { id, req, host } => Frame::Reply {
+            ClientFrame::Call { id, req, host } => ServerFrame::Reply {
                 id,
-                res: match host {
+                res: Box::new(match host {
                     Some(host) => backend.remote.host_call(&host, *req).await,
                     None => backend.dispatch(*req).await,
-                },
+                }),
             },
-            ClientFrame::Ping => Frame::Pong,
+            ClientFrame::Desktop { id, req } => ServerFrame::DesktopReply {
+                id,
+                res: req.dispatch(&backend).await,
+            },
+            ClientFrame::Ping => ServerFrame::Pong,
         };
         tokio::time::timeout(IO_WAIT, write(&mut stream, &reply))
             .await
@@ -186,6 +257,37 @@ pub async fn serve(mut stream: UnixStream, backend: Arc<DesktopBackend>) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn desktop_calls_reject_cloud_replies_and_do_not_reuse_the_connection() {
+        let (client, mut server) = pair();
+        let peer = tokio::spawn(async move {
+            let frame: ClientFrame = read(&mut server).await.unwrap();
+            assert!(matches!(frame, ClientFrame::Desktop { id: 1, .. }));
+            write(
+                &mut server,
+                &ServerFrame::Reply {
+                    id: 1,
+                    res: Box::new(Err(Fail::new(
+                        rovik_protocol::FailCode::BadRequest,
+                        "wrong reply family",
+                    ))),
+                },
+            )
+            .await
+            .unwrap();
+        });
+        let request = || DesktopRequest::Vfs(crate::desktop_api::vfs::VfsRequest::Status);
+        assert_eq!(
+            client.desktop(request()).await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        peer.await.unwrap();
+        assert_eq!(
+            client.desktop(request()).await.unwrap_err().kind(),
+            io::ErrorKind::NotConnected
+        );
+    }
 
     fn pair() -> (Client, UnixStream) {
         let (client, server) = UnixStream::pair().unwrap();

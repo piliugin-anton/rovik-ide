@@ -1,6 +1,9 @@
 //! Actual daemon processes arbitrate startup through the OS lifetime lock.
 #![cfg(unix)]
 
+#[path = "support/desktop_operations.rs"]
+mod desktop_operations;
+
 use rovik_client::local_backend::{connect, directory};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -127,6 +130,15 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     let adapter = rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
         .await
         .unwrap();
+    desktop_operations::check_filesystem_and_overlay_contract(&adapter).await;
+    let shared_volume = client_b
+        .desktop(rovik_client::desktop_api::DesktopRequest::Vfs(
+            rovik_client::desktop_api::vfs::VfsRequest::Status,
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(shared_volume["history"]["limits"]["maxBytes"], 4096);
     let status: rovik_protocol::agent::AgentStatus = adapter
         .call(rovik_protocol::Request::AgentStatus)
         .await

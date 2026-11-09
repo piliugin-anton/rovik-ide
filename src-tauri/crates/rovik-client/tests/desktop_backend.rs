@@ -1,5 +1,8 @@
 //! A separate test executable keeps backend process globals isolated from
 //! the client's unit tests.
+#[path = "support/desktop_operations.rs"]
+mod desktop_operations;
+
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::AgentEvent;
@@ -28,6 +31,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
         .unwrap();
     let backend = Arc::new(backend);
     let connection = DesktopConnection::embedded(backend.clone());
+    desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
     api::chat_create_dialog(
         &backend.core.db,
         NewDialog {

@@ -1657,7 +1657,7 @@ The Unix endpoint also serves bounded typed request/reply calls through
 `local_backend::rpc::Client`. Requests route by their chat or message identity;
 run start, steering, deletion, and configuration use the existing remote-routing
 operations. Status includes connected hosts, and `call_host` explicitly targets
-a host for operations such as connector setup. Protocol 2 requires client
+a host for operations such as connector setup. The handshake requires client
 acknowledgement before accepting operations; a stalled handshake cannot block
 other clients. A lost or cancelled reply invalidates the client connection, and
 mutations are never retried automatically. Windows named pipes, event
@@ -1672,6 +1672,12 @@ IPC modes. The desktop currently selects embedded mode explicitly while the
 remaining commands and event subscriptions are migrated. IPC connection errors
 never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
+
+Overlay operations and non-streaming VFS mount, file, and history commands also
+use the adapter. Local protocol 3 adds explicit desktop requests and forwards
+the backend’s serialized replies unchanged. VFS subscriptions still use the
+embedded backend until client-scoped event delivery is available. See the
+[remaining command migration phases](docs/design/desktop-command-migration.md).
 
 ### Chat isolation
 
