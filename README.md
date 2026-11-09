@@ -2100,6 +2100,11 @@ as complete claims and preserve every previously complete protected name, file
 and context claim. Otherwise recall retains its existing plan. Callers that omit
 the packet allowance retain the earlier behavior. See the
 [title-coverage experiment and regression review](docs/design/long-term-memory-title-coverage-nov9-2026.md).
+Optional title lookup skips claims whose text alone exceeds the entire packet
+allowance before filling its bounded candidate pool. This lets a shorter eligible
+claim be considered; the complete-plan rendering protections still decide whether
+it can be added. See the
+[oversized-title experiment](docs/design/long-term-memory-title-fit-nov9-2026.md).
 
 Native evaluation reports each required record's ID, claim hash, rank and full
 delivery, distinguishing complete claims from fetch hints. Compare two saved

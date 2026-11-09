@@ -619,6 +619,12 @@ impl SemanticIndex {
                                                 name,
                                                 &record.title,
                                             )
+                                            // A claim that exceeds the entire allowance
+                                            // cannot become a complete title addition.
+                                            // Reject it before the collector's bound so
+                                            // a shorter eligible claim can be considered.
+                                            && crate::retrieval::estimate_tokens(&record.content)
+                                                <= budget
                                     })?
                                     .into_iter()
                                     .next()

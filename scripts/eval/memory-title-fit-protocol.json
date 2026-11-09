@@ -1,0 +1,25 @@
+{
+  "baseline": "457a5d0c2ae741a486968f773295eb92d6b75680",
+  "branch": "ltm-improvements-nov9-2026-2",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-title-fit-cases.json": "41e1d58d008e70b8967c5532514d1de6c90f69b47723fc8c96ed14947116feda",
+    "scripts/eval/memory-title-fit-retention-cases.json": "12beba65d84f99717f9cff56051d1aa087b11de7b4d3d37d8d24fe3a7c66a504"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "hypothesis": "A canonical-title candidate whose claim alone exceeds the caller packet budget can never satisfy the existing full-delivery requirement. Exclude such candidates before the existing bounded collector, preserving exact legacy rendering/protected-fact checks. Do not trim claims or change incumbent eligibility.",
+  "selection": "Score development before candidate code changes; select only gains with no per-record regressions. Then replay all 3188 accepted historical policy views and exposed reserved extensions. Keep budgets and capacity-infeasible denominators separate. User requested skipping crate tests; run native recall evaluation only.",
+  "alternatives": "If lower-bound admission does not improve complete answers, inspect whether existing undelivered titles suppress alternative lookup or whether combined rendering pressure blocks the plan. Reject changes with lost delivered facts/ranks or negative packet identity changes.",
+  "policy": {
+    "threshold": 0.3,
+    "dimensions": 384,
+    "limit": 8,
+    "budgets": [1000, 2000],
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "constant_claim_age_hours": 36
+  },
+  "limits": "Synthetic verbose alternatives for eight previously exposed source incidents. Not a semantic/precision/live-agent benchmark; release quality gate unchanged.",
+  "validation_override": "Initial instruction skipped tests. User subsequently requested running oversized alternatives: execute the focused Rust 90-alternative bound/rollback contract, and all native cases with 90 oversized alternatives for each of eight symbols (720 per corpus), both splits, policies and packet budgets. Keep other tests skipped. Freeze runtime unchanged for this stress run.",
+  "stress_harness": "After the user requested all oversized alternatives, improve evaluator memoization for identical effective character inputs in both arms. The backend already truncates before encoding. Keep every stored record and expected fact; require uncached/cached output parity. No application/runtime embedding changes."
+}

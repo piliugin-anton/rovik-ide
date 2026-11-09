@@ -72,11 +72,22 @@ impl MemoryEmbedder for MemoizedEmbeddings {
         self.inner.input_character_limit()
     }
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+        // The encoder cannot observe a tail beyond its declared character
+        // window. Reuse exactly identical effective inputs across verbose
+        // fixture alternatives without changing their stored claims.
+        let key = match self
+            .inner
+            .input_character_limit()
+            .filter(|limit| *limit > 0)
+        {
+            Some(limit) => text.chars().take(limit).collect::<String>(),
+            None => text.to_owned(),
+        };
         if let Some(vector) = self
             .vectors
             .lock()
             .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?
-            .get(text)
+            .get(&key)
         {
             return Ok(vector.clone());
         }
@@ -84,7 +95,7 @@ impl MemoryEmbedder for MemoizedEmbeddings {
         self.vectors
             .lock()
             .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?
-            .insert(text.to_owned(), vector.clone());
+            .insert(key, vector.clone());
         Ok(vector)
     }
 }
@@ -634,6 +645,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memoized_embeddings_share_only_identical_effective_character_inputs() {
+        use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
+        struct Limited {
+            calls: Arc<AtomicUsize>,
+        }
+        impl MemoryEmbedder for Limited {
+            fn dimensions(&self) -> usize {
+                1
+            }
+            fn input_character_limit(&self) -> Option<usize> {
+                Some(3)
+            }
+            fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![
+                    text.chars().take(3).map(|c| c as u32).sum::<u32>() as f32
+                ])
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cached = MemoizedEmbeddings {
+            inner: Box::new(Limited {
+                calls: calls.clone(),
+            }),
+            vectors: Default::default(),
+        };
+        let first = cached.embed("é猫a first archive").unwrap();
+        assert_eq!(first, cached.embed("é猫a second archive").unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_ne!(first, cached.embed("é猫b third archive").unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn deterministic_claim_age_stays_one_day_across_calendar_boundaries() {
