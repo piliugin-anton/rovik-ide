@@ -5219,9 +5219,11 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "ignore",
  "keyring",
  "libc",
  "log",
+ "notify",
  "portable-pty",
  "reqwest",
  "rovik-core",
@@ -5234,7 +5236,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "trash",
  "uuid",
+ "windows",
  "zeroize",
 ]
 
@@ -5367,7 +5371,6 @@ dependencies = [
  "ignore",
  "libc",
  "log",
- "notify",
  "openssl-sys",
  "regex",
  "reqwest",
@@ -5385,7 +5388,6 @@ dependencies = [
  "tokio",
  "trash",
  "uuid",
- "windows",
  "zip",
 ]
 

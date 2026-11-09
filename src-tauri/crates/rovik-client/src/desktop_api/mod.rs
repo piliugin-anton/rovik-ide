@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod chat;
 pub mod clm;
+pub mod filesystem;
 pub mod hosts;
 pub mod mcp;
 pub mod memory;
@@ -23,6 +24,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Client-scoped file operations and watches.
+    Filesystem(Box<filesystem::FilesystemRequest>),
     /// Backend-owned clm operations.
     Clm(Box<clm::ClmRequest>),
     /// Backend-owned chat operations.
@@ -51,32 +54,40 @@ impl DesktopRequest {
         self.dispatch_in(backend, None).await
     }
 
-    pub(crate) async fn dispatch_in(
+    pub(crate) fn dispatch_in<'a>(
         self,
-        backend: &DesktopBackend,
-        session: Option<&std::sync::Arc<crate::desktop_session::Session>>,
-    ) -> DesktopResult {
-        match self {
-            Self::Terminal(request) => request
-                .dispatch(backend, session)
-                .await
-                .map_err(serde_json::Value::String),
-            Self::Clm(request) => request.dispatch(backend).await,
-            Self::Chat(request) => request.dispatch(backend).await,
-            Self::Settings(request) => request.dispatch(backend).await,
-            Self::Mcp(request) => request.dispatch(backend).await,
-            Self::Hosts(request) => request.dispatch(backend).await,
-            Self::Overlay(request) => request
-                .dispatch(backend)
-                .await
-                .map_err(serde_json::Value::String),
-            Self::Vfs(request) => request
-                .dispatch(backend, session)
-                .await
-                .map_err(serde_json::Value::String),
-            Self::Memory(request) => request.dispatch(backend).await,
-            Self::Network(request) => request.dispatch(backend).await,
-        }
+        backend: &'a DesktopBackend,
+        session: Option<&'a std::sync::Arc<crate::desktop_session::Session>>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = DesktopResult> + Send + 'a>> {
+        // Each service has its own async state. Keep their combined dispatcher
+        // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
+        Box::pin(async move {
+            match self {
+                Self::Filesystem(request) => request
+                    .dispatch(backend, session)
+                    .await
+                    .map_err(serde_json::Value::String),
+                Self::Terminal(request) => request
+                    .dispatch(backend, session)
+                    .await
+                    .map_err(serde_json::Value::String),
+                Self::Clm(request) => request.dispatch(backend).await,
+                Self::Chat(request) => request.dispatch(backend).await,
+                Self::Settings(request) => request.dispatch(backend).await,
+                Self::Mcp(request) => request.dispatch(backend).await,
+                Self::Hosts(request) => request.dispatch(backend).await,
+                Self::Overlay(request) => request
+                    .dispatch(backend)
+                    .await
+                    .map_err(serde_json::Value::String),
+                Self::Vfs(request) => request
+                    .dispatch(backend, session)
+                    .await
+                    .map_err(serde_json::Value::String),
+                Self::Memory(request) => request.dispatch(backend).await,
+                Self::Network(request) => request.dispatch(backend).await,
+            }
+        })
     }
 }
 

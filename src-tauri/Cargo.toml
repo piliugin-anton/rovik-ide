@@ -97,7 +97,6 @@ serde_json.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
 ignore.workspace = true
-notify = "8.2.0"
 tokio = { workspace = true, features = ["time"] }
 uuid.workspace = true
 git2 = { workspace = true, features = ["https", "ssh"] }
@@ -112,9 +111,6 @@ zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 # Intel Macs: the OpenSSL git2's HTTPS and SSH need, built from source. The
 # Intel app is built on Apple silicon (release.yml), whose Homebrew OpenSSL

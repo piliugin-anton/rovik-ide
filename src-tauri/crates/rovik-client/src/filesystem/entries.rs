@@ -16,7 +16,6 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use tauri::State;
 
 /// Numbers the temporary names of case-only renames.
 static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -69,11 +68,10 @@ fn remove_for_good(p: &Path, is_dir: bool) -> std::io::Result<()> {
 /// Resolves (and caches) the id for an arbitrary path the frontend already
 /// knows about directly — e.g. the project root, which never comes through
 /// `read_dir_entries` itself.
-#[tauri::command]
-pub fn get_path_id(state: State<'_, WatcherState>, path: String) -> Result<String, String> {
+pub fn get_path_id(state: &WatcherState, path: String) -> Result<String, String> {
     let p = Path::new(&path);
     let id = stable_file_id(p);
-    remember_id(&state, &id, p);
+    remember_id(state, &id, p);
     Ok(id)
 }
 
@@ -375,36 +373,26 @@ fn create_error(name: &str, e: std::io::Error) -> String {
     }
 }
 
-#[tauri::command]
 /// Creates an empty file; returns its path (the tree opens it).
 /// Exclusive: fails when the name is taken instead of truncating it —
 /// `File::create` would destroy an existing file's contents on a race.
-pub fn create_file(
-    state: State<'_, WatcherState>,
-    dir_id: String,
-    name: String,
-) -> Result<String, String> {
-    let (p, name) = new_entry(&state, &dir_id, &name)?;
+pub fn create_file(state: &WatcherState, dir_id: String, name: String) -> Result<String, String> {
+    let (p, name) = new_entry(state, &dir_id, &name)?;
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&p)
         .map_err(|e| create_error(&name, e))?;
-    remember_id(&state, &stable_file_id(&p), &p);
+    remember_id(state, &stable_file_id(&p), &p);
     Ok(p.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
 /// Creates one directory. Fails when the name is taken (`create_dir_all`
 /// would silently succeed on an existing dir and mask the conflict).
-pub fn create_dir(
-    state: State<'_, WatcherState>,
-    dir_id: String,
-    name: String,
-) -> Result<(), String> {
-    let (p, name) = new_entry(&state, &dir_id, &name)?;
+pub fn create_dir(state: &WatcherState, dir_id: String, name: String) -> Result<(), String> {
+    let (p, name) = new_entry(state, &dir_id, &name)?;
     fs::create_dir(&p).map_err(|e| create_error(&name, e))?;
-    remember_id(&state, &stable_file_id(&p), &p);
+    remember_id(state, &stable_file_id(&p), &p);
     Ok(())
 }
 
@@ -416,7 +404,7 @@ const TRASH_UNAVAILABLE: &str = "trash-unavailable: ";
 /// other editors do, not the trash crate's default of asking Finder, which
 /// may first ask leave to control Finder, plays its sound, and leaves a
 /// `.DS_Store` in each folder it touched: Git then lists those as new files.
-pub(crate) fn to_trash(path: &Path) -> Result<(), trash::Error> {
+pub fn to_trash(path: &Path) -> Result<(), trash::Error> {
     #[cfg(target_os = "macos")]
     let ctx = {
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
@@ -434,13 +422,12 @@ pub(crate) fn to_trash(path: &Path) -> Result<(), trash::Error> {
 /// can be restored from there. Where there's no trash (some network drives,
 /// or a Linux drive without a trash folder) this fails rather than delete
 /// for good; `permanent` then deletes outright, once the user has agreed.
-#[tauri::command]
 pub async fn delete_path(
-    state: State<'_, WatcherState>,
+    state: &WatcherState,
     id: String,
     permanent: Option<bool>,
 ) -> Result<(), String> {
-    let p = resolve_id(&state, &id)?;
+    let p = resolve_id(state, &id)?;
     blocking(move || {
         let meta = fs::symlink_metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         if permanent.unwrap_or(false) {
@@ -509,20 +496,19 @@ fn moved_to(state: &WatcherState, id: &str, moved: Moved) -> String {
 /// The id is unchanged by the rename — same inode/file-index — so we just
 /// update where it points. Returns the new absolute path so the frontend can
 /// update any open tab.
-#[tauri::command]
 pub async fn rename_path(
-    state: State<'_, WatcherState>,
+    state: &WatcherState,
     id: String,
     new_name: String,
 ) -> Result<String, String> {
-    let from = resolve_id(&state, &id)?;
+    let from = resolve_id(state, &id)?;
     let new_name = validate_file_name(&new_name)?;
     let parent = from
         .parent()
         .ok_or_else(|| "cannot rename the root folder".to_string())?;
     let to = parent.join(&new_name);
     let moved = blocking(move || move_entry(&from, &to, &new_name)).await?;
-    Ok(moved_to(&state, &id, moved))
+    Ok(moved_to(state, &id, moved))
 }
 
 /// The temp-hop for case-only renames: `from` → unique temp name → `to`.
@@ -553,15 +539,14 @@ fn rename_case_only(from: &Path, to: &Path) -> Result<(), String> {
 /// Never overwrites; moving a folder into itself or a descendant is rejected
 /// here (not just in the UI), and a cross-device move falls back to
 /// copy-then-delete, since `rename` cannot cross filesystems (EXDEV).
-#[tauri::command]
 pub async fn move_path(
-    state: State<'_, WatcherState>,
+    state: &WatcherState,
     id: String,
     dest_dir_id: String,
     new_name: Option<String>,
 ) -> Result<String, String> {
-    let from = resolve_id(&state, &id)?;
-    let dest_dir = resolve_id(&state, &dest_dir_id)?;
+    let from = resolve_id(state, &id)?;
+    let dest_dir = resolve_id(state, &dest_dir_id)?;
     let name = entry_name(&from, new_name, "move")?;
     let moved = blocking(move || {
         if !dest_dir.is_dir() {
@@ -576,7 +561,7 @@ pub async fn move_path(
         move_entry(&from, &dest_dir.join(&name), &name)
     })
     .await?;
-    Ok(moved_to(&state, &id, moved))
+    Ok(moved_to(state, &id, moved))
 }
 
 /// EXDEV fallback: copy the entry to the target, verify, then remove the
@@ -661,18 +646,17 @@ fn generate_unique_path(dest_dir: &Path, name: &str, is_dir: bool) -> PathBuf {
 /// what a copy-then-paste does. `dest_dir_id` must be a directory's id.
 /// If a file/folder with the target name already exists, automatically
 /// generates a unique name: "name copy.ext", "name copy 2.ext", ...
-#[tauri::command]
 pub async fn copy_path(
-    state: State<'_, WatcherState>,
+    state: &WatcherState,
     id: String,
     dest_dir_id: String,
     new_name: Option<String>,
 ) -> Result<String, String> {
-    let src = resolve_id(&state, &id)?;
-    let dest_dir = resolve_id(&state, &dest_dir_id)?;
+    let src = resolve_id(state, &id)?;
+    let dest_dir = resolve_id(state, &dest_dir_id)?;
     let name = entry_name(&src, new_name, "copy")?;
     let dest = blocking(move || copy_entry(&src, &dest_dir, &name)).await?;
-    remember_id(&state, &stable_file_id(&dest), &dest);
+    remember_id(state, &stable_file_id(&dest), &dest);
     // Return the actual path used so frontend can update open tabs if needed
     Ok(dest.to_string_lossy().to_string())
 }

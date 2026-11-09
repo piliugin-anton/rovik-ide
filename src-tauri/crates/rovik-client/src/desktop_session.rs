@@ -49,6 +49,7 @@ struct Resource {
 /// A client's registered resources and event queue, owned by its RPC lease.
 pub struct Session {
     id: String,
+    pub(crate) filesystem: Arc<crate::filesystem::WatcherState>,
     closed: AtomicBool,
     failure: watch::Sender<Option<String>>,
     queued_bytes: Mutex<usize>,
@@ -64,6 +65,7 @@ impl Session {
         let (failure, _) = watch::channel(None);
         Self {
             id,
+            filesystem: Default::default(),
             closed: AtomicBool::new(false),
             failure,
             queued_bytes: Mutex::new(0),
@@ -127,13 +129,21 @@ impl Session {
     /// Stops the resources feeding a callback whose frontend has gone away.
     pub fn cancel_sink(&self, sink: &str) {
         self.end(sink);
-        let keys: Vec<_> = lock(&self.resources)
-            .iter()
-            .filter(|(_, r)| r.sink == sink)
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in keys {
-            self.remove(&key);
+        // Remove the matching registrations while holding the lock: a new
+        // watch may reuse a key before cleanup of the old callback completes.
+        let removed: Vec<_> = {
+            let mut resources = lock(&self.resources);
+            let keys: Vec<_> = resources
+                .iter()
+                .filter(|(_, r)| r.sink == sink)
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| resources.remove(&key))
+                .collect()
+        };
+        for resource in removed {
+            (resource.cleanup)();
         }
     }
 
@@ -474,6 +484,29 @@ mod tests {
             .is_err());
         assert!(cleaned.load(Ordering::SeqCst));
         assert!(!lease.session.owns("late"));
+    }
+
+    #[test]
+    fn cancellation_removes_old_registrations_before_running_reentrant_cleanup() {
+        let lease = Sessions::default().create();
+        lease.session.begin("old").unwrap();
+        lease.session.begin("new").unwrap();
+        let replaced = Arc::new(AtomicUsize::new(0));
+        for (key, other) in [("one", "two"), ("two", "one")] {
+            let session = lease.session.clone();
+            let replaced = replaced.clone();
+            lease
+                .session
+                .register(key.into(), "old".into(), move || {
+                    if session.register(other.into(), "new".into(), || {}).is_ok() {
+                        replaced.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+                .unwrap();
+        }
+        lease.session.cancel_sink("old");
+        assert_eq!(replaced.load(Ordering::SeqCst), 2);
+        assert!(lease.session.owns("one") && lease.session.owns("two"));
     }
 
     #[test]

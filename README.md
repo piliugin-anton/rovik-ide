@@ -1674,7 +1674,7 @@ never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 6 provides private client event connections alongside
+use the adapter. Local protocol 7 provides private client event connections alongside
 explicit desktop requests. VFS subscriptions now use this transport in both
 embedded and IPC modes. Each client owns its subscriptions; disconnecting it
 cleans up only its resources. Bounded queues fail explicitly if a consumer falls
@@ -2235,3 +2235,9 @@ Terminal output uses the owning client's private stream; write and resize
 requests require that ownership. Closing a client ends its terminals and their
 remaining jobs, while a shell that exits naturally keeps the existing behavior
 of leaving its background jobs running.
+
+Filesystem reads and edits, stable file IDs, image previews, last-project settings,
+and project watches also use the backend. Each client has its own file-ID cache
+and watcher generation. Replacing or disconnecting one watch cannot stop another
+client's watch; delayed cleanup cannot stop a newer watch in the same client.
+Native filesystem events target only the window that requested them.

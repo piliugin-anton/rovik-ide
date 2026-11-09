@@ -96,6 +96,19 @@ impl DesktopConnection {
             })
     }
 
+    /// Decodes a compact binary desktop reply for a native byte response.
+    pub async fn desktop_bytes(
+        &self,
+        request: crate::desktop_api::DesktopRequest,
+    ) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        let encoded: String = serde_json::from_value(self.desktop(request).await?)
+            .map_err(|e| format!("Invalid binary desktop reply: {e}"))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|e| format!("Invalid binary desktop reply: {e}"))
+    }
+
     /// Preserves structured errors for commands such as host deployment.
     pub async fn desktop_raw(
         &self,

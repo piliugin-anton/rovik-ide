@@ -132,6 +132,15 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .unwrap();
     desktop_operations::check_filesystem_and_overlay_contract(&adapter).await;
     desktop_operations::check_settings_and_chat_contract(&adapter).await;
+    desktop_operations::check_disk_contract(
+        rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+            .await
+            .unwrap(),
+        rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+            .await
+            .unwrap(),
+    )
+    .await;
     let other_adapter = rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
         .await
         .unwrap();

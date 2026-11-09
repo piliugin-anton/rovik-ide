@@ -33,6 +33,11 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     let connection = DesktopConnection::embedded(backend.clone());
     desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
     desktop_operations::check_settings_and_chat_contract(&connection).await;
+    desktop_operations::check_disk_contract(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+    )
+    .await;
     use rovik_client::desktop_api::vfs::VfsRequest;
     let other = DesktopConnection::embedded(backend.clone());
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();

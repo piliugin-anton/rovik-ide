@@ -13,6 +13,9 @@ log.workspace = true
 portable-pty = "0.9.0"
 sha2.workspace = true
 dirs = "7.0"
+ignore.workspace = true
+notify = "8.2.0"
+trash = "5"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time", "process", "signal"] }
@@ -53,3 +56,6 @@ rovik-protocol = { workspace = true, features = ["testing"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

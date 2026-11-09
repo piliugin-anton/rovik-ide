@@ -1,4 +1,6 @@
-use crate::filesystem::WatcherState;
+// Tauri checks Send for service futures containing nested HTTP client types.
+#![recursion_limit = "256"]
+
 use crate::instances::Instances;
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
@@ -42,7 +44,6 @@ pub fn run() {
         .manage(updates::Updates::default())
         .manage(lsp::servers())
         .manage(chat_request::ChatRequests::default())
-        .manage(WatcherState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;

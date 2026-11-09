@@ -54,3 +54,13 @@ require the owning session, and a close from another client is harmless. Existin
 UTF-8 decoding, bash setup, workload tracking, and process-tree cleanup are
 preserved. Per-client project registration and filesystem migration remain in
 phase 3; the remaining event adapters remain in phase 4.
+
+## Filesystem migration
+
+File tree mutations, editor reads and guarded writes, binary image previews,
+last-project settings, and watches now use desktop RPC. File-ID maps, ignored-path
+caches, and watch generations belong to client sessions. Watch callbacks and
+cleanup use generation checks so rapid project switches cannot stop a replacement
+watch. The Tauri adapter delivers filesystem events to the requesting window.
+Per-client project registration and remaining chat/native callback adapters are
+still outstanding.

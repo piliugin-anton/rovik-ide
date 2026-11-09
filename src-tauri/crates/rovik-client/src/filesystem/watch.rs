@@ -17,7 +17,33 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, State};
+
+/// A watch's state and the one client allowed to receive its events.
+pub(crate) struct WatchContext {
+    pub state: Arc<WatcherState>,
+    pub core: rovik_core::Core,
+    pub owner: std::sync::Weak<crate::desktop_session::Session>,
+    pub sink: String,
+}
+
+impl WatchContext {
+    fn emit(&self, event: &str, payload: impl Serialize) -> bool {
+        self.owner.upgrade().is_some_and(|owner| {
+            owner.emit(
+                &self.sink,
+                serde_json::json!({ "event": event, "payload": payload }),
+            )
+        })
+    }
+}
+
+impl Drop for WatchContext {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.upgrade() {
+            owner.cancel_sink(&self.sink);
+        }
+    }
+}
 
 // Clean, unified cross-platform operation types
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, Hash)]
@@ -455,10 +481,14 @@ fn watch_below(
 /// Needed when the initial watch fell back to per-dir watches above, which
 /// don't pick up new dirs on their own. Re-watching under a recursive
 /// watcher is harmless. Only call for paths under the watched root.
-fn watch_new_dir(state: &WatcherState, dir: &Path) {
+fn watch_new_dir(state: &WatcherState, dir: &Path, generation: u64) {
     let Ok(mut guard) = state.active_watcher.lock() else {
         return;
     };
+    // A replaced worker can finish a batch after the new watch starts.
+    if watch_replaced(&state.generation, generation) {
+        return;
+    }
     let Some(watcher) = guard.as_mut() else {
         return;
     };
@@ -468,22 +498,60 @@ fn watch_new_dir(state: &WatcherState, dir: &Path) {
     watch_below(watcher, dir, 500, &mut Vec::new());
 }
 
-/// The current file watch (see `start_file_watch`): bumped by each new
-/// watch, so the task of the one it replaced stops.
-static WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
-
 /// A newer watch has started since `generation`'s.
-fn watch_replaced(generation: u64) -> bool {
-    WATCH_GENERATION.load(Ordering::SeqCst) != generation
+fn watch_replaced(generations: &AtomicU64, generation: u64) -> bool {
+    generations.load(Ordering::SeqCst) != generation
 }
 
 /// Begins a watch: the watcher before is dropped (its events stop) and the
 /// generation moves on (its task ends once it sees that), both under the
 /// slot's lock. The new watch's generation.
+#[cfg(test)]
 fn begin_watch<W>(slot: &std::sync::Mutex<Option<W>>, generations: &AtomicU64) -> u64 {
     let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
     *slot = None;
     generations.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+// A newer start cancels the older callback before its producer can register.
+// The generation and callback identity change under the same lock, so starts
+// finishing out of order cannot take ownership back from their replacement.
+fn begin_client_watch(
+    state: &WatcherState,
+    owner: &crate::desktop_session::Session,
+    sink: &str,
+) -> u64 {
+    let (generation, previous) = {
+        let mut watcher = state
+            .active_watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *watcher = None;
+        let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let previous = state
+            .watch_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(sink.into());
+        (generation, previous)
+    };
+    if let Some(previous) = previous {
+        owner.cancel_sink(&previous);
+    }
+    generation
+}
+
+/// An old callback's delayed cleanup must never stop its replacement.
+pub(super) fn stop_watch<W>(
+    slot: &std::sync::Mutex<Option<W>>,
+    generations: &AtomicU64,
+    expected: u64,
+) {
+    let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+    if generations.load(Ordering::SeqCst) == expected {
+        *slot = None;
+        generations.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// Keeps `watcher` as the active one, unless a newer watch began while it
@@ -514,18 +582,27 @@ fn watch_finished(disconnected: bool, batch: &WatchBatch, git_touched: Option<In
 /// Watches the project folder `path_str`, in place of the one watched
 /// before: its changes go to the frontend as `fs-changes` and `git-changed`
 /// events until another folder is watched.
-#[tauri::command]
-pub async fn start_file_watch(
-    app_handle: AppHandle,
-    state: State<'_, WatcherState>,
+pub(crate) async fn start_file_watch(
+    context: WatchContext,
     path_str: String,
 ) -> Result<(), String> {
+    let state = context.state.clone();
     let root = PathBuf::from(path_str);
     // The old watcher goes first (dropping it stops its events), and its
     // task ends on its own once it sees the generation change: dropping
     // the watcher alone only stops new events, and its loop would keep
     // waking every 50 ms forever, one more per project opened.
-    let generation = begin_watch(&state.active_watcher, &WATCH_GENERATION);
+    let owner = context
+        .owner
+        .upgrade()
+        .ok_or("Desktop client disconnected")?;
+    let generation = begin_client_watch(&state, &owner, &context.sink);
+    let cleanup = state.clone();
+    owner.register(
+        format!("filesystem-watch:{}", context.sink),
+        context.sink.clone(),
+        move || cleanup.stop(generation),
+    )?;
 
     let (send, events) = watch_events();
     // Off the main thread: watching a big tree folder by folder takes a
@@ -552,7 +629,7 @@ pub async fn start_file_watch(
     // was being built.
     if !keep_watcher(
         &state.active_watcher,
-        &WATCH_GENERATION,
+        &state.generation,
         generation,
         watcher,
     ) {
@@ -565,14 +642,14 @@ pub async fn start_file_watch(
     // and run shares.
     std::thread::Builder::new()
         .name("file-watch".into())
-        .spawn(move || Watch::new(app_handle, root, generation, events).run())
+        .spawn(move || Watch::new(context, root, generation, events).run())
         .err_text()?;
     Ok(())
 }
 
 /// One project's watch: the events notify sends, batched and reported.
 struct Watch {
-    app: AppHandle,
+    context: WatchContext,
     root: PathBuf,
     generation: u64,
     events: WatchEvents,
@@ -593,14 +670,14 @@ struct Watch {
 }
 
 impl Watch {
-    fn new(app: AppHandle, root: PathBuf, generation: u64, events: WatchEvents) -> Self {
+    fn new(context: WatchContext, root: PathBuf, generation: u64, events: WatchEvents) -> Self {
         let mut watch = Watch {
             ignores: Arc::new(WatchIgnores::root_only(&root)),
             found_ignores: std::sync::mpsc::sync_channel(1),
             finding_ignores: false,
             ignores_dirty: false,
             tracked: Tracked::of(&root),
-            app,
+            context,
             root,
             generation,
             events,
@@ -621,7 +698,7 @@ impl Watch {
         }
         self.finding_ignores = true;
         let (root, tx) = (self.root.clone(), self.found_ignores.0.clone());
-        tauri::async_runtime::spawn_blocking(move || {
+        rovik_core::rt::spawn_blocking(move || {
             let _ = tx.send(WatchIgnores::all(&root));
         });
     }
@@ -629,7 +706,7 @@ impl Watch {
     fn run(mut self) {
         loop {
             // Another project's watch replaced this one: stop.
-            if watch_replaced(self.generation) {
+            if watch_replaced(&self.context.state.generation, self.generation) {
                 break;
             }
             if let Ok(found) = self.found_ignores.1.try_recv() {
@@ -707,7 +784,7 @@ impl Watch {
         if ignore_changed {
             self.find_ignores();
         }
-        let state = self.app.state::<WatcherState>();
+        let state = &self.context.state;
         if ignore_changed {
             // The tree's listing re-reads it too.
             if let Ok(mut cached) = state.gitignore.lock() {
@@ -720,7 +797,7 @@ impl Watch {
         // per-dir watches: cover it now, best effort. (Under a recursive
         // watcher this re-watch is harmless.) Nor is one moved in.
         if appeared {
-            watch_new_dir(&state, &path);
+            watch_new_dir(state, &path, self.generation);
         }
         let payload = FileWatchPayload {
             path: path.to_string_lossy().into_owned(),
@@ -762,13 +839,13 @@ impl Watch {
             WatchFlush::Everything => {
                 // Isolated chats on this project read it afresh.
                 rovik_core::overlay::chats::project_changed(&self.root, &[], true);
-                let _ = self.app.emit(
+                let _ = self.context.emit(
                     "fs-changes",
-                    FileWatchPayload {
+                    vec![FileWatchPayload {
                         path: self.root.to_string_lossy().into_owned(),
                         operation: WatchOp::Unknown,
                         is_dir: true,
-                    },
+                    }],
                 );
             }
             WatchFlush::Events(events) => {
@@ -778,7 +855,7 @@ impl Watch {
                 for (chat, path) in
                     rovik_core::overlay::chats::project_changed(&self.root, &paths, false)
                 {
-                    self.app.state::<rovik_core::Core>().emit(
+                    self.context.core.emit(
                         rovik_core::agent_run::events::AgentEvent::Notice {
                             dialog_id: Some(chat),
                             kind: "warning".into(),
@@ -789,9 +866,9 @@ impl Watch {
                         },
                     );
                 }
-                for payload in events {
-                    let _ = self.app.emit("fs-changes", payload);
-                }
+                // One existing watch batch is one wire event. A normal flush
+                // can contain more paths than the private queue has slots.
+                let _ = self.context.emit("fs-changes", events);
             }
         }
         // A repair a burst had to wait for happens now that it's due: the
@@ -806,7 +883,7 @@ impl Watch {
             self.git_touched = None;
         }
         if git_settled || tree_changed {
-            let _ = self.app.emit("git-changed", ());
+            let _ = self.context.emit("git-changed", ());
         }
     }
 
@@ -814,13 +891,13 @@ impl Watch {
     /// an ignore-file edit. Repair once per reported burst, not per raw event.
     fn recover(&mut self) {
         self.find_ignores();
-        let state = self.app.state::<WatcherState>();
+        let state = &self.context.state;
         if let Ok(mut cached) = state.gitignore.lock() {
             *cached = None;
         }
         if let Ok(mut slot) = state.active_watcher.lock() {
             // Never add the old root to a newer project's watcher.
-            if !watch_replaced(self.generation) {
+            if !watch_replaced(&self.context.state.generation, self.generation) {
                 if let Some(watcher) = slot.as_mut() {
                     match watch_recursive_lenient(watcher, &self.root) {
                         Ok(skipped) if !skipped.is_empty() => eprintln!(
@@ -1084,13 +1161,101 @@ mod tests {
         assert_eq!(*slot.lock().unwrap(), Some("newer"));
     }
 
+    #[tokio::test]
+    async fn a_full_watch_flush_fits_in_the_private_event_queue_as_one_batch() {
+        struct Quiet;
+        impl rovik_core::EventSink for Quiet {
+            fn agent(&self, _: &rovik_core::agent_run::events::AgentEvent) {}
+        }
+        let root = tempfile::tempdir().unwrap();
+        let core = rovik_core::Core::open(
+            rovik_core::Paths::new(root.path().join("data"), root.path().join("config")),
+            Arc::new(Quiet),
+        )
+        .unwrap();
+        let lease = crate::desktop_session::Sessions::default().create();
+        lease.session.begin("watch").unwrap();
+        let context = WatchContext {
+            state: lease.session.filesystem.clone(),
+            core,
+            owner: Arc::downgrade(&lease.session),
+            sink: "watch".into(),
+        };
+        let (_, events) = watch_events();
+        let mut watch = Watch::new(context, root.path().to_path_buf(), 0, events);
+        let before = Instant::now() - WATCH_MAX_WAIT - Duration::from_secs(1);
+        for index in 0..MAX_EVENTS_PER_FLUSH {
+            watch.batch.add(
+                FileWatchPayload {
+                    path: root
+                        .path()
+                        .join(format!("file-{index}"))
+                        .to_string_lossy()
+                        .into_owned(),
+                    operation: WatchOp::Modify,
+                    is_dir: false,
+                },
+                before,
+            );
+        }
+        let mut events = lease.session.events().unwrap();
+        watch.report();
+        assert!(
+            !lease.session.is_closed(),
+            "a legitimate batch overflowed the queue"
+        );
+        let crate::desktop_session::EventBody::Data(batch) = events.next().await.unwrap().body
+        else {
+            panic!("missing batch")
+        };
+        assert_eq!(batch["event"], "fs-changes");
+        assert_eq!(
+            batch["payload"].as_array().unwrap().len(),
+            MAX_EVENTS_PER_FLUSH
+        );
+    }
+
+    #[test]
+    fn a_new_watch_cancels_early_registration_from_the_old_start() {
+        let lease = crate::desktop_session::Sessions::default().create();
+        let state = lease.session.filesystem.clone();
+        lease.session.begin("old").unwrap();
+        let old = begin_client_watch(&state, &lease.session, "old");
+        lease.session.begin("new").unwrap();
+        let new = begin_client_watch(&state, &lease.session, "new");
+        let cleanup = state.clone();
+        assert!(lease
+            .session
+            .register("old-watch".into(), "old".into(), move || cleanup.stop(old))
+            .is_err());
+        assert!(!watch_replaced(&state.generation, new));
+        assert!(lease.session.emit("new", "still watching"));
+    }
+
+    #[test]
+    fn delayed_cleanup_of_an_old_watch_leaves_its_replacement_running() {
+        let generations = AtomicU64::new(0);
+        let slot = std::sync::Mutex::new(None);
+        let old = begin_watch(&slot, &generations);
+        assert!(keep_watcher(&slot, &generations, old, "old"));
+        let new = begin_watch(&slot, &generations);
+        assert!(keep_watcher(&slot, &generations, new, "new"));
+        stop_watch(&slot, &generations, old);
+        assert_eq!(*slot.lock().unwrap(), Some("new"));
+        assert!(!watch_replaced(&generations, new));
+        stop_watch(&slot, &generations, new);
+        assert!(slot.lock().unwrap().is_none());
+        assert!(watch_replaced(&generations, new));
+    }
+
     #[test]
     fn a_replaced_or_finished_watch_stops() {
         // A newer watch replaces an older one's task.
-        let mine = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-        assert!(!watch_replaced(mine));
-        WATCH_GENERATION.fetch_add(1, Ordering::SeqCst);
-        assert!(watch_replaced(mine));
+        let generations = AtomicU64::new(0);
+        let mine = generations.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(!watch_replaced(&generations, mine));
+        generations.fetch_add(1, Ordering::SeqCst);
+        assert!(watch_replaced(&generations, mine));
 
         // The watcher gone: done once nothing is left to report.
         let t0 = Instant::now();
