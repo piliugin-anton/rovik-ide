@@ -5,7 +5,7 @@ use crate::instances::Instances;
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
-use rovik_core::{chat_db, process, rt, Core, EventSink, Paths};
+use rovik_core::{process, rt, EventSink, Paths};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -144,7 +144,7 @@ pub fn run() {
                     let instances = handle.state::<Instances>();
                     let mut still = Vec::new();
                     for project in instances.left_at_work() {
-                        if at_work_in(&core, project.clone()).await {
+                        if at_work_in(&handle.state::<DesktopConnection>(), project.clone()).await {
                             still.push(project);
                         }
                     }
@@ -185,10 +185,11 @@ pub fn run() {
         // Screenshots: chat-attachment://localhost/<sha256> (Windows:
         // http://chat-attachment.localhost/<sha256>).
         .register_asynchronous_uri_scheme_protocol("chat-attachment", |ctx, request, responder| {
-            let core = ctx.app_handle().state::<Core>().inner().clone();
+            let app = ctx.app_handle().clone();
             let path = request.uri().path().to_string();
-            rt::spawn_blocking(move || {
-                responder.respond(attachment_response(core.db.data_dir(), &path));
+            rt::spawn(async move {
+                responder
+                    .respond(attachment_response(&app.state::<DesktopConnection>(), path).await);
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -510,18 +511,26 @@ struct Startup {
 /// without a project (the last one is open in this one).
 const NEW_WINDOW: &str = "--new-window";
 
-/// Whether this process is at work on a chat of the project `project`
+/// Whether the backend is at work on a chat of the project `project`
 /// (None: of the chats without a project): a run, Autopilot's driver, a
 /// stage waiting out a rate limit (rovik_core::chat_hold).
-async fn at_work_in(core: &Core, project: Option<String>) -> bool {
-    let held = rovik_core::chat_hold::held_here();
-    if held.is_empty() {
-        return false;
-    }
-    core.db
-        .read(move |c| chat_db::projects::has_lead_chat(c, &held, project.as_deref()))
+async fn at_work_in(backend: &DesktopConnection, project: Option<String>) -> bool {
+    use rovik_client::desktop_api::projects::ProjectRequest;
+    match backend
+        .desktop(
+            ProjectRequest::AtWorkIn {
+                project_id: project,
+            }
+            .into(),
+        )
         .await
-        .unwrap_or(false)
+    {
+        Ok(value) if value.is_boolean() => value.as_bool().unwrap_or(true),
+        result => {
+            log::warn!("Could not check project execution leases: {result:?}");
+            true
+        }
+    }
 }
 
 /// The first argument that's a folder: others (macOS's `-psn_…`, a
@@ -565,21 +574,27 @@ fn startup_info(startup: tauri::State<'_, Startup>) -> StartupInfo {
 #[tauri::command]
 async fn project_claim(
     app: tauri::AppHandle,
-    core: tauri::State<'_, Core>,
+    backend: tauri::State<'_, DesktopConnection>,
     path: Option<String>,
     focus_other: bool,
 ) -> Result<instances::Claim, String> {
     let open = app.state::<Instances>().open_project();
     let keep_open = match open {
-        Some(project) => at_work_in(&core, project).await,
+        Some(project) => at_work_in(&backend, project).await,
         None => false,
     };
-    rt::spawn_blocking(move || {
+    let claim = rt::spawn_blocking(move || {
         let path = path.as_deref().map(std::path::Path::new);
         app.state::<Instances>().claim(path, focus_other, keep_open)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    if claim.claimed {
+        backend
+            .desktop(rovik_client::desktop_api::projects::ProjectRequest::Clear.into())
+            .await?;
+    }
+    Ok(claim)
 }
 
 /// Whether another window has a project open (instances.rs), without
@@ -652,26 +667,42 @@ fn another_rovik() -> Result<std::process::Command, String> {
 }
 
 /// `chat-attachment://localhost/<sha256>`'s response: the attachment, or 404.
-fn attachment_response(
-    data_dir: &std::path::Path,
-    uri_path: &str,
+async fn attachment_response(
+    backend: &DesktopConnection,
+    path: String,
 ) -> tauri::http::Response<Vec<u8>> {
+    use rovik_client::desktop_api::chat::{Attachment, ChatRequest};
     use tauri::http::Response;
-    let not_found = || {
-        Response::builder()
+    let response = backend
+        .desktop(ChatRequest::ReadAttachment { path }.into())
+        .await
+        .and_then(|value| {
+            serde_json::from_value::<Option<Attachment>>(value).map_err(|e| e.to_string())
+        });
+    match response {
+        Ok(Some(attachment)) => Response::builder()
+            .status(200)
+            .header("Content-Type", attachment.mime)
+            .header("Cache-Control", "public, max-age=31536000, immutable")
+            .body(attachment.bytes)
+            .unwrap_or_else(|error| {
+                log::warn!("Could not build chat attachment response: {error}");
+                Response::builder()
+                    .status(503)
+                    .body(Vec::new())
+                    .expect("static response")
+            }),
+        Ok(None) => Response::builder()
             .status(404)
             .body(Vec::new())
-            .expect("static response")
-    };
-    match chat_db::attachments::read(data_dir, uri_path) {
-        Some((mime, bytes)) => Response::builder()
-            .status(200)
-            .header("Content-Type", mime)
-            // Content-addressed: the bytes for an id never change.
-            .header("Cache-Control", "public, max-age=31536000, immutable")
-            .body(bytes)
-            .unwrap_or_else(|_| not_found()),
-        None => not_found(),
+            .expect("static response"),
+        Err(error) => {
+            log::warn!("Could not read chat attachment: {error}");
+            Response::builder()
+                .status(503)
+                .body(Vec::new())
+                .expect("static response")
+        }
     }
 }
 

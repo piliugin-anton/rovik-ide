@@ -229,13 +229,9 @@ impl Remote {
     /// Refreshes the manager's local replica and sends edits/deletions to every
     /// connected host known to hold this project. Offline hosts catch up later.
     pub async fn sync_project_memory(&self, root: &Path) -> Result<(), String> {
-        let opened = self
-            .lock()
-            .open
-            .clone()
-            .filter(|(_, path)| projects::path_key(path) == projects::path_key(root));
+        let opened = self.lock().open.at(root);
         let project = match opened {
-            Some((id, _)) => Some(id),
+            Some(id) => Some(id),
             None => {
                 let key = projects::path_key(root);
                 self.core

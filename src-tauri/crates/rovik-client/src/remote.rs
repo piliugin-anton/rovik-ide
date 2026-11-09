@@ -42,6 +42,7 @@ mod mcp_relay;
 mod memory;
 mod mirror;
 mod moving;
+mod open_projects;
 mod pages;
 mod results;
 mod sync;
@@ -256,8 +257,8 @@ struct State {
     /// commands are sandboxed. A chat of a project moves there before its
     /// first start (remote/moving.rs, `go_home`).
     home: Option<String>,
-    /// The project open in the app: its id and folder (6.5).
-    open: Option<(String, PathBuf)>,
+    /// Every client's open project: its id and folder (6.5).
+    open: open_projects::OpenProjects,
     /// Each chat's snapshot as its last sync took it (6.7).
     last_sync: HashMap<String, Oid>,
     /// The projects ensured on each host this session: (host, project).
@@ -372,11 +373,7 @@ impl Remote {
         let Some(project) = self.chat_project(dialog_id).await else {
             return false;
         };
-        let open_here = self
-            .lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| *id == project);
+        let open_here = self.lock().open.contains(&project);
         if open_here {
             return false;
         }
@@ -524,7 +521,16 @@ impl Remote {
     /// "Test delivery" (H05): the host pushes an empty branch to the open
     /// project's remote, as a task's result would go, and deletes it.
     pub async fn test_delivery(&self, host: &str) -> Result<DeliveryTest, String> {
-        let folder = self.lock().open.clone().map(|(_, folder)| folder);
+        self.test_delivery_for_client(host, "").await
+    }
+
+    /// Tests delivery using the requesting client's project, never another window's.
+    pub async fn test_delivery_for_client(
+        &self,
+        host: &str,
+        client: &str,
+    ) -> Result<DeliveryTest, String> {
+        let folder = self.lock().open.client(client).map(|(_, folder)| folder);
         let remote = folder
             .as_deref()
             .and_then(sync::origin_of)
@@ -1003,7 +1009,11 @@ impl Remote {
             return rovik_core::dispatch(&self.core, request).await;
         };
         let client = self.client(&host)?;
-        let root = self.lock().open.clone().map(|(_, folder)| folder);
+        let root = self
+            .project_of(dialog_id)
+            .await
+            .map_err(|e| Fail::new(FailCode::BadRequest, e))?
+            .map(|(_, folder)| folder);
         if let Some(root) = root.as_deref().and_then(Path::to_str) {
             let sent = message.meta.as_mut().and_then(|m| m.get_mut("sentContent"));
             if let Some(serde_json::Value::String(text)) = sent {

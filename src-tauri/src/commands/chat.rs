@@ -3,16 +3,13 @@
 //! mirror here, and written to on the host (6.1).
 
 use crate::instances::Instances;
+use rovik_client::desktop_api::projects::ProjectRequest;
 use rovik_client::desktop_api::{chat::ChatRequest, DesktopRequest};
 use rovik_client::desktop_connection::DesktopConnection;
-use rovik_client::Remote;
 use rovik_core::agent_run::StartRequest;
 use rovik_core::chat_db::store::{ChatModel, Cursor, MessagePatch, NewDialog};
-use rovik_core::chat_db::{api, projects};
-use rovik_core::Core;
 use rovik_protocol::Request;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 use tauri::ipc::InvokeBody;
 use tauri::{AppHandle, Manager, State};
 
@@ -50,14 +47,17 @@ pub async fn chat_get_dialog(
 #[tauri::command]
 pub async fn chat_open_project(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
-) -> Result<projects::Opened, String> {
-    let opened = api::chat_open_project(&core.db, root.clone()).await?;
-    reclaim(&app, &root, &opened.project.id);
-    let open = (opened.project.id.clone(), PathBuf::from(root));
-    remote.set_open_project(Some(open));
+) -> Result<serde_json::Value, String> {
+    let opened = backend
+        .desktop(ProjectRequest::Open { root: root.clone() }.into())
+        .await?;
+    let id = opened
+        .pointer("/project/id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Invalid open-project reply")?;
+    reclaim(&app, &root, id);
     Ok(opened)
 }
 
@@ -77,11 +77,13 @@ fn reclaim(app: &AppHandle, root: &str, project: &str) {
 /// The chats among `dialog_ids` another of Rovik's windows is at work on
 /// (rovik_core::chat_hold): their unanswered messages are its to judge.
 #[tauri::command]
-pub fn chats_at_work_elsewhere(dialog_ids: Vec<String>) -> Vec<String> {
-    dialog_ids
-        .into_iter()
-        .filter(|id| rovik_core::chat_hold::elsewhere(id))
-        .collect()
+pub async fn chats_at_work_elsewhere(
+    backend: State<'_, DesktopConnection>,
+    dialog_ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(ProjectRequest::AtWork { dialog_ids }.into())
+        .await
 }
 
 /// Refuses to change the chats of a project another window has open (by
@@ -143,18 +145,29 @@ pub async fn chat_plan_implementation(
 #[tauri::command]
 pub async fn chat_answer_copy(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
     original_id: String,
     share: bool,
-) -> Result<projects::ProjectInfo, String> {
+) -> Result<serde_json::Value, String> {
     if share {
         not_open_elsewhere(&app, &original_id, None, "share its chats")?;
     }
-    let project = api::chat_answer_copy(&core.db, root.clone(), original_id, share).await?;
-    reclaim(&app, &root, &project.id);
-    remote.folder_answered(Path::new(&root), &project.id);
+    let project = backend
+        .desktop(
+            ProjectRequest::AnswerCopy {
+                root: root.clone(),
+                original_id,
+                share,
+            }
+            .into(),
+        )
+        .await?;
+    let id = project
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Invalid project reply")?;
+    reclaim(&app, &root, id);
     Ok(project)
 }
 
@@ -163,17 +176,27 @@ pub async fn chat_answer_copy(
 #[tauri::command]
 pub async fn chat_answer_moved(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
     current_id: String,
     target_id: String,
-) -> Result<projects::ProjectInfo, String> {
+) -> Result<serde_json::Value, String> {
     not_open_elsewhere(&app, &target_id, None, "use its chats here")?;
-    remote.before_merging_project(&current_id).await?;
-    let project = api::chat_answer_moved(&core.db, root.clone(), current_id, target_id).await?;
-    reclaim(&app, &root, &project.id);
-    remote.folder_answered(Path::new(&root), &project.id);
+    let project = backend
+        .desktop(
+            ProjectRequest::AnswerMoved {
+                root: root.clone(),
+                current_id,
+                target_id,
+            }
+            .into(),
+        )
+        .await?;
+    let id = project
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Invalid project reply")?;
+    reclaim(&app, &root, id);
     Ok(project)
 }
 
@@ -207,30 +230,35 @@ pub async fn chat_list_projects(
 #[tauri::command]
 pub async fn chat_relink_project(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     project_id: String,
     root: String,
     merge: bool,
-) -> Result<projects::Relinked, String> {
+) -> Result<serde_json::Value, String> {
     not_open_elsewhere(&app, &project_id, Some(&root), "move its chats")?;
-    if merge {
-        remote.before_merging_project(&project_id).await?;
-    }
-    api::chat_relink_project(&core.db, project_id, root, merge).await
+    backend
+        .desktop(
+            ProjectRequest::Relink {
+                project_id,
+                root,
+                merge,
+            }
+            .into(),
+        )
+        .await
 }
 
 /// A project and all its chats.
 #[tauri::command]
 pub async fn chat_delete_project(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     project_id: String,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     not_open_elsewhere(&app, &project_id, None, "delete it")?;
-    remote.before_deleting_project(&project_id).await?;
-    api::chat_delete_project(&core, project_id).await
+    backend
+        .desktop(ProjectRequest::Delete { project_id }.into())
+        .await
 }
 
 #[tauri::command]

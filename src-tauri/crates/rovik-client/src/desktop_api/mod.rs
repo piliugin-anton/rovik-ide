@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod memory;
 pub mod network;
 pub mod overlay;
+pub mod projects;
 pub mod settings;
 pub mod terminal;
 pub mod vfs;
@@ -25,6 +26,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Client-owned project lifecycle.
+    Projects(Box<projects::ProjectRequest>),
     /// Client-scoped model requests and estimates.
     Agent(Box<agent::AgentRequest>),
     /// Client-scoped file operations and watches.
@@ -66,6 +69,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Projects(request) => request.dispatch(backend, session).await,
                 Self::Agent(request) => request.dispatch(backend, session).await,
                 Self::Filesystem(request) => request
                     .dispatch(backend, session)

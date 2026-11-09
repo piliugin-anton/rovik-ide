@@ -18,10 +18,10 @@ existing protocol and routing. Native window actions stay in Tauri.
    and real-daemon calls, errors, and connection reuse.
 2. **Completed (`c4879f7`)**: Chat data, memory, non-browser MCP, host, and settings request/reply operations.
    Preserve credentials handling, remote routing, and local mirror reads.
-3. Per-client project registration, filesystem and execution ownership, including
+3. **Completed**: Per-client project registration, filesystem and execution ownership, including
    terminal controls. Separate
    native window callbacks from backend services.
-4. Complete the subscription-dependent adapters with the event transport:
+4. **Completed**: Subscription-dependent adapters with the event transport:
    terminal output, filesystem watches, VFS subscriptions, streamed model
    replies, host setup progress, and native callbacks. Scope subscriptions to
    clients and clean them up on disconnect without stopping shared work.
@@ -52,8 +52,7 @@ Native commands forward requests and output only. The backend owns the terminal
 registry and shutdown; client leases own individual terminals. Write and resize
 require the owning session, and a close from another client is harmless. Existing
 UTF-8 decoding, bash setup, workload tracking, and process-tree cleanup are
-preserved. Per-client project registration and filesystem migration remain in
-phase 3; the remaining event adapters remain in phase 4.
+preserved. Filesystem, project registration, and finite event adapters are covered below.
 
 ## Filesystem migration
 
@@ -62,8 +61,7 @@ last-project settings, and watches now use desktop RPC. File-ID maps, ignored-pa
 caches, and watch generations belong to client sessions. Watch callbacks and
 cleanup use generation checks so rapid project switches cannot stop a replacement
 watch. The Tauri adapter delivers filesystem events to the requesting window.
-Per-client project registration and remaining chat/native callback adapters are
-still outstanding.
+Project registration and the remaining chat/native callback adapters are covered below.
 
 ## Finite operations and native callbacks
 
@@ -77,6 +75,27 @@ browser URL is forwarded to the native adapter. WSL setup and shared UI settings
 also use typed desktop requests. Local OAuth and streamed HTTP fixtures exercise
 the same contracts through embedded clients and real daemon connections.
 
-Per-client project registration and the remaining project/chat lifecycle commands
-are the remaining work in phases 3 and 4. Shared agent-event replay and automatic
-daemon activation remain separate follow-up phases.
+Shared agent-event replay and automatic daemon activation remain separate
+follow-up phases.
+
+## Project ownership and remaining chat operations
+
+Open, copy/move answers, relink, delete, execution-lease queries, and attachment
+reads now use the backend. Opens and destructive project operations share a
+backend lock, so another client cannot open a project between its ownership check
+and mutation. Registration belongs to the client lease; switching folders or
+losing that client releases only its entry. Native OS claims and window focusing
+remain in the UI adapter.
+
+Remote results and steering resolve the chat's project instead of a global last
+opened folder. Memory synchronization uses its explicit root. Delivery tests use
+the requesting client's folder. Ambiguous copies are refused rather than choosing
+a destination. Embedded and real-daemon tests cover project guards, disconnect
+cleanup, and binary attachment round trips; remote tests cover project-specific
+steering and delivery tests.
+
+The command families listed in this migration are routed. This does not enable
+automatic daemon attachment: global agent/cloud event routing and recovery,
+remaining native service ownership (such as Git/LSP/browser integration), daemon
+packaging/lifecycle, Windows transport, and real multi-window FUSE validation are
+still separate work before every window can run purely as a UI client.

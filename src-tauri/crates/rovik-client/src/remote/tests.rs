@@ -573,6 +573,36 @@ async fn a_delivery_test_goes_to_the_open_projects_remote() {
             remote: "git@github.com:acme/app.git".into()
         }));
 
+    let other = app.dir.0.join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+    git2::Repository::init(&other)
+        .unwrap()
+        .remote("origin", "https://github.com/acme/other.git")
+        .unwrap();
+    remote.set_client_project("a", Some(("p1".into(), root.clone())));
+    remote.set_client_project("b", Some(("p2".into(), other)));
+    assert_eq!(
+        remote
+            .test_delivery_for_client(HOST, "a")
+            .await
+            .unwrap()
+            .remote,
+        "git@github.com:acme/app.git"
+    );
+    assert_eq!(
+        remote
+            .test_delivery_for_client(HOST, "b")
+            .await
+            .unwrap()
+            .remote,
+        "git@github.com:acme/other.git"
+    );
+    assert!(remote
+        .test_delivery_for_client(HOST, "unknown")
+        .await
+        .unwrap_err()
+        .starts_with("Open a project"));
+
     let (old, _) = connected(&app).await;
     old.set_open_project(Some(("p1".into(), root)));
     let too_old = old.test_delivery(HOST).await.unwrap_err();
@@ -741,12 +771,15 @@ async fn the_open_project_follows_what_the_user_says_its_folder_is() {
 
     remote.folder_answered(&app.dir.0.join("elsewhere"), "separate");
     assert_eq!(
-        remote.lock().open,
+        remote.lock().open.client(""),
         Some(("original".into(), folder.clone()))
     );
 
     remote.folder_answered(&folder, "separate");
-    assert_eq!(remote.lock().open, Some(("separate".into(), folder)));
+    assert_eq!(
+        remote.lock().open.client(""),
+        Some(("separate".into(), folder))
+    );
 }
 
 /// D11, D16: a setting goes to every connected host, a configuration
@@ -1478,11 +1511,19 @@ async fn a_chat_is_pulled_by_one_window_at_a_time() {
 #[tokio::test]
 async fn a_steer_goes_to_the_chats_host_with_its_paths_from_the_project() {
     let app = App::new();
-    app.chat("chat", None, Vec::new()).await;
+    let folder = app.dir.0.join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let opened = rovik_core::chat_db::api::chat_open_project(
+        &app.core.db,
+        folder.to_string_lossy().into_owned(),
+    )
+    .await
+    .unwrap();
+    app.chat("chat", Some(&opened.project.id), Vec::new()).await;
     let (remote, fake) = connected(&app).await;
     remote.place("chat", HOST);
-    let folder = app.dir.0.join("project");
-    remote.set_open_project(Some(("p".into(), folder.clone())));
+    remote.set_client_project("first", Some((opened.project.id, folder.clone())));
+    remote.set_client_project("second", Some(("other".into(), app.dir.0.join("other"))));
     let local = folder.join("src").join("a.rs");
     let message = UserMessage {
         id: "s1".into(),
@@ -1559,7 +1600,10 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
     );
     let mut waiting = config.clone();
     ApprovalPolicy::WaitForMe.apply(&autonomy, &mut waiting);
-    assert_eq!(waiting.autopilot.plan_fix.max_rounds, 10, "only a host that works on its own");
+    assert_eq!(
+        waiting.autopilot.plan_fix.max_rounds, 10,
+        "only a host that works on its own"
+    );
     ApprovalPolicy::Autonomous.apply(&autonomy, &mut config);
     assert_eq!(
         config.autopilot.plan_fix,

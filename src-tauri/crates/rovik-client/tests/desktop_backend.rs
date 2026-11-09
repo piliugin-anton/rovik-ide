@@ -2,6 +2,8 @@
 //! the client's unit tests.
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
+#[path = "support/desktop_projects.rs"]
+mod desktop_projects;
 #[path = "support/desktop_tasks.rs"]
 mod desktop_tasks;
 
@@ -80,7 +82,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     #[cfg(unix)]
     desktop_operations::check_terminal_contract(&connection, &other).await;
     desktop_tasks::check(&connection, &other).await;
-    drop(other);
+    desktop_projects::check(&connection, other).await;
     api::chat_create_dialog(
         &backend.core.db,
         NewDialog {

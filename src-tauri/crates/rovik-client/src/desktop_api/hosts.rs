@@ -150,7 +150,17 @@ impl HostsRequest {
             }
             Self::Tasks { id } => super::encode_result(hosts_tasks(backend, id).await),
             Self::TestDelivery { id } => {
-                super::encode_result(hosts_test_delivery(backend, id).await)
+                let owner = session.ok_or_else(|| {
+                    serde_json::Value::String(
+                        "A client session is required for delivery tests".into(),
+                    )
+                })?;
+                super::encode_result(
+                    backend
+                        .remote
+                        .test_delivery_for_client(&id, owner.id())
+                        .await,
+                )
             }
             Self::Deploy { id, sudo_password } => {
                 super::encode_result(hosts_deploy(backend, id, sudo_password).await)
@@ -246,14 +256,6 @@ async fn hosts_tasks(
 ) -> Result<Vec<rovik_protocol::autopilot::ChatTask>, String> {
     let page = &backend.hosts;
     page.tasks(&id).await
-}
-
-async fn hosts_test_delivery(
-    backend: &DesktopBackend,
-    id: String,
-) -> Result<rovik_protocol::autopilot::DeliveryTest, String> {
-    let page = &backend.hosts;
-    page.test_delivery(&id).await
 }
 
 async fn hosts_deploy(

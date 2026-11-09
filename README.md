@@ -2246,3 +2246,9 @@ Streamed model requests, MCP sign-in, and host-test progress now use private
 backend tasks. Stop remains available during a streamed request, and matching
 request IDs in different clients cannot cancel each other. Shared UI settings and
 WSL operations also use desktop RPC; native adapters retain browser/window actions.
+
+Project lifecycle commands and attachment reads now use desktop RPC. Open projects
+are registered per client, with guarded merges/deletes and disconnect cleanup;
+remote results and steering use the chat's project. This completes the listed
+command-family migration. Automatic daemon attachment and global event recovery
+remain follow-up work; the app still explicitly uses the embedded backend.

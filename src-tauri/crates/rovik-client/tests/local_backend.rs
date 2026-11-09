@@ -3,6 +3,8 @@
 
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
+#[path = "support/desktop_projects.rs"]
+mod desktop_projects;
 #[path = "support/desktop_tasks.rs"]
 mod desktop_tasks;
 
@@ -149,7 +151,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .unwrap();
     desktop_operations::check_terminal_contract(&adapter, &other_adapter).await;
     desktop_tasks::check(&adapter, &other_adapter).await;
-    drop(other_adapter);
+    desktop_projects::check(&adapter, other_adapter).await;
     let shared_volume = client_b
         .desktop(rovik_client::desktop_api::DesktopRequest::from(
             rovik_client::desktop_api::vfs::VfsRequest::Status,

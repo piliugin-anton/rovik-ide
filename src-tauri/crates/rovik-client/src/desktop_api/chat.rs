@@ -10,10 +10,22 @@ use std::collections::HashMap;
 use crate::desktop_backend::DesktopBackend;
 use serde::{Deserialize, Serialize};
 
+/// An attachment's validated media type and compact binary payload.
+#[derive(Serialize, Deserialize)]
+pub struct Attachment {
+    /// Media type determined by attachment storage.
+    pub mime: String,
+    /// Original bytes, encoded compactly across the desktop transport.
+    #[serde(with = "super::bytes")]
+    pub bytes: Vec<u8>,
+}
+
 /// Desktop chat operations.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum ChatRequest {
+    /// Reads a content-addressed attachment without exposing backend storage paths.
+    ReadAttachment { path: String },
     /// Create a chat in the backend database.
     CreateDialog {
         id: String,
@@ -108,6 +120,20 @@ pub enum ChatRequest {
 impl ChatRequest {
     pub(super) async fn dispatch(self, backend: &DesktopBackend) -> super::DesktopResult {
         match self {
+            Self::ReadAttachment { path } => {
+                let data = backend.core.db.data_dir().to_path_buf();
+                super::encode_result(
+                    super::blocking(move || {
+                        Ok(rovik_core::chat_db::attachments::read(&data, &path).map(
+                            |(mime, bytes)| Attachment {
+                                mime: mime.into(),
+                                bytes,
+                            },
+                        ))
+                    })
+                    .await,
+                )
+            }
             Self::CreateDialog {
                 id,
                 title,

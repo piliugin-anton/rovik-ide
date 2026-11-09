@@ -69,18 +69,38 @@ pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedRece
 }
 
 impl Remote {
-    /// The project open in the app, by its id and folder: results land by
-    /// themselves only there (6.5). Those that waited for it land now.
+    /// The default project for single-client callers. Desktop clients use
+    /// `set_client_project` so opening a folder cannot replace another client's.
     pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {
-        self.lock().open = project;
+        self.set_client_project("", project);
+    }
+
+    /// Registers one client's folder without replacing any other client's project.
+    pub fn set_client_project(&self, client: &str, project: Option<(String, PathBuf)>) {
+        self.lock().open.set(client, project);
         let _ = self.jobs.send(Job::Opened);
+    }
+
+    /// The project registered by one client, for lifecycle updates.
+    pub fn client_project(&self, client: &str) -> Option<(String, PathBuf)> {
+        self.lock().open.client(client)
+    }
+
+    /// The folder of a project another client is viewing, for destructive-operation guards.
+    pub fn project_open_elsewhere(
+        &self,
+        client: &str,
+        project: &str,
+        root: Option<&Path>,
+    ) -> Option<PathBuf> {
+        self.lock().open.other(client, project, root)
     }
 
     /// The user said what the folder at `root` is (a copy of another
     /// project, or one that moved), which made it `project`'s: when it's
     /// the open folder, results land there as that project's from now on.
     pub fn folder_answered(&self, root: &Path, project: &str) {
-        let open = self.lock().open.clone();
+        let open = self.lock().open.client("");
         if open.is_some_and(|(id, at)| at == root && id != project) {
             self.set_open_project(Some((project.to_string(), root.to_path_buf())));
         }
@@ -397,9 +417,7 @@ impl Remote {
 
     /// The results that waited for their project, once it's open.
     async fn land_waiting(&self) {
-        let Some((open, _)) = self.lock().open.clone() else {
-            return;
-        };
+        let open = self.lock().open.ids();
         let remote: Vec<String> = {
             let state = self.lock();
             let chats = state.chats.keys();
@@ -411,7 +429,7 @@ impl Remote {
         for chat in remote {
             let ready = chats::pending(&chat).is_some_and(|p| p.reason == import::READY);
             let project = self.project_of(&chat).await.ok().flatten();
-            if ready && project.is_some_and(|(id, _)| id == open) {
+            if ready && project.is_some_and(|(id, _)| open.contains(&id)) {
                 let _ = self.land_imported(&chat, None).await;
             }
         }
@@ -580,8 +598,8 @@ impl Remote {
         let Some(project) = db.read(move |c| store::dialog_project(c, &id)).await? else {
             return Ok(None);
         };
-        let open = self.lock().open.clone();
-        if let Some((_, root)) = open.filter(|(id, _)| *id == project) {
+        let root = self.lock().open.root(&project)?;
+        if let Some(root) = root {
             return Ok(Some((project, root)));
         }
         let id = project.clone();
@@ -592,10 +610,7 @@ impl Remote {
     }
 
     fn is_open(&self, project: &str) -> bool {
-        self.lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| id == project)
+        self.lock().open.contains(project)
     }
 
     /// Tells the user of the paths of a result that stay on its host, as

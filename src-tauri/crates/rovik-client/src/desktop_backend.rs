@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Serializes ownership checks with project opens and destructive changes.
+    pub(crate) project_changes: tokio::sync::Mutex<()>,
     /// Terminals run by this backend, with per-client ownership.
     pub terminals: Arc<crate::terminal::TerminalState>,
     /// Client resource lifetimes and private event streams.
@@ -99,6 +101,7 @@ impl DesktopBackend {
         }));
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
+            project_changes: Default::default(),
             sessions: Default::default(),
             terminals: Arc::new(crate::terminal::terminals()),
             core,
@@ -207,6 +210,7 @@ mod routing_tests {
             "test",
         ));
         DesktopBackend {
+            project_changes: Default::default(),
             sessions: Default::default(),
             terminals: Arc::new(crate::terminal::terminals()),
             core,

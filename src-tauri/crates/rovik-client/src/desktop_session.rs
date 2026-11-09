@@ -51,6 +51,7 @@ pub struct Session {
     id: String,
     pub(crate) chat_requests: Arc<rovik_core::chat_request::ChatRequests>,
     pub(crate) filesystem: Arc<crate::filesystem::WatcherState>,
+    project_cleanup: Mutex<Option<Cleanup>>,
     closed: AtomicBool,
     failure: watch::Sender<Option<String>>,
     queued_bytes: Mutex<usize>,
@@ -68,6 +69,7 @@ impl Session {
             id,
             filesystem: Default::default(),
             chat_requests: Default::default(),
+            project_cleanup: Default::default(),
             closed: AtomicBool::new(false),
             failure,
             queued_bytes: Mutex::new(0),
@@ -107,11 +109,30 @@ impl Session {
     /// Stops only this client's resources. Safe to call more than once.
     pub fn close(&self, reason: &str) {
         self.fail(reason);
+        if let Some(cleanup) = lock(&self.project_cleanup).take() {
+            cleanup();
+        }
         lock(&self.streams).clear();
         let resources = std::mem::take(&mut *lock(&self.resources));
         for (_, resource) in resources {
             (resource.cleanup)();
         }
+    }
+
+    /// Changes this client's open folder atomically with disconnect cleanup.
+    pub(crate) fn set_project(
+        &self,
+        remote: Arc<crate::Remote>,
+        project: Option<(String, std::path::PathBuf)>,
+    ) -> Result<(), String> {
+        let mut cleanup = lock(&self.project_cleanup);
+        if self.is_closed() {
+            return Err("Desktop session ended; reopen the project after reconnecting".into());
+        }
+        remote.set_client_project(self.id(), project);
+        let id = self.id.clone();
+        *cleanup = Some(Box::new(move || remote.set_client_project(&id, None)));
+        Ok(())
     }
 
     /// Reserves a callback before starting its producer, including early output.
