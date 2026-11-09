@@ -313,16 +313,19 @@ pub fn bm25_relevance(rank: f64) -> f32 {
 /// with the task, rather than a fact that both texts contain "the". Words of
 /// two letters or fewer are dropped earlier, by [`raw_terms`].
 const GENERIC_TERMS: &[&str] = &[
-    "add", "added", "adds", "after", "again", "all", "also", "and", "any", "are", "before", "but",
-    "can", "change", "changed", "changes", "code", "codebase", "could", "did", "does", "done",
-    "each", "every", "file", "files", "fix", "fixed", "fixes", "for", "from", "get", "gets", "got",
-    "had", "has", "have", "help", "helps", "here", "how", "into", "its", "just", "keep", "keeps",
-    "like", "line", "lines", "make", "makes", "making", "more", "most", "need", "needs", "not",
-    "now", "off", "only", "other", "our", "out", "same", "should", "some", "still", "task",
-    "tasks", "test", "tests", "than", "that", "the", "their", "them", "then", "there", "these",
-    "they", "thing", "things", "this", "those", "too", "update", "updated", "updates", "use",
-    "used", "using", "very", "want", "wants", "was", "way", "ways", "were", "what", "when",
-    "where", "which", "while", "why", "will", "with", "work", "works", "would", "you", "your",
+    // Length alone excluded these before literal two-letter suffixes existed.
+    "an", "as", "at", "be", "by", "do", "he", "if", "in", "is", "it", "me", "my", "no", "of", "on",
+    "or", "so", "to", "up", "us", "we", "add", "added", "adds", "after", "again", "all", "also",
+    "and", "any", "are", "before", "but", "can", "change", "changed", "changes", "code",
+    "codebase", "could", "did", "does", "done", "each", "every", "file", "files", "fix", "fixed",
+    "fixes", "for", "from", "get", "gets", "got", "had", "has", "have", "help", "helps", "here",
+    "how", "into", "its", "just", "keep", "keeps", "like", "line", "lines", "make", "makes",
+    "making", "more", "most", "need", "needs", "not", "now", "off", "only", "other", "our", "out",
+    "same", "should", "some", "still", "task", "tasks", "test", "tests", "than", "that", "the",
+    "their", "them", "then", "there", "these", "they", "thing", "things", "this", "those", "too",
+    "update", "updated", "updates", "use", "used", "using", "very", "want", "wants", "was", "way",
+    "ways", "were", "what", "when", "where", "which", "while", "why", "will", "with", "work",
+    "works", "would", "you", "your",
 ];
 
 /// Whether `term` names something a memory and a task can share.
@@ -367,8 +370,8 @@ pub fn build_fts_query(inputs: &[&str]) -> String {
 }
 
 /// A conservative fallback for code names whose spelling hides prose words.
-/// Every distinct component must match; generic or short components reject the
-/// entire name rather than leaving an ambiguous fragment behind.
+/// Every distinct component must match. A literal two-letter suffix needs two
+/// distinct longer anchors; other short or generic components reject the name.
 pub(crate) fn identifier_fts_query(inputs: &[&str]) -> String {
     let mut names = Vec::new();
     for input in inputs {
@@ -408,7 +411,16 @@ pub(crate) fn identifier_fts_query(inputs: &[&str]) -> String {
                     .map(|pair| name[pair[0]..pair[1]].to_ascii_lowercase())
                     .collect()
             };
-            if !(2..=8).contains(&parts.len()) || parts.iter().any(|part| !is_distinctive(part)) {
+            let anchored_suffix = parts.split_last().is_some_and(|(suffix, anchors)| {
+                suffix.len() == 2
+                    && !GENERIC_TERMS.contains(&suffix.as_str())
+                    && anchors.len() >= 2
+                    && anchors.iter().all(|part| is_distinctive(part))
+                    && anchors.iter().any(|part| part != &anchors[0])
+            });
+            if !(2..=8).contains(&parts.len())
+                || (!anchored_suffix && parts.iter().any(|part| !is_distinctive(part)))
+            {
                 continue;
             }
             parts.sort();
@@ -517,6 +529,31 @@ mod tests {
             "AlphaBravoCharlieDeltaEchoFoxtrotGolfHotelIndigo",
         ] {
             assert!(identifier_fts_query(&[text]).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn short_terminal_components_remain_literal_with_two_distinct_long_anchors() {
+        for name in ["OnnxMiniLm", "onnx_mini_lm", "crate::ONNXMiniLM"] {
+            assert_eq!(
+                identifier_fts_query(&[name]),
+                "(\"lm\" AND \"mini\" AND \"onnx\")"
+            );
+        }
+        for name in [
+            "OnnxLm",
+            "OnnxLmCache",
+            "OnnxMiniTo",
+            "OnnxMiniIn",
+            "OnnxMiniOr",
+            "OnnxMiniX",
+            "OnnxMiniLm2",
+            "MemoryMemoryDb",
+            "get_memory_db",
+            "HttpIOState",
+            "http_io_state",
+        ] {
+            assert!(identifier_fts_query(&[name]).is_empty(), "{name}");
         }
     }
 

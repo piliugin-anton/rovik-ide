@@ -144,6 +144,10 @@ paths with eligible file claims from the existing indexed collector. A claim
 can cover several hints. Unknown paths with no eligible memory are skipped;
 insufficient slots or a file lookup error preserves the successful name plan.
 File additions are applied together, without moving earlier named facts.
+Complete name matching permits a non-generic two-letter suffix after two distinct
+longer components, including CamelCase, qualified and snake spellings. Every
+component remains a literal conjunctive requirement. Middle short components,
+generic words, digits, repeated single anchors and one-letter suffixes stay out.
 
 ## Development
 

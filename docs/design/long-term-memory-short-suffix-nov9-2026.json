@@ -1,0 +1,4887 @@
+{
+  "baseline": "68069012445f65f482f6776410ada2f3f106d589",
+  "branch": "ltm-improvements-nov9-2026-2",
+  "protocol": "scripts/eval/memory-short-suffix-protocol.json",
+  "new_cases": false,
+  "method": "Unchanged frozen fixtures, native pinned MiniLM, 384 dimensions, threshold .3, limit eight, 1000-token packets and two-word scale 11/12. Select on development and crate contracts before exposed reserved scoring. Baseline retrieval and final candidate rebuilt with the same constant-age evaluator; all outputs replayed afresh.",
+  "limitations": [
+    "All 26 development gains involve the same OnnxMiniLm component in correlated composed cases. No independent semantic, precision, multilingual or live-agent claim.",
+    "Unrequested trailing context can change under existing focused coverage. Per-fact fixture retention is not a universal relevance guarantee.",
+    "Concurrent checks are not a latency benchmark."
+  ],
+  "groups": [
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "after": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.4292091836734694,
+        "ndcg_at_8": 0.5567509106930392,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.4292091836734694,
+        "ndcg_at_8": 0.5567509106930392,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "after": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.6778486394557823,
+        "ndcg_at_8": 0.7521203582728371,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.6778486394557823,
+        "ndcg_at_8": 0.7521203582728371,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 4
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 4
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 4
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "gains": [],
+      "identical": 4
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "after": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "after": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7291666666666666,
+        "ndcg_at_8": 0.766959194553578,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7291666666666666,
+        "ndcg_at_8": 0.766959194553578,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.875
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "after": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7375,
+        "ndcg_at_8": 0.7735056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7375,
+        "ndcg_at_8": 0.7735056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.875
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "after": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.6,
+        "ndcg_at_8": 0.6629000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.85
+      },
+      "after": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.6,
+        "ndcg_at_8": 0.6629000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.85
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "after": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "gains": [],
+      "identical": 55
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 110,
+      "before": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "gains": [],
+      "identical": 110
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 110,
+      "before": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "gains": [],
+      "identical": 110
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 58,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "gains": [],
+      "identical": 58
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 58,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "gains": [],
+      "identical": 58
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 24
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 24
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 24
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 24
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "gains": [],
+      "identical": 45
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.16666666666666666,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "after": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.16666666666666666,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.27658730158730155,
+        "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.27658730158730155,
+        "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.44444444444444436,
+        "ndcg_at_8": 0.5166292762412937,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.44444444444444436,
+        "ndcg_at_8": 0.5166292762412937,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.1337159863945578,
+        "ndcg_at_8": 0.3241184742704798,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.1337159863945578,
+        "ndcg_at_8": 0.3241184742704798,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5130952380952382,
+        "ndcg_at_8": 0.6257471923389127,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5130952380952382,
+        "ndcg_at_8": 0.6257471923389127,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 40
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.18055555555555555,
+        "ndcg_at_8": 0.2192441461309548,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.18055555555555555,
+        "ndcg_at_8": 0.2192441461309548,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.13194444444444445,
+        "ndcg_at_8": 0.1785909110241198,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.13194444444444445,
+        "ndcg_at_8": 0.1785909110241198,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.20833333333333334,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.20833333333333334,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.2341269841269841,
+        "ndcg_at_8": 0.2995994033730207,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.2341269841269841,
+        "ndcg_at_8": 0.2995994033730207,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "gains": [],
+      "identical": 12
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 32
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 1,
+        "mrr": 0.13526785714285713,
+        "ndcg_at_8": 0.32551051510990603,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 1,
+        "mrr": 0.13526785714285713,
+        "ndcg_at_8": 0.32551051510990603,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 32
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 32
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 1,
+        "mrr": 0.48348214285714286,
+        "ndcg_at_8": 0.6001414203890961,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 1,
+        "mrr": 0.48348214285714286,
+        "ndcg_at_8": 0.6001414203890961,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 32
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.625,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.425,
+        "ndcg_at_8": 0.4717132018086354,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.625
+      },
+      "after": {
+        "candidate_recall": 0.625,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.425,
+        "ndcg_at_8": 0.4717132018086354,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.625
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 52
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 0.34375,
+        "cases": 52,
+        "delivered_recall": 0.1875,
+        "mrr": 0.051636904761904766,
+        "ndcg_at_8": 0.11688149154613164,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.34375
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 52,
+        "delivered_recall": 1,
+        "mrr": 0.1386904761904762,
+        "ndcg_at_8": 0.3288416870637065,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "gains": [
+        "file-cover-OnnxMiniLm-single",
+        "file-cover-OnnxMiniLm-three",
+        "file-cover-OnnxMiniLm-four",
+        "file-cover-OnnxMiniLm-qualified",
+        "file-cover-OnnxMiniLm-multi-file-three",
+        "file-cover-OnnxMiniLm-duplicate-hints",
+        "file-cover-OnnxMiniLm-unknown-file",
+        "file-cover-OnnxMiniLm-filtered",
+        "file-cover-SemanticIndex-three",
+        "file-cover-SemanticIndex-four",
+        "file-cover-SemanticIndex-qualified",
+        "file-cover-SemanticIndex-multi-file-three",
+        "file-cover-SemanticIndex-unknown-file",
+        "file-cover-SemanticIndex-filtered",
+        "file-cover-RetrievalWeights-three",
+        "file-cover-RetrievalWeights-four",
+        "file-cover-RetrievalWeights-qualified",
+        "file-cover-RetrievalWeights-multi-file-three",
+        "file-cover-RetrievalWeights-unknown-file",
+        "file-cover-RetrievalWeights-filtered",
+        "file-cover-RetrievalTelemetry-three",
+        "file-cover-RetrievalTelemetry-four",
+        "file-cover-RetrievalTelemetry-qualified",
+        "file-cover-RetrievalTelemetry-multi-file-three",
+        "file-cover-RetrievalTelemetry-unknown-file",
+        "file-cover-RetrievalTelemetry-filtered"
+      ],
+      "identical": 26
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 52
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 52,
+        "delivered_recall": 0.9375,
+        "mrr": 0.1668526785714286,
+        "ndcg_at_8": 0.35389015136690666,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 52,
+        "delivered_recall": 0.9375,
+        "mrr": 0.1668526785714286,
+        "ndcg_at_8": 0.35389015136690666,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "gains": [],
+      "identical": 52
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.125,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.017857142857142856,
+        "ndcg_at_8": 0.041666666666666664,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.125
+      },
+      "after": {
+        "candidate_recall": 0.125,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.017857142857142856,
+        "ndcg_at_8": 0.041666666666666664,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.125
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "gains": [],
+      "identical": 8
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.375,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.05952380952380952,
+        "ndcg_at_8": 0.13071846344367222,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.375
+      },
+      "after": {
+        "candidate_recall": 0.375,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.05952380952380952,
+        "ndcg_at_8": 0.13071846344367222,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.375
+      },
+      "gains": [],
+      "identical": 8
+    }
+  ],
+  "changes": [
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-single",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-single",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 540,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-three",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 507,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 7,
+          "Retrieval weights": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-three",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 554,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 7,
+          "Retrieval weights": 5,
+          "Semantic index": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-four",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 517,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 6,
+          "Retrieval telemetry": null,
+          "Retrieval weights": 7,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-four",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 557,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 6,
+          "Retrieval telemetry": 4,
+          "Retrieval weights": 7,
+          "Semantic index": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-qualified",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-qualified",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 503,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 8,
+          "Semantic index": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-qualified",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 8,
+          "Semantic index": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-multi-file-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-multi-file-three",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 495,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 6,
+          "File context": 7,
+          "Retrieval weights": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-multi-file-three",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 543,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Dispatch context": 6,
+          "File context": 7,
+          "Retrieval weights": 4,
+          "Semantic index": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-duplicate-hints",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-duplicate-hints",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 508,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 3,
+        "required_delivered": 1,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-duplicate-hints",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 529,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-unknown-file",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-unknown-file",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 507,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 7,
+          "Retrieval weights": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-unknown-file",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 554,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 7,
+          "Retrieval weights": 5,
+          "Semantic index": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-OnnxMiniLm-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-filtered",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-OnnxMiniLm-filtered",
+        "incident": "OnnxMiniLm",
+        "packet_tokens": 538,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 6,
+          "Semantic index": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-three",
+        "incident": "SemanticIndex",
+        "packet_tokens": 507,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 7,
+          "ONNX Mini LM": null,
+          "Retrieval weights": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-three",
+        "incident": "SemanticIndex",
+        "packet_tokens": 555,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 7,
+          "ONNX Mini LM": 6,
+          "Retrieval weights": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-four",
+        "incident": "SemanticIndex",
+        "packet_tokens": 509,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 5,
+          "ONNX Mini LM": null,
+          "Retrieval telemetry": null,
+          "Retrieval weights": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000a"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-four",
+        "incident": "SemanticIndex",
+        "packet_tokens": 558,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 5,
+          "ONNX Mini LM": 7,
+          "Retrieval telemetry": 4,
+          "Retrieval weights": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-qualified",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-qualified",
+        "incident": "SemanticIndex",
+        "packet_tokens": 499,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 8,
+          "ONNX Mini LM": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-qualified",
+        "incident": "SemanticIndex",
+        "packet_tokens": 534,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 8,
+          "ONNX Mini LM": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-multi-file-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-multi-file-three",
+        "incident": "SemanticIndex",
+        "packet_tokens": 495,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 6,
+          "File context": 7,
+          "ONNX Mini LM": null,
+          "Retrieval weights": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-multi-file-three",
+        "incident": "SemanticIndex",
+        "packet_tokens": 543,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Dispatch context": 6,
+          "File context": 7,
+          "ONNX Mini LM": 5,
+          "Retrieval weights": 4
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-unknown-file",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-unknown-file",
+        "incident": "SemanticIndex",
+        "packet_tokens": 507,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 7,
+          "ONNX Mini LM": null,
+          "Retrieval weights": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-unknown-file",
+        "incident": "SemanticIndex",
+        "packet_tokens": 555,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 7,
+          "ONNX Mini LM": 6,
+          "Retrieval weights": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-filtered",
+        "incident": "SemanticIndex",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 0,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "ONNX Mini LM": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-filtered",
+        "incident": "SemanticIndex",
+        "packet_tokens": 546,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 6,
+          "ONNX Mini LM": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-three",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 514,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 5,
+          "ONNX Mini LM": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000a"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-three",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 548,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 5,
+          "ONNX Mini LM": 8,
+          "Semantic index": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-four",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 523,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": null,
+          "Retrieval telemetry": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-four",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 559,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": 8,
+          "Retrieval telemetry": 4,
+          "Semantic index": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-qualified",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-qualified",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 499,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 8,
+          "ONNX Mini LM": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-qualified",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 533,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 8,
+          "ONNX Mini LM": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-multi-file-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 5,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-multi-file-three",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 503,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 5,
+        "required_count": 5,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 4,
+          "File context": 7,
+          "ONNX Mini LM": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 5,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-multi-file-three",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 537,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 5,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Dispatch context": 4,
+          "File context": 7,
+          "ONNX Mini LM": 8,
+          "Semantic index": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-unknown-file",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-unknown-file",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 514,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 5,
+          "ONNX Mini LM": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000a"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-unknown-file",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 548,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 5,
+          "ONNX Mini LM": 8,
+          "Semantic index": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-filtered",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 0,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "ONNX Mini LM": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-filtered",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 546,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 6,
+          "ONNX Mini LM": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-three",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 517,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-three",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 557,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": 7,
+          "Semantic index": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-four",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 517,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": null,
+          "Retrieval weights": 7,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-four",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 559,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": 5,
+          "Retrieval weights": 7,
+          "Semantic index": 4
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-qualified",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-qualified",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 499,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 8,
+          "ONNX Mini LM": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "qualified",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-qualified",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 535,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 8,
+          "ONNX Mini LM": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-multi-file-three",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-multi-file-three",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 501,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 8,
+          "ONNX Mini LM": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "multi-file-three",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-multi-file-three",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 546,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 8,
+          "ONNX Mini LM": 6,
+          "Semantic index": 4
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-unknown-file",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-unknown-file",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 517,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": null,
+          "Semantic index": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "unknown-file",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-unknown-file",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 557,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 6,
+          "ONNX Mini LM": 7,
+          "Semantic index": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000021",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-filtered",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 4,
+        "required_delivered": 0,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "ONNX Mini LM": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000003"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-filtered",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 548,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 6,
+          "ONNX Mini LM": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    }
+  ],
+  "fingerprints": [
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "before": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc",
+      "after": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "4ad54d15665acade298e7e70a3c92295d9fba27a731b3d73ffcf1b0f90b6a24f",
+      "after": "4ad54d15665acade298e7e70a3c92295d9fba27a731b3d73ffcf1b0f90b6a24f"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c",
+      "after": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "c32140dd7a579c38490ae0d4b637c5d6c38cd9e66e472ab2ad34e9a5874c0cf1",
+      "after": "c32140dd7a579c38490ae0d4b637c5d6c38cd9e66e472ab2ad34e9a5874c0cf1"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "before": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea",
+      "after": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4",
+      "after": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170",
+      "after": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d",
+      "after": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571",
+      "after": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d",
+      "after": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0",
+      "after": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4",
+      "after": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "before": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec",
+      "after": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "be8543b9da7f9141b2176e0294a8d01b4471b8c00ab5f38d2490f08eaa655d6a",
+      "after": "be8543b9da7f9141b2176e0294a8d01b4471b8c00ab5f38d2490f08eaa655d6a"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e",
+      "after": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "cd33b3d069f4f09cab30928198bce232215b6bb28ac6b377ac3f8d96d278314a",
+      "after": "cd33b3d069f4f09cab30928198bce232215b6bb28ac6b377ac3f8d96d278314a"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "before": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08",
+      "after": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "274ab7c57663ed42d914ed7ce0a411b295833a0ce22f2a0f442936791d23f8e3",
+      "after": "274ab7c57663ed42d914ed7ce0a411b295833a0ce22f2a0f442936791d23f8e3"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b",
+      "after": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d",
+      "after": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "before": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0",
+      "after": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28",
+      "after": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf",
+      "after": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70",
+      "after": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "before": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86",
+      "after": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d",
+      "after": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263",
+      "after": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e",
+      "after": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "before": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139",
+      "after": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274",
+      "after": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238",
+      "after": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2",
+      "after": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "before": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2",
+      "after": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d",
+      "after": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1",
+      "after": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a",
+      "after": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "before": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b",
+      "after": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae",
+      "after": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507",
+      "after": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3",
+      "after": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "before": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2",
+      "after": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877",
+      "after": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87",
+      "after": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b",
+      "after": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b"
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "lexical",
+      "before": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
+      "after": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
+      "after": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63",
+      "after": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63"
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63",
+      "after": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63"
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "6eb76482c2b101bd9e4cadfd644b19d3624824e8a014bccc038a350e6e01567f",
+      "after": "6eb76482c2b101bd9e4cadfd644b19d3624824e8a014bccc038a350e6e01567f"
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1",
+      "after": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1"
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "ef93023b414766e8f526bd6903a9fe8a107d9d4045d46c212dcd17987eda4d5d",
+      "after": "ef93023b414766e8f526bd6903a9fe8a107d9d4045d46c212dcd17987eda4d5d"
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "12b2fabc27a1837901783c0982ddaaf441ad25bd7db2f71c9337832f07dfbde3",
+      "after": "12b2fabc27a1837901783c0982ddaaf441ad25bd7db2f71c9337832f07dfbde3"
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3",
+      "after": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3",
+      "after": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b",
+      "after": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b"
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b",
+      "after": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b"
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
+      "after": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
+      "after": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451",
+      "after": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451"
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451",
+      "after": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451"
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "lexical",
+      "before": "b23a22889ad4c1f7cdb6285bc7b3e52ba0f420fc883259f6b922ce7128244954",
+      "after": "b23a22889ad4c1f7cdb6285bc7b3e52ba0f420fc883259f6b922ce7128244954"
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971",
+      "after": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971"
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "deddd1e4ec2220dfb7eda0e87be1724bba39ff07311bbea35f22b128f8d2585d",
+      "after": "deddd1e4ec2220dfb7eda0e87be1724bba39ff07311bbea35f22b128f8d2585d"
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "dd7d53dead04e24509bb2234b493d544ac11046d9fe65f49691ddce7545d905d",
+      "after": "dd7d53dead04e24509bb2234b493d544ac11046d9fe65f49691ddce7545d905d"
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "bf7337c0f41a26735df0a9e8c9edb8a4a682350467a35ed55a8a83bcf4a07c41",
+      "after": "bf7337c0f41a26735df0a9e8c9edb8a4a682350467a35ed55a8a83bcf4a07c41"
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa",
+      "after": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa"
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "f0e356d6bd463a9dc7e1cc7f1d04b9cdce9802b65897d7fdf1e4b7ae8d57c241",
+      "after": "f0e356d6bd463a9dc7e1cc7f1d04b9cdce9802b65897d7fdf1e4b7ae8d57c241"
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "2ed8e223aea9f67514e25b8d938d6732d7b7bb7e60b66f26a09185c1e28b46f7",
+      "after": "2ed8e223aea9f67514e25b8d938d6732d7b7bb7e60b66f26a09185c1e28b46f7"
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "lexical",
+      "before": "f94aa064c03c82146feda349a0423c2852fddbf057b33cb956ea676015807f2e",
+      "after": "f94aa064c03c82146feda349a0423c2852fddbf057b33cb956ea676015807f2e"
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "ce964dfa3b924c55a78e434d555b9d1b80a2c5254a737ad0717e40719bf86162",
+      "after": "ce964dfa3b924c55a78e434d555b9d1b80a2c5254a737ad0717e40719bf86162"
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "201a6aa3f5e16448326412a26f83cecfb04936f007b43c7dad2b12a0558e7f88",
+      "after": "201a6aa3f5e16448326412a26f83cecfb04936f007b43c7dad2b12a0558e7f88"
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "5613f740ac5450be3264c57b683eec571d07560f8a5136969e1725307055796e",
+      "after": "5613f740ac5450be3264c57b683eec571d07560f8a5136969e1725307055796e"
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "11cb12cdfbf78100c2f4827e09e0337aea410464f74e2a7027bc77743097706e",
+      "after": "11cb12cdfbf78100c2f4827e09e0337aea410464f74e2a7027bc77743097706e"
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "982d06bb3a6c6c4a1842aef186b49ddeec3b5594509751cf6c7cbf07486058da",
+      "after": "982d06bb3a6c6c4a1842aef186b49ddeec3b5594509751cf6c7cbf07486058da"
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "664ac88fc134bd26a8a6ae21f45d258fe71cd7c65b035315437595d054c53017",
+      "after": "664ac88fc134bd26a8a6ae21f45d258fe71cd7c65b035315437595d054c53017"
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "c78fac3fd1fc74a78e9de511e775983d1e519754839e5bcf188e45022160525b",
+      "after": "c78fac3fd1fc74a78e9de511e775983d1e519754839e5bcf188e45022160525b"
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "lexical",
+      "before": "ff14c03ae74fa5a20bd8a94e3b93ccf8c165f38b03f7cefd25b66cb8300e6b8b",
+      "after": "ff14c03ae74fa5a20bd8a94e3b93ccf8c165f38b03f7cefd25b66cb8300e6b8b"
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "58732969381432299d4a2990254f31a55cbb0fb20475ea859a7f090006958857",
+      "after": "e87dcade1a399d426ef80a6eaee1fd75c5c0c799976193545d8f64e24727b806"
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "75db94159fba39a593ae5c2b91d7f4fb9206e09609e5da9425aba996ccfd92b6",
+      "after": "75db94159fba39a593ae5c2b91d7f4fb9206e09609e5da9425aba996ccfd92b6"
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "3de9b259f8369d8a6cbca88f2a954042dd7beb7ce33b466c07463a870134eccc",
+      "after": "3de9b259f8369d8a6cbca88f2a954042dd7beb7ce33b466c07463a870134eccc"
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "lexical",
+      "before": "e3a42d454684716c9ac60637f6aa8e60389edc645c815bf3652f2352868d87e8",
+      "after": "e3a42d454684716c9ac60637f6aa8e60389edc645c815bf3652f2352868d87e8"
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "hybrid",
+      "before": "9fc81817b39de52bcd9b6c883461d4557a264bf1388306a7b59ee9c34be0a541",
+      "after": "9fc81817b39de52bcd9b6c883461d4557a264bf1388306a7b59ee9c34be0a541"
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": "df9e834e02cd672e25cb48408a1aa31ec41e460b47b01ef47f0ba309ad36e56d",
+      "after": "df9e834e02cd672e25cb48408a1aa31ec41e460b47b01ef47f0ba309ad36e56d"
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": "2a66fec811f00735a1fb09cf488042152c31f664d261183b58182dc0f36a48bc",
+      "after": "2a66fec811f00735a1fb09cf488042152c31f664d261183b58182dc0f36a48bc"
+    }
+  ],
+  "audit": {
+    "views": 2708,
+    "identical": 2682,
+    "gains": [
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-single"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-four"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-qualified"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-multi-file-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-duplicate-hints"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-unknown-file"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-OnnxMiniLm-filtered"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-SemanticIndex-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-SemanticIndex-four"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-SemanticIndex-qualified"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-SemanticIndex-multi-file-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-SemanticIndex-unknown-file"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-SemanticIndex-filtered"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalWeights-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalWeights-four"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalWeights-qualified"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalWeights-multi-file-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalWeights-unknown-file"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalWeights-filtered"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalTelemetry-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalTelemetry-four"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalTelemetry-qualified"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalTelemetry-multi-file-three"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalTelemetry-unknown-file"
+      },
+      {
+        "key": "coverage",
+        "split": "development",
+        "policy": "hybrid",
+        "id": "file-cover-RetrievalTelemetry-filtered"
+      }
+    ],
+    "losses": [],
+    "rank_losses": [],
+    "negative_changes": [],
+    "safety": []
+  },
+  "source_sha256": {
+    "baseline_retrieval": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+    "candidate_retrieval": "5d8dda5a715e34fd3d74dec00864a9266bb0819d0e24138eb80df69d8b36133f",
+    "shared_evaluator": "dd87c4ec70b1f7590225e0d03d75cea90872576a02b6b25b72905c0213546730"
+  },
+  "inputs_sha256": {
+    "scripts/eval/memory-file-coverage-cases.json": "75ff31a901ff9d960da3f52575c4d89c81f961d4d10e98baccd0eedd67deefa2",
+    "scripts/eval/memory-file-coverage-retention-cases.json": "bfaeaed2b7ac772c5749ee1a6cc685db14e88fe59408f3316c00c7698f28e8e8"
+  },
+  "validation": {
+    "rust_all_targets": 161,
+    "native_onnx": 2,
+    "doctest": 1,
+    "clippy": "warnings denied",
+    "frontend": 1046,
+    "typecheck": "passed",
+    "format": "passed"
+  },
+  "clock_control": {
+    "registered_before_controlled_replays": true,
+    "diagnosis": "The archived fixed November 7 claim timestamp aged across a UTC-day boundary. An unchanged baseline rerun reproduces the changed overflow negative IDs, so stored baseline reuse is time-dependent.",
+    "policy": "Use the same evaluator for baseline and candidate, setting all fixture claim times to 36 hours before the case starts. This fixes whole-day recency at one with twelve hours of margin, without changing production scoring, inputs, IDs, cutoffs or labels.",
+    "comparison": "Rebuild baseline with unchanged retrieval and the shared clock fix, then replay all baseline and candidate views afresh. Do not use the earlier uncontrolled-clock candidate outputs for acceptance.",
+    "fix_commit": "1948138",
+    "reproduction": {
+      "case": "overflow-fresh-negative-development-2",
+      "archived_ids": [
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-000000000011",
+        "00000000-0000-0000-0000-000000000013",
+        "00000000-0000-0000-0000-000000000010",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000004"
+      ],
+      "unchanged_baseline_at_current_date": [
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-000000000011",
+        "00000000-0000-0000-0000-000000000013",
+        "00000000-0000-0000-0000-000000000010",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000004",
+        "00000000-0000-0000-0000-000000000008"
+      ],
+      "uncontrolled_candidate_ids": [
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-000000000011",
+        "00000000-0000-0000-0000-000000000013",
+        "00000000-0000-0000-0000-000000000010",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000004",
+        "00000000-0000-0000-0000-000000000008"
+      ],
+      "fixed_age_baseline_ids": [
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-000000000011",
+        "00000000-0000-0000-0000-000000000013",
+        "00000000-0000-0000-0000-000000000010",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000004"
+      ]
+    }
+  },
+  "clock_reference_audit": {
+    "views": 2708,
+    "identical": 2708,
+    "changed": []
+  },
+  "discarded_outputs": "All preliminary uncontrolled-clock candidate outputs, including the prematurely started reserved subset, were excluded. The development mismatch reproduced on unchanged baseline code; no scope or cutoff was selected from reserved results. Both runtimes and all final comparisons use the shared constant-age evaluator."
+}

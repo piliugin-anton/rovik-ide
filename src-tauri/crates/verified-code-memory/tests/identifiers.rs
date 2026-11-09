@@ -370,3 +370,28 @@ fn scope_trust_tags_and_caller_visibility_apply_before_identifier_limits() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.id, wanted.id);
 }
+#[test]
+fn terminal_short_components_match_the_literal_suffix_instead_of_only_its_long_anchors() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "ONNX Mini LM",
+            "Reuse the compiled model.",
+        ))
+        .unwrap();
+    for (repo, title) in [
+        ("a", "ONNX Mini DB"),
+        ("a", "ONNX Mini"),
+        ("other", "ONNX Mini LM"),
+    ] {
+        store
+            .remember(NewMemory::procedure(repo, title, "A separate observation."))
+            .unwrap();
+    }
+    for task in ["OnnxMiniLm", "onnx_mini_lm", "crate::ONNXMiniLM"] {
+        let hits = store.retrieve(&RetrievalQuery::new("a", task)).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.id, wanted.id);
+    }
+}

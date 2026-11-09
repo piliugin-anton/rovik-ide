@@ -2087,6 +2087,11 @@ the name plan. One eligible claim can cover each known supplied path, including
 normalized duplicate hints. If the file additions cannot all fit, the name plan
 keeps its original results and ranks. See the
 [harder file-coverage cases](docs/design/long-term-memory-file-coverage-nov9-2026.md).
+Complete symbol lookup also supports a literal two-letter terminal component,
+such as `OnnxMiniLm`, when two distinct longer words anchor the name. The suffix
+must match too; generic words, middle short components and one-letter fragments
+keep their previous rejection. See the
+[short-suffix experiment](docs/design/long-term-memory-short-suffix-nov9-2026.md).
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
