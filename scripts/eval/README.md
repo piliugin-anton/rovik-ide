@@ -21,6 +21,14 @@ be combined with vector import/export. Omit both for the existing MiniLM behavio
 These fields are evaluation-only; the study documents model hashes, cutoffs,
 limits and reproduction commands.
 
+The [additive follow-up](../../docs/design/long-term-memory-additive-encoders-nov10-2026.md)
+rejects E5-winner and deeper model-agreement rescue policies. Native evaluation
+with `diagnostics: true` exposes label-independent `best_eligible` and
+`candidate_pool` score rows, including filtered exact-copy representatives and
+native append packet previews. Previews retain incumbent positions and full
+claims, and reject duplicate, result-limit or packet-budget failures. They do
+not modify retrieval results or enable a second application model.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

@@ -1,0 +1,29 @@
+{
+  "baseline": "e52336de1317f934f04c7f90aa3733211d9ff62e",
+  "registered_before_score_margin_probes": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-retrieval-encoder-cases.json": "143c57de93c6b67863f92ad222851a91503dd010ace39121ad8bab9191bdfe93"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "models_protocol": "scripts/eval/memory-retrieval-encoder-protocol.json",
+  "approach": "Evaluation-only additive rescue: consider only the independently ranked E5 primary-index winner, append at most one absent record to unused MiniLM slots. Preserve all original records, claims, positions and complete delivery. No replacing, reordering or changing defaults.",
+  "features": "Only unconditioned eligible primary-index top three: model cosine, top-one minus top-two margin, optional membership in MiniLM top three. Required/expected identities and answerability are never inputs to admission.",
+  "threshold_grid": [0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95],
+  "margin_grid": [0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1],
+  "corroboration_grid": ["none", "minilm-top3"],
+  "policy": {
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_claim_age_hours": 36,
+    "missing_runner_up": "reject",
+    "e5_query_prefix": "query: ",
+    "e5_document_prefix": "passage: ",
+    "minilm_threshold": 0.3,
+    "minilm_short_query_scale": 0.9166666666666666
+  },
+  "selection": "Use original/fresh/new development only. First screen all 220 policies for possible complete-answer gains and zero changed negative returned identities. This screen is an optimistic upper bound on full-packet delivery, not native packet evaluation. Any potential survivor requires actual native packet rendering, the unchanged per-record comparator, historical development, then heldout evaluation before production consideration. Never use oracle labels for admission or retune queries after scoring.",
+  "fallback": "If no safe potential gain, reject the additive family without scoring heldout or adding a second production model. Record missed-gold ranks and stronger negative-margin counterexamples. No production model, download/release, schema or threshold change."
+}

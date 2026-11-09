@@ -182,3 +182,25 @@ historical/heldout evaluation; do not choose an example-specific gate from the
 new questions. Preserve the frozen fixtures, including baseline no-match failures.
 The original/fresh MiniLM baseline remains byte-equivalent in all non-timing case
 fields. Capture accuracy and paired agent usefulness still need their own evidence.
+
+## Additive encoder studies completed
+
+The [additive study](long-term-memory-additive-encoders-nov10-2026.md) tests the
+recommended alternative to replacing MiniLM. None of the 11 remaining expected
+facts is E5's first candidate, so 220 top-score/margin/corroboration policies have
+zero potential gains. A subsequent shared-top-eight rank-fusion family tests
+210 policies using real native append packet previews. Eight recover pagination;
+each changes at least 14 negative packets, so none qualifies. The 99 consensus
+policies that pass the comparator have no recall gain. Production stays unchanged.
+
+The strongest counterexample is an unrelated CORS fact for a redirect request:
+it exceeds the pagination gain on E5 cosine, MiniLM cosine and fused margin, and
+both append in full. Tighter monotone cutoffs on these features cannot separate
+them. Repeated encoder-score/rank gating is no longer the preferred direction.
+A distinct next retrieval study is query-document relevance reranking over a
+frozen eligible pool, retaining the low-ranked expected facts and high-confidence
+unsupported requests. Require negative packet preservation and judge extraneous
+additions on already answered positive queries as well; the current fact/rank
+comparator alone does not measure that precision cost. Capture and paired agent
+usefulness still require separate evaluations. No heldout candidate scoring or
+production second model was introduced.

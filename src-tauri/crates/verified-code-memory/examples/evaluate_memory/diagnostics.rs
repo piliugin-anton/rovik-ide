@@ -137,6 +137,39 @@ fn stage(
     "below_semantic_admission"
 }
 
+fn append_preview(
+    store: &SharedMemoryStore,
+    query: &RetrievalQuery,
+    found: &[RetrievedMemory],
+    full: &[Uuid],
+    record: &MemoryRecord,
+    budget: usize,
+) -> Value {
+    if found.len() >= query.limit {
+        return json!({"accepted":false,"reason":"result_limit"});
+    }
+    if found
+        .iter()
+        .any(|hit| hit.record.same_context_claim(record))
+    {
+        return json!({"accepted":false,"reason":"existing_context_claim"});
+    }
+    let mut appended = found.to_vec();
+    appended.push(RetrievedMemory {
+        record: record.clone(),
+        score: found.last().map_or(1.0 / 61.0, |hit| hit.score) / 2.0,
+        reason: "evaluation-only additive preview".into(),
+        components: Default::default(),
+    });
+    let packet = store.render_packet_with_evidence(&appended, budget);
+    if !packet.complete_ids.contains(&record.id)
+        || full.iter().any(|id| !packet.complete_ids.contains(id))
+    {
+        return json!({"accepted":false,"reason":"packet_guard"});
+    }
+    json!({"accepted":true,"returned_ids":appended.iter().map(|h|h.record.id).collect::<Vec<_>>(),"rendered_ids":packet.rendered_ids,"full_text_ids":packet.complete_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet.text)})
+}
+
 /// Reports observed fixture/index state without changing retrieval or stored records.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect(
@@ -188,6 +221,18 @@ pub(super) fn collect(
             };
             let (all, eligible) =
                 scores(&connection, table, store, query, model, &vector, &accept)?;
+            // Admission research needs a ranking independent of expected facts.
+            // Keep the same eligibility and exact-copy representatives as search.
+            let leaders: Vec<_> = eligible
+                .iter()
+                .take(3)
+                .map(|(r, s)| json!({"id":r.id,"title":r.title,"claim_hash":r.claim_hash,"cosine":s}))
+                .collect();
+            let candidate_pool: Vec<_> = eligible
+                .iter()
+                .take(query.limit)
+                .map(|(r, s)| json!({"id":r.id,"title":r.title,"claim_hash":r.claim_hash,"cosine":s,"append_preview":append_preview(store,query,found,full,r,config["memory_budget"].as_u64().unwrap_or(1000) as usize)}))
+                .collect();
             let competitors: Vec<_> = eligible
                 .iter()
                 .filter(|(r, _)| !targets.contains(&r.id))
@@ -205,7 +250,7 @@ pub(super) fn collect(
                 target_views[i].push(fact.clone());
                 facts.push(fact);
             }
-            views.push(json!({"query_view":name,"index_view":kind,"probe_only":true,"indexed_records":all.len(),"eligible_distinct_records":eligible.len(),"best_nonrequired":competitors,"targets":facts}));
+            views.push(json!({"query_view":name,"index_view":kind,"probe_only":true,"indexed_records":all.len(),"eligible_distinct_records":eligible.len(),"best_eligible":leaders,"candidate_pool":candidate_pool,"best_nonrequired":competitors,"targets":facts}));
         }
     }
     let mut facts = Vec::new();
@@ -238,6 +283,170 @@ mod tests {
                 vec![1.0, 0.0]
             })
         }
+    }
+
+    #[test]
+    fn additive_previews_preserve_incumbents_and_reject_duplicates_limits_and_partial_packets() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let anchor = store
+            .remember(NewMemory::project_fact(
+                "p",
+                "Anchor",
+                "Keep this source assertion.",
+            ))
+            .unwrap();
+        let addition = store
+            .remember(NewMemory::project_fact(
+                "p",
+                "Addition",
+                "A second source assertion.",
+            ))
+            .unwrap();
+        let found = vec![RetrievedMemory {
+            record: anchor.clone(),
+            score: 0.25,
+            reason: "original lookup".into(),
+            components: Default::default(),
+        }];
+        let mut query = RetrievalQuery::new("p", "task");
+        query.limit = 2;
+        let baseline = store.render_packet_with_evidence(&found, 1000);
+        assert_eq!(baseline.complete_ids, [anchor.id]);
+        let preview = append_preview(
+            &store,
+            &query,
+            &found,
+            &baseline.complete_ids,
+            &addition,
+            1000,
+        );
+        assert_eq!(preview["accepted"], true);
+        assert_eq!(preview["returned_ids"], json!([anchor.id, addition.id]));
+        assert_eq!(preview["full_text_ids"], json!([anchor.id, addition.id]));
+        assert!(preview["packet_tokens"].as_u64().unwrap() <= 1000);
+        let mut copy = anchor.clone();
+        copy.id = Uuid::new_v4();
+        assert_eq!(
+            append_preview(&store, &query, &found, &baseline.complete_ids, &copy, 1000)["reason"],
+            "existing_context_claim"
+        );
+        query.limit = 1;
+        assert_eq!(
+            append_preview(
+                &store,
+                &query,
+                &found,
+                &baseline.complete_ids,
+                &addition,
+                1000
+            )["reason"],
+            "result_limit"
+        );
+        query.limit = 2;
+        let budget = verified_code_memory::retrieval::estimate_tokens(&baseline.text);
+        assert_eq!(
+            store
+                .render_packet_with_evidence(&found, budget)
+                .complete_ids,
+            [anchor.id]
+        );
+        assert_eq!(
+            append_preview(
+                &store,
+                &query,
+                &found,
+                &baseline.complete_ids,
+                &addition,
+                budget
+            )["reason"],
+            "packet_guard"
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].record, anchor);
+        assert_eq!(found[0].score, 0.25);
+    }
+
+    #[test]
+    fn eligible_leaders_match_filtered_search_without_using_expected_fact_labels() {
+        let uri = format!(
+            "file:diagnostic-leaders-{}?mode=memory&cache=shared",
+            Uuid::new_v4()
+        );
+        let store = SharedMemoryStore::open(&uri).unwrap();
+        let mut copies = Vec::new();
+        for title in [
+            "Copy",
+            "Copy",
+            "Leader A",
+            "Leader B",
+            "Hidden",
+            "Deprecated",
+            "Leader C",
+            "Leader D",
+        ] {
+            let record = store
+                .remember(NewMemory::project_fact("p", title, "An assertion."))
+                .unwrap();
+            store.verify(record.id, "source evidence").unwrap();
+            copies.push(record);
+        }
+        store.deprecate(copies[5].id, "obsolete").unwrap();
+        let tagged = store
+            .remember(
+                NewMemory::project_fact("p", "Tagged", "An assertion.").with_tags(["blocked"]),
+            )
+            .unwrap();
+        store.verify(tagged.id, "source evidence").unwrap();
+        store
+            .remember(NewMemory::project_fact("other", "Foreign", "An assertion."))
+            .unwrap();
+        store
+            .remember(NewMemory::project_fact("p", "Unverified", "An assertion."))
+            .unwrap();
+        let index = SemanticIndex::new(store.clone(), "test", 2).unwrap();
+        index.backfill("p", &Model).unwrap();
+        index.backfill("other", &Model).unwrap();
+        let mut query = RetrievalQuery::new("p", "wanted")
+            .with_verifications([Verification::Verified])
+            .without_tags(["blocked"]);
+        query.limit = 4;
+        let accept = |r: &MemoryRecord| r.id != copies[4].id;
+        let production = index
+            .search_filtered(&query, &[1.0, 0.0], 0.3, accept)
+            .unwrap();
+        assert_eq!(production.len(), 4);
+        let before = store.list("p", "").unwrap();
+        let probe = |targets: &[Uuid]| {
+            collect(
+                &uri,
+                &store,
+                &query,
+                &Model,
+                "test",
+                0.3,
+                &json!({}),
+                targets,
+                &[],
+                &[],
+                &[],
+                accept,
+            )
+            .unwrap()
+        };
+        let first = probe(&[copies[0].id]);
+        let second = probe(&[copies[2].id, copies[3].id]);
+        let leaders = &first["views"][0]["best_eligible"];
+        assert_eq!(leaders, &second["views"][0]["best_eligible"]);
+        assert_eq!(leaders.as_array().unwrap().len(), 3);
+        let pool = &first["views"][0]["candidate_pool"];
+        assert_eq!(pool, &second["views"][0]["candidate_pool"]);
+        assert_eq!(pool.as_array().unwrap().len(), query.limit);
+        for (leader, (record, score)) in pool.as_array().unwrap().iter().zip(&production) {
+            assert_eq!(leader["id"], json!(record.id));
+            assert_eq!(leader["claim_hash"], json!(record.claim_hash));
+            assert_eq!(leader["cosine"], json!(score));
+        }
+        assert_eq!(store.list("p", "").unwrap(), before);
     }
 
     #[test]
