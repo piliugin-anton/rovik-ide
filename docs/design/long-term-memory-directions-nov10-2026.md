@@ -161,3 +161,24 @@ additions can change; every other legacy identity/context/position and previousl
 complete claim is preserved. Missing alternatives or packet pressure keep the
 exact old plan. Implicit semantic matching, capture accuracy, paired agent
 usefulness and judged precision remain separate priorities.
+
+## Retrieval-trained encoder comparison completed
+
+The [E5 study](long-term-memory-retrieval-encoder-nov10-2026.md) adds 96 frozen
+incident-separated cases and compares official, pinned `intfloat/e5-small-v2`
+with MiniLM through native ONNX inference and correct query/passage formatting.
+All eleven development cutoff policies fail the unchanged per-record gate over
+2,436 native views. Low cutoffs improve complete delivery from 65/70 to 67/70,
+27/30 to 29/30 and 29/32 to 31/32, but introduce negative injections and rank
+regressions; original migration also loses a previously complete answer. High
+cutoffs remove the gains and lose more existing answers. New reserved questions
+remain unscored, and production stays on MiniLM.
+
+This rules out the tested whole-encoder replacement policies, not all use of
+retrieval-trained encoders. A possible next experiment is evaluation-only
+candidate-separation analysis for an additive rescue that preserves MiniLM's
+existing identities and ranks. Require exact negative packet preservation before
+historical/heldout evaluation; do not choose an example-specific gate from the
+new questions. Preserve the frozen fixtures, including baseline no-match failures.
+The original/fresh MiniLM baseline remains byte-equivalent in all non-timing case
+fields. Capture accuracy and paired agent usefulness still need their own evidence.

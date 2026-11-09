@@ -11,6 +11,16 @@ documents fresh incident-separated fixtures, offline WordNet/MiniLM experiments,
 per-case regression guards and model setup. These do not measure live-agent task
 success.
 
+The [retrieval-encoder study](../../docs/design/long-term-memory-retrieval-encoder-nov10-2026.md)
+adds frozen implicit/no-match cases and records a rejected E5 replacement sweep.
+For native encoder research, the Rust `evaluate_memory` example accepts paired
+`query_prefix` and `document_prefix` fields in `--experiment-config`. They format
+query and indexing inputs separately and keep role-specific memoization entries.
+Both must be strings of 1–64 characters; they require native inference and cannot
+be combined with vector import/export. Omit both for the existing MiniLM behavior.
+These fields are evaluation-only; the study documents model hashes, cutoffs,
+limits and reproduction commands.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

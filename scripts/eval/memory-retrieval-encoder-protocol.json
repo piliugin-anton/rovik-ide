@@ -1,0 +1,33 @@
+{
+  "baseline": "9d2d3515f5e26d7c4f89a8ba51f7eafaa80f94f7",
+  "frozen_before_scoring": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-retrieval-encoder-cases.json": "143c57de93c6b67863f92ad222851a91503dd010ace39121ad8bab9191bdfe93"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "model": {
+    "id": "intfloat/e5-small-v2",
+    "revision": "ffb93f3bd4047442299a41ebb6fa998a38507c52",
+    "model_sha256": "4b8205be2a3c5fc53c6534d76a2012064f7309c162b806f2889c6ec8ec4fdcba",
+    "tokenizer_sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+    "dimensions": 384,
+    "pooling": "attention-masked mean, L2 normalized",
+    "query_prefix": "query: ",
+    "document_prefix": "passage: ",
+    "export_provenance": "Official upstream ONNX artifact, pinned commit and LFS SHA-256."
+  },
+  "threshold_grid": [0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95],
+  "candidate_short_query_scale": 1,
+  "baseline_policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666
+  },
+  "policy": {
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_claim_age_hours": 36
+  },
+  "selection": "Development only. Require complete-answer gain across new/original/fresh development without any old delivered-fact/rank or exact negative packet regression, using unchanged comparator. Do not score a candidate on reserved cases until development and historical gates pass. No production model, assets or defaults change.",
+  "scope": "Evaluation-only encoder comparison with official query/document formatting; no training, invented aliases or Python runtime. New no-match judgments are author-reviewed, not human-rated precision evidence."
+}

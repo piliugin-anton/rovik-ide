@@ -60,10 +60,45 @@ impl MemoryEmbedder for RecordedEmbeddings {
     }
 }
 
+#[derive(Clone, Debug)]
+struct EncoderPrefixes {
+    query: String,
+    document: String,
+}
+
+fn encoder_prefixes(config: &Value) -> Result<Option<EncoderPrefixes>, Box<dyn std::error::Error>> {
+    match (config.get("query_prefix"), config.get("document_prefix")) {
+        (None, None) => Ok(None),
+        (Some(query), Some(document)) => {
+            let query = query.as_str().ok_or("query_prefix must be a string")?;
+            let document = document
+                .as_str()
+                .ok_or("document_prefix must be a string")?;
+            if query.is_empty()
+                || document.is_empty()
+                || query.chars().count() > 64
+                || document.chars().count() > 64
+            {
+                return Err("encoder prefixes must contain 1 to 64 characters".into());
+            }
+            if config.get("vectors_file").is_some() || config.get("save_vectors_file").is_some() {
+                return Err("prefixed encoder experiments require native inference without vector import/export".into());
+            }
+            Ok(Some(EncoderPrefixes {
+                query: query.to_owned(),
+                document: document.to_owned(),
+            }))
+        }
+        _ => Err("query_prefix and document_prefix must be supplied together".into()),
+    }
+}
+
 /// Keeps repeated fixture documents from running the native encoder again in
 /// each temporary SQLite store. This cache exists only for one evaluation run.
 struct MemoizedEmbeddings {
     inner: Box<dyn MemoryEmbedder>,
+    prefixes: Option<EncoderPrefixes>,
+    query_mode: std::sync::atomic::AtomicBool,
     vectors: std::sync::Mutex<std::collections::BTreeMap<String, Vec<f32>>>,
 }
 
@@ -72,9 +107,33 @@ impl MemoryEmbedder for MemoizedEmbeddings {
         self.inner.dimensions()
     }
     fn input_character_limit(&self) -> Option<usize> {
-        self.inner.input_character_limit()
+        self.inner.input_character_limit().map(|limit| {
+            self.prefixes.as_ref().map_or(limit, |prefixes| {
+                limit.saturating_sub(
+                    prefixes
+                        .query
+                        .chars()
+                        .count()
+                        .max(prefixes.document.chars().count()),
+                )
+            })
+        })
     }
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+        let formatted;
+        let text = if let Some(prefixes) = &self.prefixes {
+            let prefix = if self.query_mode.load(std::sync::atomic::Ordering::Relaxed) {
+                &prefixes.query
+            } else {
+                &prefixes.document
+            };
+            formatted = format!("{prefix}{text}");
+            formatted.as_str()
+        } else {
+            text
+        };
+        // Cache the actual prefixed provider input, so equal query/document
+        // text cannot accidentally share a role-specific vector.
         // The encoder cannot observe a tail beyond its declared character
         // window. Reuse exactly identical effective inputs across verbose
         // fixture alternatives without changing their stored claims.
@@ -357,6 +416,7 @@ fn capture_order(uri: &str, offset: usize) -> Result<(), Box<dyn std::error::Err
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    let prefixes = encoder_prefixes(&config)?;
     let input = dataset_input(&config)?;
     let dataset: Value = serde_json::from_str(&input)?;
     let keys = match config["context_keys_file"].as_str() {
@@ -406,10 +466,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => None,
         }
     };
+    if prefixes.is_some() && backend.is_none() {
+        return Err("encoder prefixes require an embedding backend".into());
+    }
     let backend = backend.map(|(inner, revision, dimensions, threshold)| {
         (
             MemoizedEmbeddings {
                 inner,
+                prefixes,
+                query_mode: Default::default(),
                 vectors: Default::default(),
             },
             revision,
@@ -530,6 +595,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 index
             };
+            embedder
+                .query_mode
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             index.backfill_limited(
                 "project",
                 embedder,
@@ -540,6 +608,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Give the identical prohibited record a vector too: a semantic
             // scope check must not pass just because other projects lack an index.
             index.backfill("other", embedder)?;
+            embedder
+                .query_mode
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             let retrieved = if config["rerank_lexical"] == true {
                 rerank_lexical(&index, &query, embedder, *threshold, &baseline)
             } else if config["semantic_only"] == true {
@@ -721,6 +792,8 @@ mod tests {
         }
         let calls = Arc::new(AtomicUsize::new(0));
         let cached = MemoizedEmbeddings {
+            prefixes: None,
+            query_mode: Default::default(),
             inner: Box::new(Limited {
                 calls: calls.clone(),
             }),
@@ -955,6 +1028,8 @@ mod tests {
         }
         let calls = Arc::new(AtomicUsize::new(0));
         let model = MemoizedEmbeddings {
+            prefixes: None,
+            query_mode: Default::default(),
             inner: Box::new(Count(calls.clone())),
             vectors: Default::default(),
         };
@@ -965,6 +1040,65 @@ mod tests {
             assert!(model.embed("missing").is_err());
         }
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn role_prefixes_keep_identical_query_and_document_inputs_in_separate_cache_entries() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Roles(Arc<AtomicUsize>);
+        impl MemoryEmbedder for Roles {
+            fn dimensions(&self) -> usize {
+                2
+            }
+            fn input_character_limit(&self) -> Option<usize> {
+                Some(500)
+            }
+            fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(if text.starts_with("query: ") {
+                    vec![1.0, 0.0]
+                } else if text.starts_with("passage: ") {
+                    vec![0.0, 1.0]
+                } else {
+                    panic!("role prefix missing")
+                })
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model = MemoizedEmbeddings {
+            inner: Box::new(Roles(calls.clone())),
+            vectors: Default::default(),
+            prefixes: encoder_prefixes(
+                &json!({"query_prefix":"query: ","document_prefix":"passage: "}),
+            )
+            .unwrap(),
+            query_mode: Default::default(),
+        };
+        assert_eq!(model.input_character_limit(), Some(491));
+        assert_eq!(model.embed("same text").unwrap(), vec![0.0, 1.0]);
+        model.query_mode.store(true, Ordering::Relaxed);
+        assert_eq!(model.embed("same text").unwrap(), vec![1.0, 0.0]);
+        assert_eq!(model.embed("same text").unwrap(), vec![1.0, 0.0]);
+        model.query_mode.store(false, Ordering::Relaxed);
+        assert_eq!(model.embed("same text").unwrap(), vec![0.0, 1.0]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn incomplete_or_unreplayable_encoder_formatting_is_rejected() {
+        assert!(encoder_prefixes(&json!({})).unwrap().is_none());
+        for config in [
+            json!({"query_prefix":"query: "}),
+            json!({"query_prefix":true,"document_prefix":"p"}),
+            json!({"query_prefix":"","document_prefix":"p"}),
+            json!({"query_prefix":"q","document_prefix":"p","save_vectors_file":"vectors.json"}),
+            json!({"query_prefix":"q","document_prefix":"p","vectors_file":"vectors.json"}),
+        ] {
+            assert!(encoder_prefixes(&config).is_err());
+        }
     }
 
     #[test]
