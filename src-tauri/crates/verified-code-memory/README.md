@@ -57,6 +57,12 @@ and a truncation notice if it fits. The header, pointers and notice all count
 toward the allowance; very small allowances can produce an empty packet.
 `render_context` is the same rendering with no bound.
 
+`render_packet_with_evidence` returns a `MemoryPacket`: its `rendered_ids` includes
+fetch hints, while `complete_ids` contains only records whose full claim blocks
+fit. Use complete IDs to establish delivery; searching packet text can confuse
+different records with identical content. `render_packet_traced` retains its
+existing text and hint-inclusive IDs.
+
 ## Evidence, applicability and freshness
 
 Three questions a record answers, kept apart because they have different answers:
@@ -148,6 +154,17 @@ Complete name matching permits a non-generic two-letter suffix after two distinc
 longer components, including CamelCase, qualified and snake spellings. Every
 component remains a literal conjunctive requirement. Middle short components,
 generic words, digits, repeated single anchors and one-letter suffixes stay out.
+
+When the caller supplies `with_packet_budget(tokens)`, the focused multi-name/file
+planner can additionally cover whole canonical symbol titles. Component words
+must match the entire title, including any supported short suffix. A broad prose
+reference to a name does not prevent a title addition. These optional additions
+use remaining unprotected slots, must render as complete claims, and must preserve
+every previously complete protected incumbent and planned name/file claim under
+that exact allowance. Any capacity, rendering or lookup failure keeps the legacy
+plan. This uses the existing indexed, filtered collector and adds no inference.
+Omitting the allowance preserves legacy retrieval. Automatic application recall
+supplies its existing 2,000-token allowance.
 
 ## Development
 

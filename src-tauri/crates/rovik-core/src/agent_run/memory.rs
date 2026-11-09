@@ -1471,6 +1471,7 @@ impl super::run::Run {
                 // are prior work.
                 let query = RetrievalQuery::new(query_repo.as_str(), query_task.as_str())
                     .with_limit(RECALL_LIMIT)
+                    .with_packet_budget(MEMORY_TOKENS)
                     .without_tags([own.as_str()]);
                 let memories = match store.retrieve_with_telemetry(&query) {
                     Ok((memories, _telemetry)) => memories,

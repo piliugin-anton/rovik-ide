@@ -447,6 +447,19 @@ pub(crate) fn identifier_fts_query(inputs: &[&str]) -> String {
     names.join(" OR ")
 }
 
+pub(crate) fn identifier_title_matches(name: &str, title: &str) -> bool {
+    let expected = identifier_fts_query(&[name]);
+    if expected.is_empty() || expected.contains(" OR ") {
+        return false;
+    }
+    let spelling = title
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    identifier_fts_query(&[&spelling]) == expected
+}
+
 fn raw_terms(input: &str) -> Vec<String> {
     input
         .split(|character: char| {
@@ -643,4 +656,25 @@ mod tests {
         assert_eq!(found[0].record.id, better.id);
         assert_eq!(telemetry.candidates_scanned, 2);
     }
+}
+#[test]
+fn canonical_titles_require_the_entire_name_without_incidental_context_words() {
+    assert!(identifier_title_matches(
+        "MemorySettings",
+        "Memory settings"
+    ));
+    assert!(identifier_title_matches(
+        "memory_settings",
+        "Settings memory"
+    ));
+    assert!(identifier_title_matches(
+        "crate::OnnxMiniLm",
+        "ONNX Mini LM"
+    ));
+    assert!(!identifier_title_matches("MemorySettings", "Memory entry"));
+    assert!(!identifier_title_matches(
+        "MemorySettings",
+        "Memory settings reference"
+    ));
+    assert!(!identifier_title_matches("OnnxMiniLm", "ONNX Mini DB"));
 }

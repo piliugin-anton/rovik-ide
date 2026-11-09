@@ -461,6 +461,18 @@ pub struct RetrievedMemory {
     pub components: crate::retrieval::MemoryScore,
 }
 
+/// A rendered memory packet with separate evidence for complete claims and hints.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct MemoryPacket {
+    /// Prompt text, including any fetch hints for omitted claims.
+    pub text: String,
+    /// Records mentioned in the packet, including fetch hints.
+    pub rendered_ids: Vec<Uuid>,
+    /// Records whose complete claim blocks fit in the packet.
+    pub complete_ids: Vec<Uuid>,
+}
+
 /// Retrieval request.
 ///
 /// The filters are part of the query, not of the ranking: a memory the caller
@@ -486,6 +498,9 @@ pub struct RetrievalQuery {
     /// Tags a record must not carry: a chat's own work is in the chat
     /// already, so it isn't prior work to that chat.
     pub excluded_tags: Vec<String>,
+    /// Actual rendering allowance, when known by the caller. Optional title
+    /// completion uses it to preserve previously delivered protected claims.
+    pub packet_budget: Option<usize>,
 }
 
 impl RetrievalQuery {
@@ -499,6 +514,7 @@ impl RetrievalQuery {
             limit: 8,
             verifications: Vec::new(),
             excluded_tags: Vec::new(),
+            packet_budget: None,
         }
     }
 
@@ -520,6 +536,13 @@ impl RetrievalQuery {
     #[must_use]
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit;
+        self
+    }
+
+    /// Supplies the packet allowance for budget-aware optional title completion.
+    #[must_use]
+    pub fn with_packet_budget(mut self, tokens: usize) -> Self {
+        self.packet_budget = Some(tokens);
         self
     }
 

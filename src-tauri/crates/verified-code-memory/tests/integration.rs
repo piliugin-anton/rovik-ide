@@ -680,3 +680,36 @@ fn the_shared_store_lists_edits_deletes_and_clears_through_its_lock() {
     );
     assert!(store.list("payments-service", "").unwrap().is_empty());
 }
+#[test]
+fn complete_packet_evidence_does_not_count_a_hint_when_another_record_has_the_same_text() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let content = "A durable constraint must remain complete. ".repeat(45);
+    let records: Vec<_> = ["First context", "Second context"]
+        .into_iter()
+        .map(|title| {
+            let record = store
+                .remember(NewMemory::procedure("a", title, &content))
+                .unwrap();
+            verified_code_memory::RetrievedMemory {
+                record,
+                score: 1.0,
+                reason: "fixture".to_string(),
+                components: Default::default(),
+            }
+        })
+        .collect();
+    let first = store.render_packet_with_evidence(&records[..1], usize::MAX);
+    let budget = verified_code_memory::estimate_tokens(&first.text) + 100;
+    let packet = store.render_packet_with_evidence(&records, budget);
+    assert_eq!(
+        packet.rendered_ids,
+        vec![records[0].record.id, records[1].record.id]
+    );
+    assert_eq!(packet.complete_ids, vec![records[0].record.id]);
+    assert!(packet.text.contains(&records[1].record.content));
+    assert!(packet.text.contains("memory_get"));
+    assert_eq!(
+        store.render_packet_traced(&records, budget),
+        (packet.text, packet.rendered_ids)
+    );
+}

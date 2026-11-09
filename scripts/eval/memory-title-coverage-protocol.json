@@ -1,0 +1,33 @@
+{
+  "baseline": "dec529871065afdf30ee3dd5de05fdc156de896c",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-title-coverage-cases.json": "2ab5cbe623c59e5baeb95f0c748a689e58b091fe50b1a19d6f07bdd1ec617e21",
+    "scripts/eval/memory-title-coverage-retention-cases.json": "ebeb929b7941bd1a4a0c311722f8e843c874d39ffa64df02725c36ded035c582"
+  },
+  "regression_review": {
+    "gaps": [
+      "Title-keyed required ranks collide for distinct claims with the same title.",
+      "Retrieval rank and aggregate required delivery do not prove per-fact full delivery in incomplete answers.",
+      "The old packet trace includes fetch hints; searching text can mistake another record with the same content for full delivery.",
+      "Negative returned IDs alone do not freeze full/hint packet delivery.",
+      "Most retention guards are capacity-infeasible; add feasible protected context and packet pressure."
+    ],
+    "changes": "Add complete-claim renderer evidence, per-record required facts and hashes, primary identity, rendered and complete IDs; fail closed on missing evidence, malformed counts, changed identities, each delivered-fact loss/rank loss, and negative packet changes. Use the committed comparator and mutation tests.",
+    "limits": "Still synthetic and exposed; no universal relevance/precision or live-agent guarantee. Token budgets use the existing estimate."
+  },
+  "hypothesis": "Within existing focused scope, preserve the exact legacy name/file plan and append optional canonical-title matches for names otherwise covered only by incidental prose. Require caller packet allowance; preserve previously complete protected claims and require every title addition to fit as full text, otherwise retain the legacy plan.",
+  "policy": {
+    "threshold": 0.3,
+    "limit": 8,
+    "memory_budget": 1000,
+    "application_budget": 2000,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "constant_claim_age_hours": 36
+  },
+  "selection": "New development cohorts and all 1406 historical development views, renderer/auditor and affected-crate contracts before exposed reserved scoring. Across all 2708 historical policy views reject each fact/rank loss, negative returned/rendered/full identity change, scope/trust/tag/caller violation, fallback or packet overrun. Run Rust crates individually.",
+  "harness": "Baseline and candidate share evidence fields and explicit packet budget. Baseline retrieval unchanged; refresh all old baselines because old rows cannot prove individual rendered facts.",
+  "limitations": "Correlated extensions of eight exposed incidents. Capacity-infeasible controls excluded from headline recall; feasible and pressure controls reported separately.",
+  "validation_override": "At the user request, remaining crate tests were stopped. Core integration compiled; the full core run had environmental sandbox/Go/Chrome failures, isolated controls passed in the corrected environment, and its final clean rerun was interrupted. Continue recall evaluations and retain this limitation in the report."
+}

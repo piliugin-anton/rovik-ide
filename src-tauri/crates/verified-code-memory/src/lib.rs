@@ -40,8 +40,8 @@ pub mod store;
 pub use embedding::{MemoryEmbedder, VectorIndex};
 pub use error::{Result, VcmError};
 pub use model::{
-    claim_hash, Applicability, MemoryKind, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery,
-    RetrievedMemory, SourceKind, Verification,
+    claim_hash, Applicability, MemoryKind, MemoryPacket, MemoryRecord, MemoryStats, NewMemory,
+    RetrievalQuery, RetrievedMemory, SourceKind, Verification,
 };
 pub use retrieval::{
     deduplicate_memories, estimate_tokens, MemoryScore, RetrievalTelemetry, RetrievalWeights,

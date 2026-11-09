@@ -147,6 +147,7 @@ fn fixture_query(
         );
     }
     query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+    query = query.with_packet_budget(config["memory_budget"].as_u64().unwrap_or(1000) as usize);
     if !case["verifications"].is_null() {
         query.verifications = serde_json::from_value(case["verifications"].clone())?;
     }
@@ -196,6 +197,7 @@ struct RequiredEvidence {
     count: usize,
     delivered: usize,
     ranks: serde_json::Map<String, Value>,
+    facts: Vec<Value>,
 }
 
 fn required_evidence(
@@ -225,6 +227,11 @@ fn required_evidence(
                 .position(|h| h.record.id == record.id)
                 .map(|i| i + 1)),
         );
+        evidence.facts.push(json!({
+            "id":record.id,"title":title,"claim_hash":record.claim_hash,
+            "rank":found.iter().position(|hit| hit.record.id==record.id).map(|i|i+1),
+            "delivered":shown.contains(&record.id)&&packet.contains(content)
+        }));
     }
     Ok(evidence)
 }
@@ -545,13 +552,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|at| at + 1);
         found.truncate(8);
         let memory_budget = config["memory_budget"].as_u64().unwrap_or(1000) as usize;
-        let (packet, shown) = store.render_packet_traced(&found, memory_budget);
-        let primary_delivered = shown.contains(&expected) && packet.contains(text("content")?);
+        let evidence = store.render_packet_with_evidence(&found, memory_budget);
+        let (packet, shown, complete) =
+            (evidence.text, evidence.rendered_ids, evidence.complete_ids);
+        let primary_delivered = complete.contains(&expected) && packet.contains(text("content")?);
         let live = store.list("project", "")?;
-        let additional = required_evidence(&case["required"], &live, &found, &packet, &shown)?;
+        let additional = required_evidence(&case["required"], &live, &found, &packet, &complete)?;
         let required_count = 1 + additional.count;
         let required_delivered = usize::from(primary_delivered) + additional.delivered;
         let required_ranks = additional.ranks;
+        let required_facts = additional.facts;
         let answer_delivered = required_delivered == required_count;
         let rank = found
             .iter()
@@ -569,7 +579,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .iter()
                     .any(|tag| query.excluded_tags.contains(tag))
         });
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        let full_text_ids = complete;
+        let primary_claim_hash = store.get(expected)?.claim_hash;
+        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"primary_id":expected,"primary_claim_hash":primary_claim_hash,"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"required_facts":required_facts,"rendered_ids":shown,"full_text_ids":full_text_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -701,6 +713,34 @@ mod tests {
             &shown
         )
         .is_err());
+    }
+
+    #[test]
+    fn same_title_requirements_keep_separate_packet_delivery_evidence() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let corpus = json!([
+            {"title":"Context","content":"First constraint.","verified":true},
+            {"title":"Context","content":"Second constraint.","verified":true}
+        ]);
+        populate_corpus(&store, &corpus, "none").unwrap();
+        let hits = store
+            .retrieve(&RetrievalQuery::new("project", "Context"))
+            .unwrap();
+        let (_, shown) = store.render_packet_traced(&hits, 1000);
+        let evidence = required_evidence(
+            &corpus,
+            &store.list("project", "").unwrap(),
+            &hits,
+            "First constraint.",
+            &shown,
+        )
+        .unwrap();
+        assert_eq!((evidence.count, evidence.delivered), (2, 1));
+        assert_eq!(evidence.facts.len(), 2);
+        assert_ne!(evidence.facts[0]["id"], evidence.facts[1]["id"]);
+        assert_eq!(evidence.facts[0]["delivered"], true);
+        assert_eq!(evidence.facts[1]["delivered"], false);
+        assert!(evidence.facts.iter().all(|fact| fact["rank"].is_number()));
     }
 
     #[test]

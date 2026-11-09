@@ -712,3 +712,147 @@ fn one_file_fact_covers_multiple_supplied_paths_without_duplicate_slots() {
     let (_, shown) = store.render_packet_traced(&after, 1000);
     assert!(shown.contains(&wanted) && shown.contains(&file.id));
 }
+#[test]
+fn optional_title_coverage_preserves_the_legacy_packet_when_protected_full_text_would_be_lost() {
+    struct TitleModel;
+    impl MemoryEmbedder for TitleModel {
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+            Ok(if text.starts_with("Cross references") {
+                vec![1.0, 0.0]
+            } else if text.starts_with("Crowding") {
+                vec![0.9, 0.4358899]
+            } else if text.contains("lock") {
+                vec![0.0, 1.0]
+            } else {
+                vec![1.0, 0.0]
+            })
+        }
+    }
+    // Strict file weights keep the single-pool file result above the omitted
+    // crowding result, independently of UUID and timestamp ties.
+    let store = SharedMemoryStore::new(
+        verified_code_memory::MemoryStore::open_in_memory()
+            .unwrap()
+            .with_weights(verified_code_memory::RetrievalWeights {
+                file_match: 10.0,
+                ..Default::default()
+            }),
+    );
+    for n in 0..7 {
+        let record = store
+            .remember(NewMemory::procedure(
+                "a",
+                format!("Crowding observation {n}"),
+                format!("Independent crowding observation {n}."),
+            ))
+            .unwrap();
+        store.verify(record.id, "source").unwrap();
+    }
+    let first = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            format!("Use a lock. {}", "Durable detail. ".repeat(12)),
+        ))
+        .unwrap()
+        .id;
+    store.verify(first, "source").unwrap();
+    let second = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Retrieval query",
+            format!("Use a lock. {}", "Separate detail. ".repeat(12)),
+        ))
+        .unwrap();
+    store.verify(second.id, "source").unwrap();
+    let reference = store
+        .remember(
+            NewMemory::procedure(
+                "a",
+                "Cross references",
+                "Shared memory store and retrieval query crowding references.",
+            )
+            .with_files(["src/noise.rs"]),
+        )
+        .unwrap();
+    store.verify(reference.id, "source").unwrap();
+    let file =
+        store
+            .remember(
+                NewMemory::procedure("a", "File context", "Use a lock for file state.")
+                    .with_files(["src/noise.rs", "src/other.rs", "src/third.rs"]),
+            )
+            .unwrap();
+    store.verify(file.id, "source").unwrap();
+    let index = SemanticIndex::new(store.clone(), "title-fixture", 2).unwrap();
+    for n in 0..90 {
+        let hidden = store
+            .remember(
+                NewMemory::procedure(
+                    "a",
+                    "SHARED MEMORY STORE",
+                    format!("Use a lock for private state {n}."),
+                )
+                .with_tags(["caller-hidden"]),
+            )
+            .unwrap();
+        store.verify(hidden.id, "private source").unwrap();
+    }
+    index.backfill("a", &TitleModel).unwrap();
+    let visible = |record: &verified_code_memory::MemoryRecord| {
+        !record.tags.iter().any(|tag| tag == "caller-hidden")
+    };
+    let query = RetrievalQuery::new("a", "SharedMemoryStore,RetrievalQuery crowding").with_files([
+        "src/noise.rs",
+        "src/other.rs",
+        "src/third.rs",
+    ]);
+    let legacy = index
+        .retrieve_filtered(&query, &TitleModel, 0.8, visible)
+        .unwrap();
+    assert_eq!(legacy.len(), 8);
+    assert_eq!(legacy[0].record.id, reference.id);
+    assert_eq!(legacy[7].record.id, file.id);
+    assert!(!ids(&legacy).contains(&first));
+    let after = index
+        .retrieve_filtered(
+            &query.clone().with_packet_budget(1000),
+            &TitleModel,
+            0.8,
+            visible,
+        )
+        .unwrap();
+    assert!(ids(&after).contains(&first) && ids(&after).contains(&second.id));
+    assert_eq!(after[0].record.id, reference.id);
+    assert_eq!(after[7].record.id, file.id);
+    let mut unsafe_trial = legacy.clone();
+    for (slot, id) in [(6, first), (5, second.id)] {
+        unsafe_trial[slot].record = store.get(id).unwrap();
+    }
+    let pressure = (100..1000)
+        .find(|budget| {
+            let before = store.render_packet_with_evidence(&legacy, *budget);
+            let trial = store.render_packet_with_evidence(&unsafe_trial, *budget);
+            before.complete_ids.contains(&file.id)
+                && trial.complete_ids.contains(&first)
+                && trial.complete_ids.contains(&second.id)
+                && !trial.complete_ids.contains(&file.id)
+        })
+        .expect("fixture must expose a full-claim loss despite fitting both new titles");
+    let safe = index
+        .retrieve_filtered(
+            &query.with_packet_budget(pressure),
+            &TitleModel,
+            0.8,
+            visible,
+        )
+        .unwrap();
+    assert_eq!(ids(&safe), ids(&legacy));
+    assert!(store
+        .render_packet_with_evidence(&safe, pressure)
+        .complete_ids
+        .contains(&file.id));
+}
