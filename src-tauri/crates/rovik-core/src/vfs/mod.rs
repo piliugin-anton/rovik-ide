@@ -328,8 +328,11 @@ impl VfsState {
         let _mounting = self.mounting.lock().unwrap_or_else(|e| e.into_inner());
         let mut mounted = self.lock();
         if let Some(m) = mounted.as_mut() {
-            m.mount.unmount_if_unused()?;
-            mounted.take();
+            let result = m.mount.unmount_if_unused();
+            if !m.mount.is_mounted() {
+                mounted.take();
+            }
+            result?;
         }
         Ok(())
     }

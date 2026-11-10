@@ -108,7 +108,7 @@ impl Core {
         self.replacement_blocker_inner(false)
     }
 
-    /// Drains only an empty, unused Linux virtual volume for an upgrade.
+    /// Drains unused Linux virtual and top-level chat volumes for an upgrade.
     /// The host must exclude clients and pause producers throughout this call.
     /// A busy mount or any retained work leaves the existing owner in place.
     #[cfg(target_os = "linux")]
@@ -117,6 +117,7 @@ impl Core {
             return Err(reason.into());
         }
         self.vfs.unmount_if_unused()?;
+        crate::overlay::chats::drain_for_upgrade()?;
         // A kernel writer could have created a file between the empty check
         // and unmount. Keep those bytes in this host even after detachment.
         self.replacement_blocker()
@@ -147,7 +148,7 @@ impl Core {
         if crate::command_tool::background::retains_work() {
             return Some("Background commands or unread command results remain");
         }
-        if crate::overlay::chats::retains_views() {
+        if !drain_mount && crate::overlay::chats::retains_views() {
             return Some("Chat filesystem views are still open");
         }
         if !drain_mount && self.vfs.mountpoint().is_some() {

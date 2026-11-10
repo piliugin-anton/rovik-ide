@@ -95,6 +95,46 @@ impl ChatOverlay {
         None
     }
 
+    fn ensure_mounted(&self) -> Result<(), String> {
+        let mut mounted = self.mount.lock().unwrap_or_else(|e| e.into_inner());
+        if mounted.is_none() {
+            let (mount, _) = crate::vfs::platform_mount(self.fs.clone(), Some(&self.view))
+                .map_err(|error| format!("Could not restore the chat view: {}", error.message()))?;
+            *mounted = Some(mount);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn drain_for_upgrade(&self) -> Result<(), String> {
+        self.fs
+            .save_checked()
+            .map_err(|error| format!("Could not save chat changes: {error}"))?;
+        {
+            let mut mounted = self.mount.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(mount) = mounted.as_mut() {
+                let result = mount.unmount_if_unused();
+                if !mount.is_mounted() {
+                    mounted.take();
+                }
+                result?;
+            }
+        }
+        // Kernel writes may have finished after the first save. Only release
+        // the store once that final state has been persisted too.
+        if let Err(error) = self.fs.save_checked() {
+            let restored = self.ensure_mounted();
+            return Err(match restored {
+                Ok(()) => format!("Could not save chat changes: {error}; the view was restored"),
+                Err(restore) => format!("Could not save chat changes: {error}; {restore}. Changes remain in this backend; retry after fixing the storage problem"),
+            });
+        }
+        self.fs.close_handles();
+        crate::file_guard::forget_under(&self.view);
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).take();
+        Ok(())
+    }
+
     fn unmount(&self) {
         self.fs.flush();
         self.fs.close_handles();
@@ -408,6 +448,7 @@ pub fn open(
     let opening = gate.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = get(dialog_id) {
         if o.project == project {
+            o.ensure_mounted()?;
             return Ok(o);
         }
         return Err("this chat's isolated changes belong to another project folder".into());
@@ -500,6 +541,46 @@ pub fn get(dialog_id: &str) -> Option<Arc<ChatOverlay>> {
 /// A mounted or open view must not be torn down by an automatic host upgrade.
 pub(crate) fn retains_views() -> bool {
     !OPEN.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+}
+
+/// Drains idle top-level views without landing or discarding their changes.
+/// Admission and background producers must stay paused throughout this call.
+#[cfg(target_os = "linux")]
+pub(crate) fn drain_for_upgrade() -> Result<(), String> {
+    let mut ids: Vec<String> = OPEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .cloned()
+        .collect();
+    ids.sort();
+    // A child may read from its parent's mount. Leave the whole set alone
+    // until dependency-aware draining is available.
+    for id in &ids {
+        let store = store_dir(id).ok_or("The overlay data folder is unavailable")?;
+        let saved_child = store
+            .join("parent.txt")
+            .try_exists()
+            .map_err(|error| format!("Could not check chat {id}'s parent: {error}"))?;
+        if parent_of(id).is_some() || saved_child {
+            return Err("Child chat filesystem views still depend on their parents".into());
+        }
+    }
+    for id in ids {
+        let gate = gate(&id);
+        let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(overlay) = get(&id) else { continue };
+        if Arc::strong_count(&overlay) != 2 {
+            return Err(format!(
+                "Chat {id}'s filesystem view is still in use; retry after its users finish"
+            ));
+        }
+        overlay
+            .drain_for_upgrade()
+            .map_err(|error| format!("Chat {id}: {error}"))?;
+        OPEN.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    }
+    Ok(())
 }
 
 /// Whether the chat has an overlay, open or saved.
@@ -671,6 +752,7 @@ pub fn open_child_shared(
     }
     let p = get(parent).ok_or("the chat isn't isolated, so it can't have child overlays")?;
     if let Some(o) = get(child) {
+        o.ensure_mounted()?;
         return Ok(o);
     }
     let (used, limit) = p.fs.used();
@@ -1932,7 +2014,13 @@ fn status(dialog_id: String) -> OverlayStatus {
         isolated,
         pending: if isolated { pending(&dialog_id) } else { None },
         last_landing: last_landing(&dialog_id),
-        view: open.map(|o| o.view.to_string_lossy().into_owned()),
+        view: open.and_then(|o| {
+            o.mount
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+                .then(|| o.view.to_string_lossy().into_owned())
+        }),
         merged_in: if isolated {
             merged_in(&dialog_id)
         } else {

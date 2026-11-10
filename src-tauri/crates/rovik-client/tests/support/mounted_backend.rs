@@ -53,6 +53,24 @@ async fn eventually(stage: &str, mut ready: impl AsyncFnMut() -> bool) {
     .unwrap_or_else(|_| panic!("mounted backend timed out: {stage}"));
 }
 
+fn exchange(a: &Path, b: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let a = std::ffi::CString::new(a.as_os_str().as_bytes()).unwrap();
+    let b = std::ffi::CString::new(b.as_os_str().as_bytes()).unwrap();
+    // Atomic fault injection: the background saver cannot recreate the
+    // manifest between moving it away and installing the failing directory.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+}
+
 async fn upgrade(endpoint: &Path) -> serde_json::Value {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     async fn frame(stream: &mut tokio::net::UnixStream) -> serde_json::Value {
@@ -80,7 +98,10 @@ async fn refusal(endpoint: &Path, reason: &str) {
     eventually("upgrade refusal after disconnect cleanup", async || {
         let reply = upgrade(endpoint).await;
         let message = reply["Busy"].as_str().unwrap_or_else(|| panic!("{reply}"));
-        if message.contains("connected") || message.contains("Blocking") {
+        if message.contains("connected")
+            || message.contains("Blocking")
+            || message.contains("retry after its users finish")
+        {
             return false;
         }
         assert!(message.contains(reason), "{reply}");
@@ -147,9 +168,13 @@ async fn start(client: &DesktopConnection, chat: &str, project: &str, root: &Pat
         // Keep the run alive without invoking automatic end-of-run reviewers.
         Reply::Hang(None),
     ]).await;
+    run(client, chat, root, url).await;
+}
+
+async fn run(client: &DesktopConnection, chat: &str, root: &Path, url: String) {
     let request: StartRequest = serde_json::from_value(json!({
         "dialogId": chat, "root": root, "isolate": true, "mode": "agent", "contextMode": "trimming",
-        "start": {"kind":"send", "message":{"id":format!("message-{chat}"), "content":"Start the fixture server"}},
+        "start": {"kind":"send", "message":{"id":format!("message-{}", uuid::Uuid::new_v4()), "content":"Start the fixture server"}},
         "profile": {"id":format!("fixture::{chat}"), "label":"Fixture", "model":"m", "baseUrl":url, "stream":true, "apiRoute":"chat_completions", "contextTokens":100000},
         "config": {"permissions": {"allowAnyCommand":true, "commandApproval":{"required":false,"by":"user"}, "editApproval":{"required":false,"by":"user"}, "toolApproval":{"required":false,"by":"user"}, "verifyChanges":false,"checklist":"off","toolCallCheckpoint":null}}
     })).unwrap();
@@ -428,6 +453,7 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         retained
     );
     // Operations still target chat identity, even from a different client.
+    let mut stopped = Vec::new();
     for chat in [&chat_a, &chat_b] {
         c.request(Request::AgentStop {
             dialog_id: chat.clone(),
@@ -435,6 +461,7 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         .await
         .unwrap();
         for task in tasks(&c, chat).await {
+            stopped.push((chat.clone(), task.id.clone()));
             c.request(Request::BackgroundStop {
                 dialog_id: chat.clone(),
                 id: task.id,
@@ -465,16 +492,55 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         }
     })
     .await;
-    for chat in [&chat_a, &chat_b] {
-        c.desktop(
-            OverlayRequest::Discard {
-                dialog_id: chat.clone(),
-            }
-            .into(),
-        )
-        .await
-        .unwrap();
+    c.close().await.unwrap();
+    refusal(&endpoint, "Background commands or unread").await;
+    let c = attach().await.unwrap();
+    for (chat, id) in stopped {
+        let (url, _) = model(vec![
+            Reply::Call {
+                id: "collect-result",
+                name: "background",
+                args: json!({"action":"output", "id":id}),
+            },
+            Reply::Hang(None),
+        ])
+        .await;
+        run(&c, &chat, &project, url).await;
+        eventually("agent reads the stopped command result", async || {
+            let page = c
+                .desktop(
+                    ChatRequest::GetMessages {
+                        dialog_id: chat.clone(),
+                        before_seq: None,
+                        limit: Some(30),
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap();
+            let Some(result) = page["messages"].as_array().unwrap().iter().find(|message| {
+                message["role"] == "tool" && message["toolCallId"] == "collect-result"
+            }) else {
+                return false;
+            };
+            assert!(
+                !result["content"].as_str().unwrap().starts_with("Error:"),
+                "{result}"
+            );
+            true
+        })
+        .await;
+        c.request(Request::AgentStop { dialog_id: chat })
+            .await
+            .unwrap();
     }
+    eventually("result-reading runs stop", async || {
+        match c.request(Request::AgentStatus).await.unwrap() {
+            Response::AgentStatus(status) => status.runs.is_empty(),
+            other => panic!("{other:?}"),
+        }
+    })
+    .await;
     assert_eq!(
         std::fs::read_to_string(project.join("shared.txt")).unwrap(),
         "base"
@@ -536,15 +602,80 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
     .unwrap();
     c.close().await.unwrap();
     drop(directory_handle);
-    eventually("empty unused volume drains for upgrade", async || {
+    // A saved child marker is enough to defer the whole set, even when its
+    // in-memory parent relationship has not been reconstructed.
+    let parent_marker = data.join("overlays").join(&chat_b).join("parent.txt");
+    std::fs::write(&parent_marker, &chat_a).unwrap();
+    refusal(&endpoint, "Child chat filesystem views").await;
+    assert_eq!(
+        std::fs::read_to_string(view_a.join("shared.txt")).unwrap(),
+        "A"
+    );
+    assert_eq!(
+        std::fs::read_to_string(view_b.join("shared.txt")).unwrap(),
+        "B"
+    );
+    std::fs::remove_file(parent_marker).unwrap();
+    let chat_handle = std::fs::File::open(&view_a).unwrap();
+    refusal(&endpoint, "still in use").await;
+    assert_eq!(
+        std::fs::read_to_string(view_a.join("shared.txt")).unwrap(),
+        "A"
+    );
+    // A persistence failure must refuse retirement before releasing the view
+    // or its store lock, even though the run itself has finished.
+    let manifest = data.join("overlays").join(&chat_a).join("manifest.json");
+    let backup = manifest.with_extension("saved");
+    std::fs::create_dir(&backup).unwrap();
+    exchange(&manifest, &backup);
+    refusal(&endpoint, "Could not save chat changes").await;
+    std::fs::write(view_a.join("after-refusal.txt"), "retained overlay").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(view_a.join("after-refusal.txt")).unwrap(),
+        "retained overlay"
+    );
+    exchange(&manifest, &backup);
+    std::fs::remove_dir(&backup).unwrap();
+    drop(chat_handle);
+    let other_handle = std::fs::File::open(&view_b).unwrap();
+    refusal(&endpoint, "still in use").await;
+    // Partial draining is safe: A is now saved and closed, B remains served,
+    // and a refusal still permits normal attachment to the same owner.
+    let c = attach().await.unwrap();
+    let file = c
+        .desktop(
+            OverlayRequest::File {
+                dialog_id: chat_a.clone(),
+                path: "shared.txt".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(file["chat"], "A");
+    assert_eq!(connect(&endpoint).await.unwrap().1.boot, boot);
+    assert_eq!(
+        std::fs::metadata(&view_a).unwrap().dev(),
+        std::fs::metadata(root.path()).unwrap().dev()
+    );
+    std::fs::write(view_b.join("after-partial-drain.txt"), "B remains served").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(view_b.join("after-partial-drain.txt")).unwrap(),
+        "B remains served"
+    );
+    c.close().await.unwrap();
+    drop(other_handle);
+    eventually("unused volumes drain for upgrade", async || {
         let reply = upgrade(&endpoint).await;
         if reply == "Retiring" {
             return true;
         }
         assert!(
-            reply["Busy"].as_str().is_some_and(
-                |message| message.contains("connected") || message.contains("Blocking")
-            ),
+            reply["Busy"]
+                .as_str()
+                .is_some_and(|message| message.contains("connected")
+                    || message.contains("Blocking")
+                    || message.contains("retry after its users finish")),
             "{reply}"
         );
         false
@@ -561,6 +692,91 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         std::fs::metadata(&mount).unwrap().dev(),
         std::fs::metadata(root.path()).unwrap().dev()
     );
+    assert!(Lease::acquire(&endpoint).unwrap().is_some());
+    assert_eq!(
+        std::fs::metadata(&view_a).unwrap().dev(),
+        std::fs::metadata(root.path()).unwrap().dev()
+    );
+    assert_eq!(
+        std::fs::metadata(&view_b).unwrap().dev(),
+        std::fs::metadata(root.path()).unwrap().dev()
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join("chats.db.running")).unwrap(),
+        "clean"
+    );
+
+    // The replacement reads both saved stores through RPC without landing
+    // either chat's edits into the project.
+    host = Host(command.spawn().unwrap());
+    eventually("replacement readiness", async || {
+        assert!(host.0.try_wait().unwrap().is_none());
+        connect(&endpoint).await.is_ok()
+    })
+    .await;
+    let c = attach().await.unwrap();
+    assert_ne!(connect(&endpoint).await.unwrap().1.boot, boot);
+    for (chat, expected) in [(&chat_a, "A"), (&chat_b, "B")] {
+        let file = c
+            .desktop(
+                OverlayRequest::File {
+                    dialog_id: chat.clone(),
+                    path: "shared.txt".into(),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file["chat"], expected);
+        assert_eq!(file["project"], "base");
+    }
+    let file = c
+        .desktop(
+            OverlayRequest::File {
+                dialog_id: chat_a.clone(),
+                path: "after-refusal.txt".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(file["chat"], "retained overlay");
+    let file = c
+        .desktop(
+            OverlayRequest::File {
+                dialog_id: chat_b.clone(),
+                path: "after-partial-drain.txt".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(file["chat"], "B remains served");
+    for chat in [&chat_a, &chat_b] {
+        c.desktop(
+            OverlayRequest::Discard {
+                dialog_id: chat.clone(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.join("shared.txt")).unwrap(),
+        "base"
+    );
+    c.close().await.unwrap();
+    unsafe {
+        libc::kill(host.0.id() as i32, libc::SIGTERM);
+    }
+    eventually("replacement shutdown", async || {
+        host.0.try_wait().unwrap().is_some_and(|status| {
+            assert!(status.success());
+            true
+        })
+    })
+    .await;
     assert!(Lease::acquire(&endpoint).unwrap().is_some());
     assert_eq!(
         std::fs::read_to_string(data.join("chats.db.running")).unwrap(),

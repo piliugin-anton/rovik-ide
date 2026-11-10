@@ -36,6 +36,8 @@ existing protocol and routing. Native window actions stay in Tauri.
    packaged hosts, including isolated execution across client detachment.
 10. **Completed**: Drain empty, unused Linux virtual volumes during guarded upgrades;
     preserve busy mounts and retained files on refusal.
+11. **Completed**: Drain idle top-level Linux chat views with checked persistence,
+    preserving changes across replacement and retaining busy or unsaved views.
 
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
@@ -43,7 +45,7 @@ pretend they are ready for IPC. Windows remains embedded until its transport is 
 
 ## Following this migration
 
-Windows named pipes; draining chat views and remote resources for
+Windows named pipes; draining child chat views and remote resources for
 upgrades; macOS virtual-volume draining; GUI multi-window smoke testing and macOS mounted validation. Linux
 mounted multi-client execution is covered by the required contract below.
 
@@ -509,3 +511,31 @@ files refuse retirement, an empty volume with an open directory refuses without
 losing its mount, reattachment uses the same boot, and closing the handle permits
 clean retirement. Chat-view draining, remote producer draining, and macOS ordinary
 unmount remain follow-up work.
+
+## Draining idle Linux chat views
+
+Guarded upgrades also drain idle top-level chat overlays. This closes their
+views without landing or discarding changes. Running chats, pending approvals,
+background commands and unread results still block retirement before draining
+starts. Open child views defer the whole overlay drain because they depend on
+their parents' mount paths.
+
+Each view is saved with an error-reporting manifest write, then unmounted without
+force or lazy detachment. Busy handles preserve the serving mount. A second save
+after unmount captures writes that completed during draining; only then are the
+view registration and store lock released. If that save fails, the backend keeps
+the overlay and its store lock and attempts to restore the mount. If restoring
+also fails, the error reports it, status no longer advertises a mounted view, and
+opening the overlay retries mounting the retained state.
+
+A refusal can follow partial progress: already-drained views remain saved and
+can be read through the existing host; the busy or unsaved view remains owned.
+The next upgrade attempt continues with remaining views. The host keeps admission
+closed and producers paused throughout draining.
+
+The mandatory Linux mounted test covers busy chat handles, a failed manifest
+write, continued access after refusal, partial draining, clean retirement, and a
+new backend reading both chats' saved edits while the project stays unchanged.
+A unit test verifies persistence errors retain edits and allow a later successful
+save and reopen. Remote draining, child dependency handling, macOS draining, and
+Windows transport remain separate.

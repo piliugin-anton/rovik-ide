@@ -851,10 +851,17 @@ impl FuseMount {
         })));
     }
 
+    /// Whether this handle still owns a serving session, including after an
+    /// unmount succeeded but joining the filesystem thread reported an error.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn is_mounted(&self) -> bool {
+        self.session.is_some()
+    }
+
     /// Ordinary unmount refuses open files and working directories. Do not
     /// consume the session until the kernel has accepted that operation.
     #[cfg(target_os = "linux")]
-    pub(super) fn unmount_if_unused(&mut self) -> Result<(), String> {
+    pub(crate) fn unmount_if_unused(&mut self) -> Result<(), String> {
         use std::process::Stdio;
         if self.session.is_none() {
             return Ok(());
