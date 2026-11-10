@@ -1,5 +1,5 @@
 //! FSKit uses MFMount's message channel, which has no device descriptor.
-//! The framework is found through libfuse's dependencies and loaded at runtime.
+//! The framework is loaded directly from macFUSE's bundle at runtime.
 
 use std::collections::HashSet;
 use std::ffi::{c_char, c_int, c_void, CString};
@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use fuser::{BackgroundSession, Config, Session, Transport};
 
-use super::{dl_error, FuseFs, MountProblem, LIBRARIES, MOUNT_TIMEOUT};
+use super::{dl_error, FuseFs, MountProblem, BUNDLE, MOUNT_TIMEOUT};
 
 type Ref = *mut c_void;
 
@@ -37,56 +37,52 @@ impl Api {
     }
 
     fn load_uncached() -> Result<Self, String> {
-        let mut errors = Vec::new();
-        for path in LIBRARIES {
-            let path = CString::new(path).expect("constant path");
-            // dlsym searches the library's dependencies, including MFMount.
-            let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-            if handle.is_null() {
-                errors.push(dl_error());
-                continue;
+        let path = CString::new(format!(
+            "{BUNDLE}/Contents/Frameworks/MFMount.framework/MFMount"
+        ))
+        .expect("constant framework path");
+        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if handle.is_null() {
+            return Err(format!("macFUSE's MFMount framework could not be loaded: {}. Reinstall a current macFUSE release and retry", dl_error()));
+        }
+        let load = || -> Result<Self, String> {
+            macro_rules! symbol {
+                ($name:literal, $ty:ty) => {{
+                    let ptr = unsafe { libc::dlsym(handle, concat!($name, "\0").as_ptr().cast()) };
+                    if ptr.is_null() {
+                        return Err(format!("macFUSE does not export {}", $name));
+                    }
+                    // SAFETY: signatures follow MFMount/MFMount.h's C API.
+                    unsafe { std::mem::transmute::<*mut c_void, $ty>(ptr) }
+                }};
             }
-            let load = || -> Result<Self, String> {
-                macro_rules! symbol {
-                    ($name:literal, $ty:ty) => {{
-                        let ptr =
-                            unsafe { libc::dlsym(handle, concat!($name, "\0").as_ptr().cast()) };
-                        if ptr.is_null() {
-                            return Err(format!("macFUSE does not export {}", $name));
-                        }
-                        // SAFETY: signatures follow MFMount/MFMount.h's C API.
-                        unsafe { std::mem::transmute::<*mut c_void, $ty>(ptr) }
-                    }};
-                }
-                Ok(Self {
-                    create: symbol!("MFChannelCreate", unsafe extern "C" fn() -> Ref),
-                    mount: symbol!(
-                        "MFMount",
-                        unsafe extern "C" fn(Ref, *const c_char, *const c_char, bool) -> c_int
-                    ),
-                    receive: symbol!("MFChannelCopyNextMessage", unsafe extern "C" fn(Ref) -> Ref),
-                    body: symbol!(
-                        "MFMessageGetBodyBuffers",
-                        unsafe extern "C" fn(Ref, *mut *const libc::iovec) -> isize
-                    ),
-                    send: symbol!(
-                        "MFChannelSendMessage",
-                        unsafe extern "C" fn(Ref, *const libc::iovec, usize) -> isize
-                    ),
-                    close: symbol!("MFChannelClose", unsafe extern "C" fn(Ref) -> bool),
-                    release: symbol!("MFRelease", unsafe extern "C" fn(Ref)),
-                })
-            };
-            match load() {
-                // Keep the library loaded while its function pointers are used.
-                Ok(api) => return Ok(api),
-                Err(error) => {
-                    errors.push(error);
-                    unsafe { libc::dlclose(handle) };
-                }
+            Ok(Self {
+                create: symbol!("MFChannelCreate", unsafe extern "C" fn() -> Ref),
+                mount: symbol!(
+                    "MFMount",
+                    unsafe extern "C" fn(Ref, *const c_char, *const c_char, bool) -> c_int
+                ),
+                receive: symbol!("MFChannelCopyNextMessage", unsafe extern "C" fn(Ref) -> Ref),
+                body: symbol!(
+                    "MFMessageGetBodyBuffers",
+                    unsafe extern "C" fn(Ref, *mut *const libc::iovec) -> isize
+                ),
+                send: symbol!(
+                    "MFChannelSendMessage",
+                    unsafe extern "C" fn(Ref, *const libc::iovec, usize) -> isize
+                ),
+                close: symbol!("MFChannelClose", unsafe extern "C" fn(Ref) -> bool),
+                release: symbol!("MFRelease", unsafe extern "C" fn(Ref)),
+            })
+        };
+        match load() {
+            // Keep the framework loaded while its function pointers are used.
+            Ok(api) => Ok(api),
+            Err(error) => {
+                unsafe { libc::dlclose(handle) };
+                Err(format!("macFUSE's FSKit message API could not be loaded: {error}. Install a current macFUSE release and retry"))
             }
         }
-        Err(format!("macFUSE's FSKit message API could not be loaded: {}. Install a current macFUSE release and retry", errors.join("; ")))
     }
 }
 
@@ -500,5 +496,10 @@ mod tests {
         assert!(MountPath::reserve(&path).is_err());
         drop(owner);
         assert!(MountPath::reserve(&path).is_ok());
+    }
+    #[test]
+    #[ignore = "requires macFUSE's installed MFMount framework"]
+    fn the_installed_framework_exposes_the_message_api() {
+        Api::load().unwrap();
     }
 }

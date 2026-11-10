@@ -41,6 +41,8 @@ jobs:
             --features custom-transport,macos-no-mount,macfuse-4-compat
           cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
             vfs::macfuse::messages::tests
+          cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
+            the_installed_framework_exposes_the_message_api -- --ignored
       - name: Refuse busy mounts and recover saved edits
         env:
           ROVIK_MOUNTED_BACKEND: '1'
@@ -52,7 +54,14 @@ jobs:
       - name: Mount diagnostics
         if: always()
         run: |
-          { sw_vers; mount; /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule; } > macos-mount-diagnostics.log 2>&1
+          {
+            sw_vers
+            mount
+            /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule
+            framework=/Library/Filesystems/macfuse.fs/Contents/Frameworks/MFMount.framework/MFMount
+            /usr/bin/otool -L "$framework"
+            /usr/bin/nm -gU "$framework" | grep -E 'MF(Channel|Message|Mount|Release)'
+          } > macos-mount-diagnostics.log 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
