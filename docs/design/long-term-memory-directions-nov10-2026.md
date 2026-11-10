@@ -284,3 +284,29 @@ differs from the already rejected relabeling of existing cause fields: measure
 whether captured claims preserve the original problem, corrective action and
 verification evidence. Keep exposed synthetic cases as regressions and preserve
 fresh reserved outcomes until a development candidate qualifies.
+
+## Source-request capture experiment completed
+
+The [episode-capture study](long-term-memory-episode-capture-nov10-2026.md)
+finds that automatic episodes omit task text after the first 80-character title,
+while automatic repairs name changed files without describing the corrective
+action. A native projection reproduces the application's extracted `reflect`
+function exactly on sixteen synthetic run inputs. The new 96-case suite separates
+historical requested work from evidence that work was actually implemented.
+
+Appending the source request improves development historical-episode delivery
+18/32 → 32/32, but changes eleven negative packets and worsens six protected
+primary ranks. A registered heading-only follow-up has the same outcome. A
+diagnostic lexical-only ablation improves 19/32 → 32/32 and reproduces all eleven
+changed negatives, with no protected-rank loss. Thus these admission regressions
+already occur without MiniLM; changing only the heading does not fix them.
+Both capture projections are rejected, reserved query outcomes remain unscored,
+and all 251 existing MiniLM development rows retain every non-timing field.
+
+Retaining source information helps retrieve historical intent, but it does not
+establish an implemented remedy, and naive enrichment broadens ordinary search.
+Keep requested-work provenance distinct from reusable verified claims. Measure
+actual corrective-action capture and its evidence independently, then evaluate
+judged relevance and agent use before promoting a new capture/admission path.
+Do not reinterpret this new source-history score as an improvement on the old
+implicit-fact suites or remove their negative/rank protections.

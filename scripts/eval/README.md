@@ -68,6 +68,17 @@ Its unit tests use local tensor stubs and run through `npm run test:eval`. The
 records one development-only gain, unchanged heldout results, rejected historical
 regressions and the application backend/resource constraints.
 
+The [episode-capture study](../../docs/design/long-term-memory-episode-capture-nov10-2026.md)
+adds 96 frozen synthetic run-input cases and rejects two direct source-request
+enrichments despite improved historical-episode delivery. Native evaluation accepts
+`episode_capture_projection: "legacy_episode"`, `"requested_episode"` or
+`"intent_episode"` for source-backed fixtures. Each validates the old title/content
+against `capture` metadata before optionally appending an exact request quotation;
+the query is not used to construct it. Fixture `kind` may be `episode`, `procedure`
+or the default `project_fact`; episode fixtures use generated-deduction provenance.
+`record_files` supplies source associations separately from query `file`/`files`.
+The ordinary evaluator and application capture behavior remain unchanged.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

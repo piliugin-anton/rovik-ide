@@ -1,4 +1,6 @@
 //! Reproducible retrieval baseline over incident-separated synthetic cases.
+#[path = "evaluate_memory/capture.rs"]
+mod capture;
 #[path = "evaluate_memory/diagnostics.rs"]
 mod diagnostics;
 
@@ -10,8 +12,9 @@ fn fact(
     title: &str,
     content: &str,
     keys: &Value,
+    kind: &Value,
 ) -> Result<NewMemory, Box<dyn std::error::Error>> {
-    let record = NewMemory::project_fact(repo, title, content);
+    let record = fixture_memory(repo, title, content, kind)?;
     let entry = &keys["entries"][title];
     if entry.is_null() {
         return Ok(record);
@@ -26,6 +29,26 @@ fn fact(
         .map(|value| value.as_str().ok_or("search terms must be strings"))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(record.with_tags(terms))
+}
+
+fn fixture_memory(
+    repo: &str,
+    title: &str,
+    content: &str,
+    kind: &Value,
+) -> Result<NewMemory, Box<dyn std::error::Error>> {
+    match kind {
+        Value::Null => Ok(NewMemory::project_fact(repo, title, content)),
+        Value::String(kind) if kind == "project_fact" => {
+            Ok(NewMemory::project_fact(repo, title, content))
+        }
+        Value::String(kind) if kind == "episode" => Ok(NewMemory::episode(repo, title, content)
+            .with_source_kind(verified_code_memory::SourceKind::GeneratedDeduction)),
+        Value::String(kind) if kind == "procedure" => {
+            Ok(NewMemory::procedure(repo, title, content))
+        }
+        _ => Err("fixture kind must be project_fact, episode or procedure".into()),
+    }
 }
 
 /// An experiment can replay real, externally computed embeddings through the
@@ -292,7 +315,7 @@ fn populate_corpus(
             continue;
         }
         let content = entry["content"].as_str().ok_or("missing corpus content")?;
-        let mut input = NewMemory::project_fact(repo, title, content);
+        let mut input = fixture_memory(repo, title, content, &entry["kind"])?;
         input = input
             .with_files(fixture_strings(&entry["files"])?)
             .with_tags(fixture_strings(&entry["tags"])?);
@@ -461,7 +484,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prefixes = encoder_prefixes(&config)?;
     let pooling = encoder_pooling(&config)?;
     let input = dataset_input(&config)?;
-    let dataset: Value = serde_json::from_str(&input)?;
+    let mut dataset: Value = serde_json::from_str(&input)?;
+    capture::project(&mut dataset, &config["episode_capture_projection"])?;
     let keys = match config["context_keys_file"].as_str() {
         Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
         None => json!({}),
@@ -578,12 +602,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             SharedMemoryStore::open_in_memory()?
         };
         let file = format!("src/{title}.rs");
-        let record =
-            store.remember(fact("project", title, text("content")?, &keys)?.with_files([file]))?;
+        let record_files = if case.get("record_files").is_some() {
+            fixture_strings(&case["record_files"])?
+        } else {
+            vec![file.as_str()]
+        };
+        let record = store.remember(
+            fact("project", title, text("content")?, &keys, &case["kind"])?
+                .with_files(record_files),
+        )?;
         store.verify(record.id, "synthetic fixture evidence")?;
         let expected = if case["supersede"] == true {
             store.deprecate(record.id, "explicit fixture update")?;
-            let replacement = store.remember(fact("project", title, text("content")?, &keys)?)?;
+            let replacement = store.remember(fact(
+                "project",
+                title,
+                text("content")?,
+                &keys,
+                &case["kind"],
+            )?)?;
             store.verify(replacement.id, "replacement evidence")?;
             replacement.id
         } else {
@@ -601,12 +638,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 other["title"].as_str().ok_or("missing title")?,
                 other["content"].as_str().ok_or("missing content")?,
                 &keys,
+                &other["kind"],
             )?)?;
         }
         populate_corpus(&store, &dataset["corpus"], title)?;
         populate_corpus(&store, &case["corpus"], title)?;
         // An identical record in another project must never leak.
-        store.remember(fact("other", title, text("content")?, &keys)?)?;
+        store.remember(fact(
+            "other",
+            title,
+            text("content")?,
+            &keys,
+            &case["kind"],
+        )?)?;
         let expected = if deterministic {
             stabilize_fixture(fixture_uri, expected)?
         } else {
@@ -823,6 +867,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_kinds_keep_episode_provenance_and_reject_unknown_categories() {
+        use verified_code_memory::{MemoryKind, SourceKind};
+        let legacy = fixture_memory("p", "title", "content", &Value::Null).unwrap();
+        assert_eq!(legacy.kind, MemoryKind::ProjectFact);
+        let episode = fixture_memory("p", "title", "content", &json!("episode")).unwrap();
+        assert_eq!(episode.kind, MemoryKind::Episode);
+        assert_eq!(episode.source_kind, SourceKind::GeneratedDeduction);
+        assert!(fixture_memory("p", "title", "content", &json!("unknown")).is_err());
+    }
 
     #[test]
     fn explicit_cls_pooling_and_query_only_instruction_require_native_vectors() {
@@ -1251,10 +1306,10 @@ mod tests {
     fn index_context_cannot_be_attached_to_an_edited_claim() {
         let keys =
             json!({"entries":{"cache":{"claim":"invalidate entries","terms":["stale results"]}}});
-        let record = fact("p", "cache", "invalidate entries", &keys).unwrap();
+        let record = fact("p", "cache", "invalidate entries", &keys, &Value::Null).unwrap();
         assert_eq!(record.content, "invalidate entries");
         assert_eq!(record.tags, vec!["stale results"]);
-        assert!(fact("p", "cache", "retain entries", &keys).is_err());
+        assert!(fact("p", "cache", "retain entries", &keys, &Value::Null).is_err());
     }
 
     #[test]
