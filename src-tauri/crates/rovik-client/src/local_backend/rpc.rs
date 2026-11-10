@@ -44,6 +44,9 @@ enum ClientFrame {
     Subscribe {
         session: String,
     },
+    CloseSession {
+        session: String,
+    },
     CancelSink {
         sink: String,
     },
@@ -70,6 +73,7 @@ enum ServerFrame {
     EventFailure {
         message: String,
     },
+    SessionClosed,
     Pong,
 }
 
@@ -114,6 +118,7 @@ pub struct Client {
     pub ready: Ready,
     stream: Mutex<Option<UnixStream>>,
     directory: std::path::PathBuf,
+    closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl Client {
@@ -129,6 +134,7 @@ impl Client {
             ready,
             stream: Mutex::new(Some(stream)),
             directory: directory.to_path_buf(),
+            closing: tokio::sync::watch::channel(false).0,
         };
         // The owner session must exist before its separate event connection
         // can attach. A reply also proves the server has entered its dispatcher.
@@ -136,8 +142,39 @@ impl Client {
         Ok(client)
     }
 
+    /// Releases this client's resources without stopping backend-owned work.
+    /// An independent control connection can detach even during a stalled call.
+    pub async fn close(&self) -> io::Result<()> {
+        self.closing.send_replace(true);
+        // A caller may retain an unpolled in-flight future holding this mutex.
+        // Its cancellation disposes of the stream when polled or dropped; the
+        // separate control must not wait for that caller to run again.
+        if let Ok(mut stream) = self.stream.try_lock() {
+            stream.take();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let control = Self::connect(&self.directory).await?;
+            control
+                .exchange(ClientFrame::CloseSession {
+                    session: self.ready.session.clone(),
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Desktop client detachment timed out",
+            )
+        })?
+    }
+
     /// Attaches an independent event stream, so output never waits behind a call.
     pub async fn events(&self) -> io::Result<EventStream> {
+        if *self.closing.borrow() {
+            return Err(detached());
+        }
         let (mut stream, _) = connect(&self.directory).await?;
         tokio::time::timeout(IO_WAIT, async {
             write(
@@ -235,6 +272,18 @@ impl Client {
     }
 
     async fn exchange(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
+        let mut closing = self.closing.subscribe();
+        if *closing.borrow() {
+            return Err(detached());
+        }
+        tokio::select! {
+            biased;
+            _ = closing.changed() => Err(detached()),
+            reply = self.exchange_open(frame) => reply,
+        }
+    }
+
+    async fn exchange_open(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
         let mut slot = self.stream.lock().await;
         let mut stream = slot.take().ok_or_else(|| {
             io::Error::new(
@@ -267,6 +316,7 @@ impl Client {
             let matches = matches!(
                 (&frame, &reply),
                 (ClientFrame::Ping, ServerFrame::Pong)
+                    | (ClientFrame::CloseSession { .. }, ServerFrame::SessionClosed)
                     | (
                         ClientFrame::Call { id: 1, .. },
                         ServerFrame::Reply { id: 1, .. }
@@ -292,6 +342,13 @@ impl Client {
     }
 }
 
+fn detached() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "Desktop client detached; an accepted operation may still complete",
+    )
+}
+
 /// Serves requests after the listener has authenticated the peer. A
 /// disconnected client does not cancel an already accepted operation.
 pub async fn serve(
@@ -307,10 +364,16 @@ pub async fn serve(
         // An idle window may stay connected indefinitely. Once bytes arrive,
         // bound the time allowed to finish a frame to reject stalled senders.
         tokio::select! {
+            biased;
             _ = lease.session.closed() => return Ok(()),
             ready = stream.readable() => ready?,
         }
-        let frame: ClientFrame = match tokio::time::timeout(IO_WAIT, read(&mut stream)).await {
+        let received = tokio::select! {
+            biased;
+            _ = lease.session.closed() => return Ok(()),
+            frame = tokio::time::timeout(IO_WAIT, read(&mut stream)) => frame,
+        };
+        let frame: ClientFrame = match received {
             Ok(Ok(frame)) => frame,
             Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Ok(Err(e)) => return Err(e),
@@ -321,6 +384,11 @@ pub async fn serve(
                 ))
             }
         };
+        // Close can also race the completed frame. Only operations already
+        // accepted by the dispatcher may outlive the client's session.
+        if lease.session.is_closed() {
+            return Ok(());
+        }
         let reply = match frame {
             ClientFrame::Call { id, req, host } => ServerFrame::Reply {
                 id,
@@ -357,6 +425,12 @@ pub async fn serve(
                     io::ErrorKind::InvalidInput,
                     "Callback cancellation requires the event connection",
                 ))
+            }
+            ClientFrame::CloseSession { session } => {
+                // Authenticated same-user control, like Subscribe. Closing a
+                // missing session is safe to repeat after losing the first ack.
+                backend.sessions.close(&session, "Desktop client detached");
+                ServerFrame::SessionClosed
             }
             ClientFrame::Ping => ServerFrame::Pong,
         };
@@ -459,6 +533,42 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn detaching_interrupts_a_pending_reply_even_when_control_cannot_reconnect() {
+        let (mut client, mut server) = pair();
+        let directory = tempfile::tempdir().unwrap();
+        client.directory = directory.path().to_path_buf();
+        let (accepted, received) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            assert!(matches!(
+                read::<ClientFrame>(&mut server).await.unwrap(),
+                ClientFrame::Desktop { .. }
+            ));
+            accepted.send(()).unwrap();
+            // No reply: detach must drop this transport, never replay the call.
+            assert_eq!(
+                read::<ClientFrame>(&mut server).await.err().unwrap().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        });
+        let call = client.desktop(crate::desktop_api::vfs::VfsRequest::Status.into());
+        tokio::pin!(call);
+        tokio::select! {
+            _ = received => {},
+            result = &mut call => panic!("call finished before detach: {result:?}"),
+        }
+        let closed = tokio::time::timeout(Duration::from_secs(2), client.close())
+            .await
+            .unwrap();
+        assert!(
+            closed.is_err(),
+            "failure to acknowledge detach must be reported"
+        );
+        assert_eq!(call.await.unwrap_err().kind(), io::ErrorKind::NotConnected);
+        assert!(client.call(Request::AgentStatus).await.is_err());
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn desktop_calls_reject_cloud_replies_and_do_not_reuse_the_connection() {
         let (client, mut server) = pair();
         let peer = tokio::spawn(async move {
@@ -501,6 +611,7 @@ mod tests {
                 },
                 stream: Mutex::new(Some(client)),
                 directory: std::path::PathBuf::new(),
+                closing: tokio::sync::watch::channel(false).0,
             },
             server,
         )

@@ -166,6 +166,19 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
         message: "ready".into(),
     });
     assert_eq!(*events.0.lock().unwrap(), vec!["ready"]);
+    connection.close().await.unwrap();
+    // No UI clients remain, yet the host still owns its in-memory volume.
+    let returning = DesktopConnection::embedded(backend.clone());
+    assert!(returning
+        .request(rovik_protocol::Request::AgentStatus)
+        .await
+        .is_ok());
+    assert_eq!(
+        backend.core.vfs.read_file("event-test.txt").unwrap(),
+        b"private delivery"
+    );
+    returning.close().await.unwrap();
+    drop(returning);
     backend.shutdown().await;
     assert!(backend.start_services().is_err());
     drop(connection);

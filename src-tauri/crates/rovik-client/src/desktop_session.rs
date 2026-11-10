@@ -393,6 +393,14 @@ impl Sessions {
             .ok_or_else(|| "Desktop session no longer exists".into())
     }
 
+    /// Releases an authenticated client's lease, including one already closing.
+    pub fn close(&self, id: &str, reason: &str) {
+        let session = lock(&self.0).get(id).and_then(Weak::upgrade);
+        if let Some(session) = session {
+            session.close(reason);
+        }
+    }
+
     /// Closes all client resources before backend shutdown.
     pub fn close_all(&self) {
         let sessions: Vec<_> = lock(&self.0).values().filter_map(Weak::upgrade).collect();
@@ -411,8 +419,10 @@ pub struct SessionLease {
 
 impl Drop for SessionLease {
     fn drop(&mut self) {
-        lock(&self.registry.0).remove(self.session.id());
+        // Keep the identity discoverable until cleanup has run, so a concurrent
+        // close control cannot acknowledge a lease whose project is still held.
         self.session.close("Desktop client disconnected");
+        lock(&self.registry.0).remove(self.session.id());
     }
 }
 
@@ -420,6 +430,26 @@ impl Drop for SessionLease {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn explicit_close_cleans_up_a_failed_session_before_acknowledging_it() {
+        let registry = Sessions::default();
+        let lease = registry.create();
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let seen = cleaned.clone();
+        lease.session.begin("sink").unwrap();
+        lease
+            .session
+            .register("resource".into(), "sink".into(), move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap();
+        lease.session.fail("event transport failed");
+        assert!(registry.get(lease.session.id()).is_err());
+        registry.close(lease.session.id(), "detached");
+        registry.close(lease.session.id(), "detached");
+        assert_eq!(cleaned.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn history_searches_from_another_window_do_not_supersede_this_window() {

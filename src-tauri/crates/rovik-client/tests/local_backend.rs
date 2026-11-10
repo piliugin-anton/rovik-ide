@@ -203,6 +203,57 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     desktop_tasks::check(&adapter, &other_adapter).await;
     desktop_journal::check(&adapter, &other_adapter, journal_projects).await;
     desktop_projects::check(&adapter, other_adapter).await;
+    // Close through the independent control while the owner's command socket
+    // remains open. This proves cleanup does not depend on observing its EOF.
+    let owner = rovik_client::local_backend::rpc::Client::connect(&endpoint)
+        .await
+        .unwrap();
+    let project_root = root.path().join("control-close-project");
+    std::fs::create_dir(&project_root).unwrap();
+    use rovik_client::desktop_api::projects::ProjectRequest;
+    let project = owner
+        .desktop(
+            ProjectRequest::Open {
+                root: project_root.to_string_lossy().into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut control, _) = connect(&endpoint).await.unwrap();
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let close = serde_json::to_vec(&serde_json::json!({
+        "t": "closeSession", "session": owner.ready.session,
+    }))
+    .unwrap();
+    for _ in 0..2 {
+        control.write_u32(close.len() as u32).await.unwrap();
+        control.write_all(&close).await.unwrap();
+        let size = control.read_u32().await.unwrap();
+        assert!(size < 1024);
+        let mut reply = vec![0; size as usize];
+        control.read_exact(&mut reply).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&reply).unwrap(),
+            serde_json::json!({"t": "sessionClosed"})
+        );
+    }
+    adapter
+        .desktop(
+            ProjectRequest::Delete {
+                project_id: project["project"]["id"].as_str().unwrap().into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert!(owner
+        .call(rovik_protocol::Request::AgentStatus)
+        .await
+        .is_err());
+    drop(control);
+    drop(owner);
     let shared_volume = client_b
         .desktop(rovik_client::desktop_api::DesktopRequest::from(
             rovik_client::desktop_api::vfs::VfsRequest::Status,
@@ -297,7 +348,21 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     .await
     .expect("one launcher yields ownership");
     assert_eq!(connect(&endpoint).await.unwrap().1.boot, ready.boot);
+    client_b.close().await.unwrap();
     drop(client_b);
+    let returning = rovik_client::local_backend::rpc::Client::connect(&endpoint)
+        .await
+        .unwrap();
+    assert_eq!(
+        returning.ready.boot, ready.boot,
+        "detaching clients must not restart the backend"
+    );
+    assert!(returning
+        .call(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap()
+        .is_ok());
+    returning.close().await.unwrap();
     drop(first);
     drop(second);
     let db = rovik_core::chat_db::DbState::open(&data).unwrap();

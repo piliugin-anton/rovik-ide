@@ -86,25 +86,6 @@ pub async fn chats_at_work_elsewhere(
         .await
 }
 
-/// Refuses to change the chats of a project another window has open (by
-/// its ID, or a folder it would go to).
-fn not_open_elsewhere(
-    app: &AppHandle,
-    id: &str,
-    folder: Option<&str>,
-    what: &str,
-) -> Result<(), String> {
-    let elsewhere = app
-        .try_state::<Instances>()
-        .and_then(|i| i.open_elsewhere(Some(id), folder.map(Path::new)));
-    match elsewhere {
-        Some(folder) => Err(format!(
-            "{folder} is open in another window: close it there first, then {what}."
-        )),
-        None => Ok(()),
-    }
-}
-
 /// A chat's plan (`meta.planFile`): a local chat's file, or a remote one's
 /// in its worktree on its host (K09). Here, a plan's file only, under
 /// `.rovik/plans/` as on the host: a chat moved back has its host's rows,
@@ -150,9 +131,6 @@ pub async fn chat_answer_copy(
     original_id: String,
     share: bool,
 ) -> Result<serde_json::Value, String> {
-    if share {
-        not_open_elsewhere(&app, &original_id, None, "share its chats")?;
-    }
     let project = backend
         .desktop(
             ProjectRequest::AnswerCopy {
@@ -181,7 +159,6 @@ pub async fn chat_answer_moved(
     current_id: String,
     target_id: String,
 ) -> Result<serde_json::Value, String> {
-    not_open_elsewhere(&app, &target_id, None, "use its chats here")?;
     let project = backend
         .desktop(
             ProjectRequest::AnswerMoved {
@@ -229,13 +206,11 @@ pub async fn chat_list_projects(
 /// project already and `merge` is set).
 #[tauri::command]
 pub async fn chat_relink_project(
-    app: AppHandle,
     backend: State<'_, DesktopConnection>,
     project_id: String,
     root: String,
     merge: bool,
 ) -> Result<serde_json::Value, String> {
-    not_open_elsewhere(&app, &project_id, Some(&root), "move its chats")?;
     backend
         .desktop(
             ProjectRequest::Relink {
@@ -251,11 +226,9 @@ pub async fn chat_relink_project(
 /// A project and all its chats.
 #[tauri::command]
 pub async fn chat_delete_project(
-    app: AppHandle,
     backend: State<'_, DesktopConnection>,
     project_id: String,
 ) -> Result<serde_json::Value, String> {
-    not_open_elsewhere(&app, &project_id, None, "delete it")?;
     backend
         .desktop(ProjectRequest::Delete { project_id }.into())
         .await

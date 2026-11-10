@@ -191,7 +191,7 @@ pub struct Remote {
     jobs: mpsc::UnboundedSender<Job>,
     /// Whether a project is open in another of Rovik's windows, each a
     /// process with its own connections (the app's instances.rs).
-    elsewhere: Mutex<Option<OpenElsewhere>>,
+    elsewhere: Mutex<Option<crate::project_ownership::EmbeddedOwnership>>,
     /// What brings the hosts' policies up to date before they go to a
     /// host: another window may have changed them (HostsPage::follow).
     refresh: Mutex<Option<Refresh>>,
@@ -203,10 +203,6 @@ pub struct Remote {
     // that reconnecting hosts must receive too.
     workload_focus: tokio::sync::Mutex<Option<Option<String>>>,
 }
-
-/// Whether the project with this id is open in another of Rovik's windows:
-/// that window lands its chats' results and shows their events.
-pub type OpenElsewhere = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Brings the hosts' policies up to date from their settings file.
 pub type Refresh = Arc<dyn Fn() + Send + Sync>;
@@ -335,9 +331,10 @@ impl Remote {
         *self.cloud.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
-    /// How to tell a project open in another of Rovik's windows.
-    pub fn on_open_elsewhere(&self, elsewhere: OpenElsewhere) {
+    /// Enables cross-process ownership guards for a private embedded host only.
+    pub fn use_embedded_ownership(&self, elsewhere: crate::project_ownership::EmbeddedOwnership) {
         *self.elsewhere.lock().unwrap_or_else(|e| e.into_inner()) = Some(elsewhere);
+        self.lock().elsewhere_seen.clear();
     }
 
     /// How to bring the hosts' policies up to date before one is sent.
@@ -391,7 +388,8 @@ impl Remote {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let seen = elsewhere.is_some_and(|elsewhere| elsewhere(&project));
+        let seen =
+            elsewhere.is_some_and(|elsewhere| elsewhere.other(Some(&project), None).is_some());
         self.lock()
             .elsewhere_seen
             .insert(project, (std::time::Instant::now(), seen));

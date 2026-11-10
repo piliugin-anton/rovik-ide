@@ -74,6 +74,15 @@ impl EventRouter {
         lock(&self.shared.failure).clone()
     }
 
+    pub(crate) fn close(&self) {
+        let mut failure = lock(&self.shared.failure);
+        *failure = Some("Desktop client detached".into());
+        lock(&self.shared.callbacks).clear();
+        if let Some(task) = lock(&self.task).take() {
+            task.abort();
+        }
+    }
+
     pub(crate) async fn start<F, Fut>(&self, open: F) -> Result<(), String>
     where
         F: FnOnce() -> Fut,
@@ -85,6 +94,12 @@ impl EventRouter {
         self.started
             .get_or_try_init(|| async {
                 let mut source = open().await?;
+                // Serialize installation with close, including a close while
+                // opening the independent event connection was still pending.
+                let failure = lock(&self.shared.failure);
+                if let Some(reason) = &*failure {
+                    return Err(reason.clone());
+                }
                 let shared = self.shared.clone();
                 let task = rovik_core::rt::spawn(async move {
                     let reason = loop {
@@ -107,7 +122,13 @@ impl EventRouter {
                             }
                         }
                     };
-                    *lock(&shared.failure) = Some(reason.clone());
+                    {
+                        let mut failure = lock(&shared.failure);
+                        if failure.is_some() {
+                            return;
+                        }
+                        *failure = Some(reason.clone());
+                    }
                     lock(&shared.callbacks).clear();
                     let report = lock(&shared.report).clone();
                     report(reason);
@@ -151,6 +172,32 @@ mod tests {
     use crate::desktop_session::Sessions;
     use std::time::Duration;
     use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn closing_during_subscription_cannot_revive_callbacks() {
+        let lease = Sessions::default().create();
+        let router = EventRouter::default();
+        router.on_error(|reason| panic!("intentional close was reported: {reason}"));
+        let (opened, opening) = oneshot::channel();
+        let (resume, resumed) = oneshot::channel();
+        let start = router.start(|| async {
+            let source = EventSource::Embedded(lease.session.events().unwrap());
+            opened.send(()).unwrap();
+            resumed.await.unwrap();
+            Ok(source)
+        });
+        tokio::pin!(start);
+        tokio::select! {
+            _ = opening => {},
+            result = &mut start => panic!("subscription finished early: {result:?}"),
+        }
+        router.close();
+        assert!(router.register(|_| true).is_err());
+        resume.send(()).unwrap();
+        assert!(start.await.unwrap_err().contains("detached"));
+        assert!(lock(&router.task).is_none());
+        assert!(lock(&router.shared.callbacks).is_empty());
+    }
 
     #[tokio::test]
     async fn a_disappearing_callback_closes_its_producer_without_closing_the_session() {

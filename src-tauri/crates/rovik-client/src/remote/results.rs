@@ -93,7 +93,14 @@ impl Remote {
         project: &str,
         root: Option<&Path>,
     ) -> Option<PathBuf> {
-        self.lock().open.other(client, project, root)
+        let local = self.lock().open.other(client, project, root);
+        local.or_else(|| {
+            self.elsewhere
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .and_then(|owner| owner.other(Some(project), root))
+        })
     }
 
     /// The user said what the folder at `root` is (a copy of another

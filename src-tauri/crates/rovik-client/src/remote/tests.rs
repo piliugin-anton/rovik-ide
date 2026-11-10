@@ -1419,12 +1419,29 @@ async fn a_chat_shows_its_events_in_the_window_its_project_is_open_in() {
     app.chat("chat", Some(&project), Vec::new()).await;
     let remote = Remote::new(app.core.clone());
     remote.place("chat", HOST);
-    let open_there = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let there = open_there.clone();
-    let id = project.clone();
-    remote.on_open_elsewhere(Arc::new(move |p| {
-        p == id && there.load(std::sync::atomic::Ordering::Relaxed)
-    }));
+    use crate::project_ownership::{claim_files, EmbeddedOwnership, WindowHolder};
+    let directory = app.dir.0.join("open-projects");
+    let (lock, info) = claim_files(&directory, &format!("project:{project}"));
+    let held = rovik_core::os_lock::try_hold(&lock).unwrap().unwrap();
+    std::fs::write(
+        info,
+        serde_json::to_vec(&WindowHolder {
+            path: folder.to_string_lossy().into(),
+            pid: std::process::id(),
+            port: 0,
+            token: "other".into(),
+            at_work: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    // A shared backend owns events even when a native UI holds a focus lock.
+    assert!(!remote.handled_elsewhere("chat").await);
+    remote.use_embedded_ownership(EmbeddedOwnership::new(directory, "mine".into()));
+    assert_eq!(
+        remote.project_open_elsewhere("client", &project, None),
+        Some(folder.clone())
+    );
     let ask = || AgentEvent::ApprovalRequested {
         request: approval("chat", false),
     };
@@ -1450,7 +1467,7 @@ async fn a_chat_shows_its_events_in_the_window_its_project_is_open_in() {
 
     // Open nowhere: every window's.
     remote.set_open_project(None);
-    open_there.store(false, std::sync::atomic::Ordering::Relaxed);
+    drop(held);
     remote.lock().elsewhere_seen.clear();
     remote.receive(HOST, event(ask())).await;
     assert_eq!(app.sent().len(), 2);

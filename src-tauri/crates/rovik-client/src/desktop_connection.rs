@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub struct DesktopConnection {
     #[cfg(unix)]
     journal_reader: tokio::sync::Mutex<Option<crate::local_backend::rpc::Client>>,
+    closing: tokio::sync::watch::Sender<bool>,
     backend: Backend,
     events: crate::desktop_events::EventRouter,
 }
@@ -23,6 +24,26 @@ enum Backend {
 }
 
 impl DesktopConnection {
+    /// Detaches only this window. Execution and mounts remain owned by the host.
+    /// Repeating this call retries the idempotent server acknowledgement.
+    pub async fn close(&self) -> Result<(), String> {
+        self.closing.send_replace(true);
+        self.events.close();
+        let result = match &self.backend {
+            Backend::Embedded { lease, .. } => {
+                lease.session.close("Desktop client detached");
+                Ok(())
+            }
+            #[cfg(unix)]
+            Backend::Local(client) => client.close().await.map_err(|error| error.to_string()),
+        };
+        #[cfg(unix)]
+        if let Ok(mut reader) = self.journal_reader.try_lock() {
+            reader.take();
+        }
+        result
+    }
+
     /// Reads shared work independently of command and private-resource connections.
     /// Only this read connection is reopened after failure; commands are never replayed.
     pub async fn poll_events(
@@ -44,6 +65,21 @@ impl DesktopConnection {
     }
 
     async fn read_events(
+        &self,
+        request: crate::desktop_api::DesktopRequest,
+    ) -> Result<serde_json::Value, String> {
+        let mut closing = self.closing.subscribe();
+        if *closing.borrow() {
+            return Err("Desktop client detached".into());
+        }
+        tokio::select! {
+            biased;
+            _ = closing.changed() => Err("Desktop client detached".into()),
+            reply = self.read_events_open(request) => reply,
+        }
+    }
+
+    async fn read_events_open(
         &self,
         request: crate::desktop_api::DesktopRequest,
     ) -> Result<serde_json::Value, String> {
@@ -244,6 +280,7 @@ impl DesktopConnection {
         Self {
             backend: Backend::Embedded { backend, lease },
             events: Default::default(),
+            closing: tokio::sync::watch::channel(false).0,
             #[cfg(unix)]
             journal_reader: Default::default(),
         }
@@ -257,6 +294,7 @@ impl DesktopConnection {
         Ok(Self {
             backend: Backend::Local(client),
             events: Default::default(),
+            closing: tokio::sync::watch::channel(false).0,
             #[cfg(unix)]
             journal_reader: Default::default(),
         })

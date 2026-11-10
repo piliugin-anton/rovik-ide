@@ -268,7 +268,7 @@ The app still selects embedded mode.
 
 Host connection startup, developer socket/chat configuration, and periodic host
 refresh now share one backend-owned worker in both embedded and daemon hosts.
-The host calls `start_services` after installing any ownership callbacks; repeated
+The host calls `start_services` after configuring its ownership policy; repeated
 calls do not start another worker. Credential and filesystem work stays off the
 UI and RPC threads. Refreshes never overlap, and shutdown stops scheduling before
 joining any accepted blocking startup or refresh work. A stopped backend cannot
@@ -291,3 +291,38 @@ embedded cross-process ownership callback must be replaced when shared daemon
 attachment becomes the default; window exit must then release its client lease
 rather than stop the shared backend. Automatic attachment/session reconstruction,
 Windows transport, and mounted multi-window FUSE validation remain outstanding.
+
+## Backend ownership checks and window detachment
+
+Project mutation guards now run entirely in the backend. Shared hosts use the
+client-session project registry; native focus locks cannot suppress shared remote
+events. Private embedded hosts explicitly configure a compatibility policy that
+reads existing cross-process project claims. The native focus service and that
+policy share the same metadata format and owner tokens. The AppHandle ownership
+callback and duplicate native mutation guards are removed.
+
+`DesktopConnection::close` releases only its session, including project and focus
+registrations, terminals, subscriptions, and finite UI tasks. It rejects further
+commands and journal reads. Native exit detaches this connection first; only an
+explicit embedded-host state can then shut down a private backend. The app still
+selects embedded mode, so closing its current window still ends that private host.
+
+Local protocol 17 adds an authenticated, idempotent session-close control on an
+independent connection. Detachment interrupts a pending client reply without
+replaying the accepted operation, and acknowledges session release while owned
+resources finish closing. Closing also interrupts idle or partial frame reads, so
+a still-open socket cannot submit new commands. An accepted backend mutation may
+still finish. Failure to obtain the cleanup acknowledgement is reported and close
+can be retried. Closing during event-stream
+startup cannot revive callbacks or register new resources.
+
+Regression coverage exercises embedded and real-daemon project release, closed
+client rejection, LSP process cleanup while another client continues working,
+and daemon reconnection without a new boot. Unit tests cover pending RPC reply
+cancellation, event-subscription races, and embedded ownership tokens, stale
+claims, missing metadata, and remote event routing.
+
+Next: automatic daemon attachment and client session reconstruction, then Windows
+transport and mounted multi-window FUSE validation. Native focus/position handling
+stays in the UI; the retained-project UI loop needs adjustment when attachment is
+enabled. This phase does not claim mounted FUSE or native multi-window validation.

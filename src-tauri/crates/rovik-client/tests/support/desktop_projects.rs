@@ -5,7 +5,6 @@ use rovik_client::{
     },
     desktop_connection::DesktopConnection,
 };
-use std::time::Duration;
 
 /// Shared ownership guards and lease cleanup must work identically across IPC.
 pub async fn check(a: &DesktopConnection, b: DesktopConnection) {
@@ -61,29 +60,25 @@ pub async fn check(a: &DesktopConnection, b: DesktopConnection) {
     b.desktop(ProjectRequest::Open { root: two.clone() }.into())
         .await
         .unwrap();
-    drop(b);
-    // The daemon processes EOF asynchronously; synchronize on the actual lease release.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match a
-                .desktop(
-                    ProjectRequest::Delete {
-                        project_id: id_b.clone(),
-                    }
-                    .into(),
-                )
-                .await
-            {
-                Ok(_) => break,
-                Err(e) => {
-                    assert!(e.contains("open in another window"), "{e}");
-                    tokio::task::yield_now().await;
-                }
-            }
-        }
-    })
-    .await
-    .unwrap();
+    b.close().await.unwrap();
+    b.close().await.unwrap();
+    assert!(b
+        .desktop(ProjectRequest::Clear.into())
+        .await
+        .unwrap_err()
+        .contains("detached"));
+    assert!(b
+        .request(rovik_protocol::Request::AgentStatus)
+        .await
+        .is_err());
+    assert!(b
+        .event_status(rovik_client::desktop_journal::Scope::default())
+        .await
+        .is_err());
+    // The acknowledgement guarantees lease cleanup, with no EOF polling.
+    a.desktop(ProjectRequest::Delete { project_id: id_b }.into())
+        .await
+        .unwrap();
     a.desktop(ProjectRequest::Clear.into()).await.unwrap();
     let moved = folders.path().join("moved");
     std::fs::create_dir(&moved).unwrap();

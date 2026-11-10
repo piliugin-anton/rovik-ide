@@ -99,3 +99,6 @@ pub mod formatter;
 pub mod workload;
 
 mod maintenance;
+
+/// Embedded backend compatibility with native project claims.
+pub mod project_ownership;

@@ -92,16 +92,10 @@ pub fn run() {
                 }
             });
             app.manage(connection);
-            let remote = backend.remote.clone();
-            app.manage(backend.clone());
-            // A project is open in one window (instances.rs): its remote
-            // chats' results, rows and events are that window's.
-            let windows = app.handle().clone();
-            remote.on_open_elsewhere(Arc::new(move |project| {
-                windows
-                    .try_state::<Instances>()
-                    .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
-            }));
+            backend
+                .remote
+                .use_embedded_ownership(app.state::<Instances>().ownership());
+            app.manage(EmbeddedHost(backend.clone()));
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();
@@ -425,14 +419,20 @@ pub fn run() {
         });
 }
 
-/// What the app does as it ends: its terminals closed, the core done with
-/// the project's chats, then the project let go of, for another window or
-/// the next start, and what the terminals left running ended. Also before
-/// an update's installer ends the process at once (Windows), on a thread
-/// off the runtime's.
+// Only embedded mode owns a host lifetime. A shared-mode window manages
+// DesktopConnection alone and must never shut down the daemon on exit.
+struct EmbeddedHost(Arc<DesktopBackend>);
+
+/// Detaches the client, shuts down a private embedded host if present, and
+/// releases native focus claims. Also used before Windows installer exit.
 fn before_exit(app: &tauri::AppHandle) {
-    if let Some(backend) = app.try_state::<Arc<DesktopBackend>>() {
-        rt::block_on(backend.shutdown());
+    if let Some(connection) = app.try_state::<DesktopConnection>() {
+        if let Err(error) = rt::block_on(connection.close()) {
+            log::error!("Could not detach desktop client: {error}");
+        }
+    }
+    if let Some(host) = app.try_state::<EmbeddedHost>() {
+        rt::block_on(host.0.shutdown());
     }
     // Only once the core is done with the project's chats.
     if let Some(instances) = app.try_state::<Instances>() {

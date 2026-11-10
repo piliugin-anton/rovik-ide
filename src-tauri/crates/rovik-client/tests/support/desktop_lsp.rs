@@ -121,7 +121,8 @@ pub async fn check(a: DesktopConnection, b: DesktopConnection, owners: &[u32]) {
         event(&mut a_events, "message").await["data"],
         "{\"message\":\"ж\"}"
     );
-    drop(a);
+    a.close().await.unwrap();
+    assert!(send(&a, &a_id, "closed").await.is_err());
     ended(a_process["pid"].as_u64().unwrap() as u32).await;
     ended(a_process["child"].as_u64().unwrap() as u32).await;
     send(&b, &b_id, "still alive").await.unwrap();
