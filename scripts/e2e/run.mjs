@@ -725,6 +725,7 @@ async function contextMenu(target, item) {
 
 /** Adds a provider in Settings: its URL, a key, its name; `models` it lists. */
 async function addProvider(name, url, models) {
+  while (await d.exists('.notification-close')) await click('.notification-close');
   await click('.sidebar-settings-button');
   await click(
     await mark(
@@ -790,7 +791,19 @@ async function send(text) {
     60_000
   );
   await composer(text);
-  await keys(Keys.ENTER);
+  // A previous run can finish while text is being composed, and Enter can
+  // accept a completion instead of sending. Wait for Send and its acceptance.
+  await waitFor(
+    () => d.exists('.chat-send-button:not(.stop):not(:disabled)'),
+    'Send to be ready',
+    60_000
+  );
+  await click('.chat-send-button:not(.stop)');
+  await waitFor(
+    () =>
+      d.exec("return !document.querySelector('.chat-input-contenteditable')?.textContent.trim()"),
+    'the message to leave the composer'
+  );
 }
 
 const chatText = () => panelText('.chat-panel');
@@ -1351,6 +1364,12 @@ async function run() {
     // script): the file opens with it in view and marked against git, not
     // at its top.
     const path = join(DEMO, 'long.ts');
+    // Earlier editor steps left this tab open. Close it before the external
+    // write so this tests opening from disk, without racing its file watcher.
+    await click(row('long.ts'));
+    await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts selected');
+    await click('.tab.active .tab-close');
+    await waitFor(async () => !(await tabs()).includes('long.ts'), 'long.ts closed');
     write(path, readFileSync(path, 'utf8').replace('// line 200:', '// line 200 changed:'));
     await click(row('long.ts'));
     await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts opened');
@@ -2010,12 +2029,16 @@ async function run() {
     await sidebar('AI Chat');
     await waitFor(() => d.exists('.chat-input-contenteditable'), 'the chat');
     await send('Hello there, what is this project?');
+    // The first mounted run includes cold backend setup. Wait for completion
+    // using the same run budget as send(), then check the actual answer.
     await waitFor(
-      async () => (await chatText()).includes('Echo of your message'),
-      'the reply',
-      30_000
+      async () =>
+        (await chatText()).includes('Echo of your message') &&
+        (await d.exists('.chat-send-button:not(.stop)')),
+      'the first reply and run completion',
+      60_000
     );
-    await waitFor(() => d.exists('.chat-send-button:not(.stop)'), 'the run to end', 30_000);
+    assert((await chatText()).includes('Echo of your message'), 'the reply streamed in');
   });
 
   if (REQUIRE_ISOLATION) {
@@ -2175,6 +2198,20 @@ async function run() {
         });
       await click(await buttonByText('Undo'));
       await waitFor(() => !existsSync(join(DEMO, 'hello.txt')), 'the landing undone', 30_000);
+      // Undo deleted this file; do not leave its preview in the later restart
+      // fixture, which checks that existing files are restored.
+      if ((await tabs()).includes('hello.txt')) {
+        await click(
+          await mark(
+            `return [...document.querySelectorAll('.tab')].find((t) => t.innerText.split('\\n')[0] === 'hello.txt')?.querySelector('.tab-close');`,
+            'close-deleted-tab'
+          )
+        );
+        await waitFor(
+          async () => !(await tabs()).includes('hello.txt'),
+          'the deleted file tab to close'
+        );
+      }
     }
   );
 
