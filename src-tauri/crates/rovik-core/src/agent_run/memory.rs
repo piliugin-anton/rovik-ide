@@ -601,6 +601,55 @@ fn task_query(text: &str) -> String {
         .collect()
 }
 
+// Only split the current message's matching editor/reference envelope. Other
+// transports and stale sentContent keep their original retrieval text.
+fn recall_wire_parts<'a>(
+    current: &'a str,
+    typed: &'a str,
+    sent: Option<&str>,
+) -> Option<(&'a str, &'a str)> {
+    if sent? != current {
+        return None;
+    }
+    let prefix = current.strip_suffix(typed)?;
+    if !prefix.is_empty()
+        && ((!typed.is_empty() && !prefix.ends_with("\n\n"))
+            || !(prefix.starts_with("[Active editor context")
+                || prefix.starts_with("The user explicitly referenced these project files:")))
+    {
+        return None;
+    }
+    Some((
+        if typed.trim().is_empty() {
+            current
+        } else {
+            typed
+        },
+        prefix,
+    ))
+}
+
+// Read only the explicit-reference list, not the active editor or its display
+// labels. In particular, a line-range alias must not become a second file hint.
+fn explicit_reference_paths(context: &str) -> Vec<&str> {
+    let mut lines = context.lines();
+    if !lines.any(|line| line == "The user explicitly referenced these project files:") {
+        return Vec::new();
+    }
+    lines
+        .map_while(|line| line.strip_prefix("- "))
+        .map(|entry| match entry.rsplit_once(" (lines ") {
+            Some((path, range))
+                if range.ends_with(')') && range.contains(", shown in the message as ") =>
+            {
+                path
+            }
+            _ => entry,
+        })
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
 /// Whether a memory still belongs in the prompt: evidence backs it, and nothing
 /// says its claim or the code it names has moved on.
 ///
@@ -1437,6 +1486,24 @@ impl super::run::Run {
             _ => self.latest_user_request().await,
         };
         let task = task_query(&text);
+        let (intent, reference_context) = self
+            .recent()
+            .await
+            .map_err(|error| {
+                eprintln!("memory: request metadata unavailable; retaining original query: {error}")
+            })
+            .ok()
+            .and_then(|rows| {
+                rows.into_iter()
+                    .rev()
+                    .find(|m| super::messages::is_request(m) && !m.failed)
+            })
+            .and_then(|message| {
+                let sent = super::run::sent_text(message.meta.as_ref());
+                recall_wire_parts(&text, &message.content, sent.as_deref())
+                    .map(|(intent, prefix)| (task_query(intent), prefix.to_owned()))
+            })
+            .unwrap_or_else(|| (task.clone(), String::new()));
         let repo = self.core.memory.repo(Path::new(settings_root));
         let settings_folder = settings_root.to_string();
         let chat = self.dialog_id.clone();
@@ -1446,7 +1513,8 @@ impl super::run::Run {
         let found: RecallAnswer = if task.trim().is_empty() {
             Ok(None)
         } else {
-            let (core, query_repo, query_task) = (self.core.clone(), repo.clone(), task.clone());
+            let (core, query_repo, query_task) = (self.core.clone(), repo.clone(), intent);
+            let original_task = task.clone();
             let project = Path::new(settings_root).to_path_buf();
             let settings_root = settings_folder.clone();
             // Opening the store and querying it are disk work, as the
@@ -1469,7 +1537,26 @@ impl super::run::Run {
                 // its prompt on every run of the same chat. Left out by the
                 // query itself, so it can't take the slots of memories that
                 // are prior work.
+                let files = root.as_deref().map_or_else(Vec::new, |root| {
+                    let mut files = Vec::new();
+                    for path in explicit_reference_paths(&reference_context) {
+                        if let Some(relative) = crate::agent_tools::project_relative(root, path) {
+                            if !relative.is_empty() && !files.contains(&relative) {
+                                files.push(relative);
+                            }
+                        }
+                    }
+                    files
+                });
+                // If the envelope contains no usable project paths, retain
+                // its original context rather than discarding information.
+                let query_task = if files.is_empty() {
+                    original_task
+                } else {
+                    query_task
+                };
                 let query = RetrievalQuery::new(query_repo.as_str(), query_task.as_str())
+                    .with_files(files)
                     .with_limit(RECALL_LIMIT)
                     .with_packet_budget(MEMORY_TOKENS)
                     .without_tags([own.as_str()]);

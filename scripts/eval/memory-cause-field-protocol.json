@@ -1,0 +1,26 @@
+{
+  "baseline": "f844552504389031769b9344f90ac0eea313ca1e",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-cause-field-cases.json": "6806c6d4a85a5de2a0feb7f614d3f74d7ccb193ab6c848fee2d46f9a4d6defe9"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "hypothesis": "After existing paragraph/sentence views, index one complete final Cause field only when it begins beyond the primary window and fits entirely in that window. No field fragments, claim rewrites or trust changes. Preserve existing vectors and indexed lifecycle.",
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "limit": 8,
+    "budget": 1000
+  },
+  "selection": "Development gain with no per-fact/rank or exact negative packet regression, then historical checks before candidate reserved scoring. Existing comparator unchanged.",
+  "limitations": "Eight exposed source incidents; supplied explicit source assertions, not measured automatic causal extraction. Added generic prefaces isolate encoder visibility. Negative controls here are unrelated; use adjacent true negatives in later precision work.",
+  "followup": {
+    "hypothesis": "Keep identical final-field eligibility but embed assertion text without the generic Cause label. Added after the labeled view yielded no development gain. No query or source assertion is changed.",
+    "selection": "Same existing per-record gate; development only before any reserved candidate."
+  },
+  "fusion_trial": {
+    "hypothesis": "Fuse normal-cutoff matches from the explicit captured Cause view as independent RRF evidence, before final selection. Appending alone cannot repair full pools. Same candidate gates; reject any required-fact/rank or negative identity change.",
+    "registered_after": "Both append-only development trials failed to improve; no reserved candidate scored."
+  }
+}

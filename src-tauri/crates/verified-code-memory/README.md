@@ -102,6 +102,14 @@ CPU model. No Python, child process or separately installed runtime is used.
 The application provisions the pinned model from its dedicated GitHub release;
 this crate's encoder only reads local files and never downloads on inference.
 
+For native model research, `OnnxMiniLm::new_with_pooling` explicitly selects
+`OnnxPooling::Cls` for compatible 384-dimensional BERT graphs such as BGE, or
+`MaskedMean` for MiniLM. Both normalize the pooled vector and keep the existing
+input windows. A different model or preprocessing policy requires a distinct
+index revision. The ordinary constructor and application remain on pinned
+MiniLM with masked mean; the [BGE experiment](../../../docs/design/long-term-memory-bge-nov10-2026.md)
+does not justify a model or retrieval-policy change.
+
 For a stored note longer than the encoder's character window, background indexing
 also embeds its final nonempty paragraph (bounded to one window). Hybrid retrieval
 can append a matching conclusion into unused result slots, after all existing
@@ -165,6 +173,36 @@ that exact allowance. Any capacity, rendering or lookup failure keeps the legacy
 plan. This uses the existing indexed, filtered collector and adds no inference.
 Omitting the allowance preserves legacy retrieval. Automatic application recall
 supplies its existing 2,000-token allowance.
+Optional title candidates whose claim text alone exceeds that allowance are
+rejected before the collector's bound. This necessary size check permits later
+eligible claims to be considered; the full rendering preview remains authoritative.
+Existing incumbents and ordinary lexical/vector candidate eligibility are unchanged.
+An incumbent title whose claim alone exceeds the allowance still keeps its
+position, but does not count as complete title coverage. A shorter eligible
+title fact may occupy another unprotected slot. Supplemental title matches use
+the specific requested-title explanation directly, retaining scores/components,
+claim text and evidence. Full protected-claim rendering checks remain unchanged.
+
+With a packet allowance, the name planner can retry newly planned oversized
+whole-title matches using fitting canonical alternatives from the same filtered
+collector. It keeps the exact legacy plan unless all oversized new name additions
+are replaced together, each replacement renders completely, every other record
+retains its identity/context/position, and all previously complete claims remain
+complete. Original incumbents are preserved. Already complete canonical coverage
+skips the retry. See the
+[name-fit experiment](../../../docs/design/long-term-memory-name-fit-nov10-2026.md).
+
+A narrow exception permits an unanchored leading result to supply one additional
+title slot when the ordinary placement cannot fit. Every explicitly requested
+canonical title, file and distinctive literal subject must then render in full,
+and their distinct count must reach the result limit. Canonical identifier aliases
+and overlapping file hints count once. An independently name-, file- or
+literal-anchored leader retains its rank, as do all other protected claims.
+Incomplete coverage retains the original plan. See the
+[full-subject report](../../../docs/design/long-term-memory-full-subject-coverage-nov10-2026.md).
+Automatic application recall also supplies validated explicit project-file
+references from matching current-message UI metadata, using the typed request as
+intent. An open editor alone does not supply a file hint.
 
 ## Development
 

@@ -1,0 +1,25 @@
+{
+  "baseline": "b13ea77675e4a7231cafb51a43cfc2c3ad655af7",
+  "branch": "ltm-improvements-nov10-2026",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-full-subject-cases.json": "a571bfae48496b2bf1167d9688e9cbe0d3be36ce4c8e99f4c8a1948f9e6dd99a",
+    "scripts/eval/memory-full-subject-pressure-cases.json": "22e9c9fe5dc53e9a60ababb509bd6959611281d2a3cf602d1dfe1687ab83401d"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "hypothesis": "When at least limit distinct explicitly requested names/files/literal subjects are fully represented as complete claims, and the old title plan cannot fit in unprotected slots, an independently unanchored leader may supply one additional slot. Preserve every other protected complete fact and its rank, require all requested subjects to be fully delivered, keep normal successful plans unchanged, and otherwise retain the exact legacy plan.",
+  "selection": "Select on development before reserved candidate scoring. Preserve old cohorts and all 4660 accepted policy views; reject any delivered-fact/required-rank loss, negative returned/rendered/full ID change, scope/trust/tag/caller violation, fallback or budget overrun. No wider pool or threshold changes.",
+  "policy": {
+    "threshold": 0.3,
+    "dimensions": 384,
+    "limit": 8,
+    "budgets": [1000, 2000],
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "constant_claim_age_hours": 36
+  },
+  "validation": "Native evaluations plus focused memory contracts individually; broader tests remain skipped under user instruction.",
+  "limitations": "Exposed source incidents and synthetic composed requests. Pressure reference exceeds 1000 tokens alone: exclude that profile from achievable recall selection. Duplicate aliases do not create distinct requested subjects. No paired live-agent or precision claim.",
+  "application_integration": "Automatic recall uses the typed intent and validated explicit project references only for matching current-message UI envelopes. Stale/unsupported/editor-only/no-valid-reference paths preserve the original query. Manual memory_search contract unchanged.",
+  "anchor_review": "Independently protect whole canonical qualified CamelCase leading titles as well as component-body, literal and file anchors; alias duplicates cannot inflate subject count."
+}

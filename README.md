@@ -2101,6 +2101,39 @@ as complete claims and preserve every previously complete protected name, file
 and context claim. Otherwise recall retains its existing plan. Callers that omit
 the packet allowance retain the earlier behavior. See the
 [title-coverage experiment and regression review](docs/design/long-term-memory-title-coverage-nov9-2026.md).
+Optional title lookup skips claims whose text alone exceeds the entire packet
+allowance before filling its bounded candidate pool. This lets a shorter eligible
+claim be considered; the complete-plan rendering protections still decide whether
+it can be added. See the
+[oversized-title experiment](docs/design/long-term-memory-title-fit-nov9-2026.md).
+An oversized title already in the result pool keeps its rank and fetch opportunity,
+but cannot suppress lookup of a shorter complete fact. Supplemental title matches
+use a concise explanation so duplicate matching metadata does not consume claim
+space. The same protected-packet checks apply. See the
+[denser context experiment](docs/design/long-term-memory-context-completion-nov10-2026.md).
+
+New name additions also use the supplied packet allowance. If the legacy plan
+adds oversized canonical-title claims, recall can retry compact eligible
+alternatives for those names. Every replacement must render in full, and every
+other legacy identity, context and position must survive. Missing alternatives
+or packet pressure retain the original plan. See the
+[name-addition experiment](docs/design/long-term-memory-name-fit-nov10-2026.md).
+
+For a fully subscribed focused request, an independently unrelated leading result
+may supply one additional title slot. This exception requires complete delivery
+of every explicit symbol title, file and distinctive literal subject, with at
+least eight distinct subjects. Canonical name aliases and overlapping paths count
+once. Leading name/file/literal anchors and other protected claims keep their
+ranks; partial packets keep the original plan. See the
+[full-subject experiment](docs/design/long-term-memory-full-subject-coverage-nov10-2026.md).
+Automatic recall extracts explicit project-file references from the current UI
+message's matching metadata and searches with the typed intent. Active-editor
+context alone does not become a file hint. Stale or unsupported message envelopes
+retain the original query.
+
+The [experiment directions and implicit-view trials](docs/design/long-term-memory-directions-nov10-2026.md)
+summarize the evidence, remaining implicit-query failures, rejected retrieval views
+and priorities for grounded context and application-level evaluation.
 
 Native evaluation reports each required record's ID, claim hash, rank and full
 delivery, distinguishing complete claims from fetch hints. Compare two saved
@@ -2108,6 +2141,12 @@ native results with `node scripts/eval/memory-regressions.mjs baseline.json cand
 (append `2000` for application-budget profiles). The comparator rejects individual
 fact losses and negative packet changes; its mutation checks run in the existing
 `npm run test:eval` CI job.
+
+For index and admission analysis, the native evaluator accepts `"diagnostics": true`
+with deterministic fixtures and the hybrid embedding backend. It reports stored
+vector scores, eligible ranks, competing matches and selected/full claim state.
+See the [diagnostic measurements](docs/design/long-term-memory-diagnostics-nov10-2026.md)
+for probe limitations and reproduction. The flag is off by default.
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline

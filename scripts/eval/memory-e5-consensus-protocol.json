@@ -1,0 +1,32 @@
+{
+  "baseline": "e52336de1317f934f04c7f90aa3733211d9ff62e",
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-retrieval-encoder-cases.json": "143c57de93c6b67863f92ad222851a91503dd010ace39121ad8bab9191bdfe93"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "models_protocol": "scripts/eval/memory-retrieval-encoder-protocol.json",
+  "approach": "Evaluation-only dual-model consensus: intersect independently ranked, filtered, distinct primary-index top-eight pools. Rank shared records by equal reciprocal rank fusion with offset 60, UUID tie break. Consider only the first consensus record; append at most one absent record to unused MiniLM slots. Do not remove existing records before consensus or advance to another candidate if the winner fails.",
+  "features": "Primary-index score/rank pairs independent of expected identities. Gate consensus winner by E5 cosine, MiniLM cosine and fused top-one minus top-two margin. Require at least two shared candidates; otherwise reject. Expected facts/answerability only used for scoring.",
+  "threshold_grid": [0.7, 0.75, 0.775, 0.8, 0.825, 0.85, 0.9],
+  "policy": {
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_claim_age_hours": 36,
+    "missing_runner_up": "reject",
+    "e5_query_prefix": "query: ",
+    "e5_document_prefix": "passage: ",
+    "minilm_threshold": 0.3,
+    "minilm_short_query_scale": 0.9166666666666666
+  },
+  "selection": "Use original/fresh/new development only. First screen all 210 policies for possible complete-answer gains and zero changed negative returned identities. This screen is an optimistic upper bound on full-packet delivery, not native packet evaluation. Any potential survivor requires actual native packet rendering, the unchanged per-record comparator, historical development, then heldout evaluation before production consideration. Never use oracle labels for admission or retune queries after scoring.",
+  "fallback": "If no safe potential gain, reject the additive family without scoring heldout or adding a second production model. Record missed-gold ranks and stronger negative-margin counterexamples. No production model, download/release, schema or threshold change.",
+  "registered_after": "Top-one E5 family has zero potential complete-answer gains on all 11 original/fresh/new development misses. Correct E5 primary ranks: 2,13,2,5,14; 12,2,6; 3,10,3. New hypothesis follows that failure; no candidate heldout scoring.",
+  "minilm_threshold_grid": [0, 0.15, 0.2, 0.225, 0.25, 0.275],
+  "fused_margin_grid": [0, 0.0001, 0.00025, 0.0005, 0.001],
+  "rrf_offset": 60,
+  "candidate_pool_limit": 8,
+  "registered_before_consensus_pool_probes": true
+}

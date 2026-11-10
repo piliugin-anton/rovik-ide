@@ -1,4 +1,9 @@
 //! Reproducible retrieval baseline over incident-separated synthetic cases.
+#[path = "evaluate_memory/capture.rs"]
+mod capture;
+#[path = "evaluate_memory/diagnostics.rs"]
+mod diagnostics;
+
 use serde_json::{json, Value};
 use verified_code_memory::{MemoryEmbedder, NewMemory, RetrievalQuery, SharedMemoryStore};
 
@@ -7,8 +12,9 @@ fn fact(
     title: &str,
     content: &str,
     keys: &Value,
+    kind: &Value,
 ) -> Result<NewMemory, Box<dyn std::error::Error>> {
-    let record = NewMemory::project_fact(repo, title, content);
+    let record = fixture_memory(repo, title, content, kind)?;
     let entry = &keys["entries"][title];
     if entry.is_null() {
         return Ok(record);
@@ -23,6 +29,26 @@ fn fact(
         .map(|value| value.as_str().ok_or("search terms must be strings"))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(record.with_tags(terms))
+}
+
+fn fixture_memory(
+    repo: &str,
+    title: &str,
+    content: &str,
+    kind: &Value,
+) -> Result<NewMemory, Box<dyn std::error::Error>> {
+    match kind {
+        Value::Null => Ok(NewMemory::project_fact(repo, title, content)),
+        Value::String(kind) if kind == "project_fact" => {
+            Ok(NewMemory::project_fact(repo, title, content))
+        }
+        Value::String(kind) if kind == "episode" => Ok(NewMemory::episode(repo, title, content)
+            .with_source_kind(verified_code_memory::SourceKind::GeneratedDeduction)),
+        Value::String(kind) if kind == "procedure" => {
+            Ok(NewMemory::procedure(repo, title, content))
+        }
+        _ => Err("fixture kind must be project_fact, episode or procedure".into()),
+    }
 }
 
 /// An experiment can replay real, externally computed embeddings through the
@@ -57,10 +83,60 @@ impl MemoryEmbedder for RecordedEmbeddings {
     }
 }
 
+#[derive(Clone, Debug)]
+struct EncoderPrefixes {
+    query: String,
+    document: String,
+}
+
+fn encoder_prefixes(config: &Value) -> Result<Option<EncoderPrefixes>, Box<dyn std::error::Error>> {
+    match (config.get("query_prefix"), config.get("document_prefix")) {
+        (None, None) => Ok(None),
+        (Some(query), Some(document)) => {
+            let query = query.as_str().ok_or("query_prefix must be a string")?;
+            let document = document
+                .as_str()
+                .ok_or("document_prefix must be a string")?;
+            if query.is_empty() || query.chars().count() > 64 || document.chars().count() > 64 {
+                return Err("query_prefix must contain 1 to 64 characters; document_prefix may contain 0 to 64".into());
+            }
+            if config.get("vectors_file").is_some() || config.get("save_vectors_file").is_some() {
+                return Err("prefixed encoder experiments require native inference without vector import/export".into());
+            }
+            Ok(Some(EncoderPrefixes {
+                query: query.to_owned(),
+                document: document.to_owned(),
+            }))
+        }
+        _ => Err("query_prefix and document_prefix must be supplied together".into()),
+    }
+}
+
+fn encoder_pooling(
+    config: &Value,
+) -> Result<verified_code_memory::embedding::OnnxPooling, Box<dyn std::error::Error>> {
+    use verified_code_memory::embedding::OnnxPooling;
+    match config.get("pooling") {
+        None => Ok(OnnxPooling::MaskedMean),
+        Some(value) if value == "masked_mean" => Ok(OnnxPooling::MaskedMean),
+        Some(value) if value == "cls" => {
+            if config.get("vectors_file").is_some() || config.get("save_vectors_file").is_some() {
+                return Err(
+                    "CLS experiments require native inference without vector import/export".into(),
+                );
+            }
+            Ok(OnnxPooling::Cls)
+        }
+        _ => Err("pooling must be masked_mean or cls".into()),
+    }
+}
+
 /// Keeps repeated fixture documents from running the native encoder again in
 /// each temporary SQLite store. This cache exists only for one evaluation run.
 struct MemoizedEmbeddings {
     inner: Box<dyn MemoryEmbedder>,
+    prefixes: Option<EncoderPrefixes>,
+    query_mode: std::sync::atomic::AtomicBool,
     vectors: std::sync::Mutex<std::collections::BTreeMap<String, Vec<f32>>>,
 }
 
@@ -69,14 +145,49 @@ impl MemoryEmbedder for MemoizedEmbeddings {
         self.inner.dimensions()
     }
     fn input_character_limit(&self) -> Option<usize> {
-        self.inner.input_character_limit()
+        self.inner.input_character_limit().map(|limit| {
+            self.prefixes.as_ref().map_or(limit, |prefixes| {
+                limit.saturating_sub(
+                    prefixes
+                        .query
+                        .chars()
+                        .count()
+                        .max(prefixes.document.chars().count()),
+                )
+            })
+        })
     }
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+        let formatted;
+        let text = if let Some(prefixes) = &self.prefixes {
+            let prefix = if self.query_mode.load(std::sync::atomic::Ordering::Relaxed) {
+                &prefixes.query
+            } else {
+                &prefixes.document
+            };
+            formatted = format!("{prefix}{text}");
+            formatted.as_str()
+        } else {
+            text
+        };
+        // Cache the actual prefixed provider input, so equal query/document
+        // text cannot accidentally share a role-specific vector.
+        // The encoder cannot observe a tail beyond its declared character
+        // window. Reuse exactly identical effective inputs across verbose
+        // fixture alternatives without changing their stored claims.
+        let key = match self
+            .inner
+            .input_character_limit()
+            .filter(|limit| *limit > 0)
+        {
+            Some(limit) => text.chars().take(limit).collect::<String>(),
+            None => text.to_owned(),
+        };
         if let Some(vector) = self
             .vectors
             .lock()
             .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?
-            .get(text)
+            .get(&key)
         {
             return Ok(vector.clone());
         }
@@ -84,7 +195,7 @@ impl MemoryEmbedder for MemoizedEmbeddings {
         self.vectors
             .lock()
             .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?
-            .insert(text.to_owned(), vector.clone());
+            .insert(key, vector.clone());
         Ok(vector)
     }
 }
@@ -123,6 +234,33 @@ fn fixture_strings(value: &Value) -> Result<Vec<&str>, Box<dyn std::error::Error
                 .ok_or_else(|| "fixture list entries must be strings".into())
         })
         .collect()
+}
+
+fn case_selection(
+    config: &Value,
+    cases: &[Value],
+) -> Result<Option<std::collections::BTreeSet<String>>, Box<dyn std::error::Error>> {
+    let Some(value) = config.get("case_ids") else {
+        return Ok(None);
+    };
+    let requested = fixture_strings(value)?;
+    if requested.is_empty() {
+        return Err("case_ids must select at least one case".into());
+    }
+    let mut selected = std::collections::BTreeSet::new();
+    for id in requested {
+        if !selected.insert(id.to_owned()) {
+            return Err(format!("duplicate case_ids entry: {id}").into());
+        }
+        if !cases.iter().any(|case| {
+            case["id"] == id && (config["split"].is_null() || case["split"] == config["split"])
+        }) {
+            return Err(
+                format!("case_ids entry is unknown or outside the requested split: {id}").into(),
+            );
+        }
+    }
+    Ok(Some(selected))
 }
 
 fn fixture_query(
@@ -177,7 +315,7 @@ fn populate_corpus(
             continue;
         }
         let content = entry["content"].as_str().ok_or("missing corpus content")?;
-        let mut input = NewMemory::project_fact(repo, title, content);
+        let mut input = fixture_memory(repo, title, content, &entry["kind"])?;
         input = input
             .with_files(fixture_strings(&entry["files"])?)
             .with_tags(fixture_strings(&entry["tags"])?);
@@ -343,8 +481,11 @@ fn capture_order(uri: &str, offset: usize) -> Result<(), Box<dyn std::error::Err
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    let prefixes = encoder_prefixes(&config)?;
+    let pooling = encoder_pooling(&config)?;
     let input = dataset_input(&config)?;
-    let dataset: Value = serde_json::from_str(&input)?;
+    let mut dataset: Value = serde_json::from_str(&input)?;
+    capture::project(&mut dataset, &config["episode_capture_projection"])?;
     let keys = match config["context_keys_file"].as_str() {
         Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
         None => json!({}),
@@ -381,9 +522,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let revision = std::env::var("ROVIK_MEMORY_EVAL_REVISION")?;
                 let threshold: f32 = std::env::var("ROVIK_MEMORY_EVAL_THRESHOLD")?.parse()?;
                 Some((
-                    Box::new(verified_code_memory::embedding::OnnxMiniLm::new(
-                        std::path::Path::new(&model),
-                    )?),
+                    Box::new(
+                        verified_code_memory::embedding::OnnxMiniLm::new_with_pooling(
+                            std::path::Path::new(&model),
+                            pooling,
+                        )?,
+                    ),
                     revision,
                     dimensions,
                     threshold,
@@ -392,10 +536,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => None,
         }
     };
+    if (prefixes.is_some() || pooling != Default::default()) && backend.is_none() {
+        return Err("encoder formatting/pooling experiments require an embedding backend".into());
+    }
     let backend = backend.map(|(inner, revision, dimensions, threshold)| {
         (
             MemoizedEmbeddings {
                 inner,
+                prefixes,
+                query_mode: Default::default(),
                 vectors: Default::default(),
             },
             revision,
@@ -403,6 +552,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             threshold,
         )
     });
+    let diagnostics = match config.get("diagnostics") {
+        None => false,
+        Some(value) => value.as_bool().ok_or("diagnostics must be a boolean")?,
+    };
+    diagnostics::pool_limit(&config, diagnostics)?;
+    if diagnostics
+        && (config["deterministic"] != true
+            || backend.is_none()
+            || config["semantic_only"] == true
+            || config["rerank_lexical"] == true)
+    {
+        return Err(
+            "diagnostics requires deterministic fixtures and the hybrid embedding backend".into(),
+        );
+    }
     let mut cases = dataset["cases"].as_array().ok_or("missing cases")?.clone();
     if let Some(path) = config["controls_file"].as_str() {
         let controls: Value = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -416,9 +580,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cases.push(case);
         }
     }
+    let selected_cases = case_selection(&config, &cases)?;
     let mut rows = Vec::new();
     for case in &cases {
         if split.is_some_and(|split| case["split"] != split) {
+            continue;
+        }
+        if selected_cases
+            .as_ref()
+            .is_some_and(|ids| !case["id"].as_str().is_some_and(|id| ids.contains(id)))
+        {
             continue;
         }
         let text = |key: &str| case[key].as_str().ok_or("missing text");
@@ -431,12 +602,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             SharedMemoryStore::open_in_memory()?
         };
         let file = format!("src/{title}.rs");
-        let record =
-            store.remember(fact("project", title, text("content")?, &keys)?.with_files([file]))?;
+        let record_files = if case.get("record_files").is_some() {
+            fixture_strings(&case["record_files"])?
+        } else {
+            vec![file.as_str()]
+        };
+        let record = store.remember(
+            fact("project", title, text("content")?, &keys, &case["kind"])?
+                .with_files(record_files),
+        )?;
         store.verify(record.id, "synthetic fixture evidence")?;
         let expected = if case["supersede"] == true {
             store.deprecate(record.id, "explicit fixture update")?;
-            let replacement = store.remember(fact("project", title, text("content")?, &keys)?)?;
+            let replacement = store.remember(fact(
+                "project",
+                title,
+                text("content")?,
+                &keys,
+                &case["kind"],
+            )?)?;
             store.verify(replacement.id, "replacement evidence")?;
             replacement.id
         } else {
@@ -454,12 +638,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 other["title"].as_str().ok_or("missing title")?,
                 other["content"].as_str().ok_or("missing content")?,
                 &keys,
+                &other["kind"],
             )?)?;
         }
         populate_corpus(&store, &dataset["corpus"], title)?;
         populate_corpus(&store, &case["corpus"], title)?;
         // An identical record in another project must never leak.
-        store.remember(fact("other", title, text("content")?, &keys)?)?;
+        store.remember(fact(
+            "other",
+            title,
+            text("content")?,
+            &keys,
+            &case["kind"],
+        )?)?;
         let expected = if deterministic {
             stabilize_fixture(fixture_uri, expected)?
         } else {
@@ -480,6 +671,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             |record: &verified_code_memory::MemoryRecord| !excluded.contains(&record.title);
         let started = std::time::Instant::now();
         let (baseline, telemetry) = store.retrieve_filtered_with_telemetry(&query, accept)?;
+        let lexical_ids: Vec<_> = if diagnostics {
+            baseline.iter().map(|hit| hit.record.id).collect()
+        } else {
+            Vec::new()
+        };
         let mut embedding_fallback = false;
         let mut found = if let Some((embedder, revision, dimensions, threshold)) = &backend {
             let index = verified_code_memory::semantic::SemanticIndex::new(
@@ -497,6 +693,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 index
             };
+            embedder
+                .query_mode
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             index.backfill_limited(
                 "project",
                 embedder,
@@ -507,6 +706,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Give the identical prohibited record a vector too: a semantic
             // scope check must not pass just because other projects lack an index.
             index.backfill("other", embedder)?;
+            embedder
+                .query_mode
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             let retrieved = if config["rerank_lexical"] == true {
                 rerank_lexical(&index, &query, embedder, *threshold, &baseline)
             } else if config["semantic_only"] == true {
@@ -581,7 +783,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         let full_text_ids = complete;
         let primary_claim_hash = store.get(expected)?.claim_hash;
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"primary_id":expected,"primary_claim_hash":primary_claim_hash,"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"required_facts":required_facts,"rendered_ids":shown,"full_text_ids":full_text_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        let mut row = json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"primary_id":expected,"primary_claim_hash":primary_claim_hash,"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"required_facts":required_facts,"rendered_ids":shown,"full_text_ids":full_text_ids,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry});
+        if diagnostics {
+            let (embedder, revision, _, threshold) =
+                backend.as_ref().ok_or("missing diagnostic backend")?;
+            if embedding_fallback {
+                return Err("diagnostics requires successful embedding retrieval".into());
+            }
+            let mut targets = vec![expected];
+            for fact in row["required_facts"]
+                .as_array()
+                .ok_or("missing required facts")?
+            {
+                targets.push(uuid::Uuid::parse_str(
+                    fact["id"].as_str().ok_or("missing fact id")?,
+                )?);
+            }
+            row["diagnostics"] = diagnostics::collect(
+                fixture_uri,
+                &store,
+                &query,
+                embedder,
+                revision,
+                *threshold,
+                &config,
+                &targets,
+                &lexical_ids,
+                &found,
+                &full_text_ids,
+                accept,
+            )?;
+        }
+        rows.push(row);
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -634,6 +867,108 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_kinds_keep_episode_provenance_and_reject_unknown_categories() {
+        use verified_code_memory::{MemoryKind, SourceKind};
+        let legacy = fixture_memory("p", "title", "content", &Value::Null).unwrap();
+        assert_eq!(legacy.kind, MemoryKind::ProjectFact);
+        let episode = fixture_memory("p", "title", "content", &json!("episode")).unwrap();
+        assert_eq!(episode.kind, MemoryKind::Episode);
+        assert_eq!(episode.source_kind, SourceKind::GeneratedDeduction);
+        assert!(fixture_memory("p", "title", "content", &json!("unknown")).is_err());
+    }
+
+    #[test]
+    fn explicit_cls_pooling_and_query_only_instruction_require_native_vectors() {
+        use verified_code_memory::embedding::OnnxPooling;
+        assert_eq!(
+            encoder_pooling(&json!({})).unwrap(),
+            OnnxPooling::MaskedMean
+        );
+        assert_eq!(
+            encoder_pooling(&json!({"pooling":"cls"})).unwrap(),
+            OnnxPooling::Cls
+        );
+        assert!(
+            encoder_prefixes(&json!({"query_prefix":"instruction: ","document_prefix":""}))
+                .unwrap()
+                .is_some()
+        );
+        for config in [
+            json!({"pooling":true}),
+            json!({"pooling":"unknown"}),
+            json!({"pooling":"cls","vectors_file":"saved.json"}),
+            json!({"pooling":"cls","save_vectors_file":"saved.json"}),
+        ] {
+            assert!(encoder_pooling(&config).is_err());
+        }
+    }
+
+    #[test]
+    fn selecting_rows_keeps_the_full_fixture_available_and_rejects_missing_or_duplicate_ids() {
+        let cases = vec![
+            json!({"id":"a","split":"development"}),
+            json!({"id":"b","split":"development"}),
+            json!({"id":"c","split":"heldout"}),
+        ];
+        let before = cases.clone();
+        assert!(case_selection(&json!({}), &cases).unwrap().is_none());
+        let selected = case_selection(&json!({"case_ids":["b"],"split":"development"}), &cases)
+            .unwrap()
+            .unwrap();
+        assert!(selected.contains("b"));
+        assert!(!selected.contains("a"));
+        assert_eq!(cases, before);
+        for ids in [
+            json!([]),
+            json!(["missing"]),
+            json!(["b", "b"]),
+            json!(["c"]),
+            json!("b"),
+            Value::Null,
+        ] {
+            assert!(
+                case_selection(&json!({"case_ids":ids,"split":"development"}), &cases).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn memoized_embeddings_share_only_identical_effective_character_inputs() {
+        use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
+        struct Limited {
+            calls: Arc<AtomicUsize>,
+        }
+        impl MemoryEmbedder for Limited {
+            fn dimensions(&self) -> usize {
+                1
+            }
+            fn input_character_limit(&self) -> Option<usize> {
+                Some(3)
+            }
+            fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![
+                    text.chars().take(3).map(|c| c as u32).sum::<u32>() as f32
+                ])
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cached = MemoizedEmbeddings {
+            prefixes: None,
+            query_mode: Default::default(),
+            inner: Box::new(Limited {
+                calls: calls.clone(),
+            }),
+            vectors: Default::default(),
+        };
+        let first = cached.embed("é猫a first archive").unwrap();
+        assert_eq!(first, cached.embed("é猫a second archive").unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_ne!(first, cached.embed("é猫b third archive").unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn deterministic_claim_age_stays_one_day_across_calendar_boundaries() {
@@ -857,6 +1192,8 @@ mod tests {
         }
         let calls = Arc::new(AtomicUsize::new(0));
         let model = MemoizedEmbeddings {
+            prefixes: None,
+            query_mode: Default::default(),
             inner: Box::new(Count(calls.clone())),
             vectors: Default::default(),
         };
@@ -867,6 +1204,65 @@ mod tests {
             assert!(model.embed("missing").is_err());
         }
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn role_prefixes_keep_identical_query_and_document_inputs_in_separate_cache_entries() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Roles(Arc<AtomicUsize>);
+        impl MemoryEmbedder for Roles {
+            fn dimensions(&self) -> usize {
+                2
+            }
+            fn input_character_limit(&self) -> Option<usize> {
+                Some(500)
+            }
+            fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(if text.starts_with("query: ") {
+                    vec![1.0, 0.0]
+                } else if text.starts_with("passage: ") {
+                    vec![0.0, 1.0]
+                } else {
+                    panic!("role prefix missing")
+                })
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model = MemoizedEmbeddings {
+            inner: Box::new(Roles(calls.clone())),
+            vectors: Default::default(),
+            prefixes: encoder_prefixes(
+                &json!({"query_prefix":"query: ","document_prefix":"passage: "}),
+            )
+            .unwrap(),
+            query_mode: Default::default(),
+        };
+        assert_eq!(model.input_character_limit(), Some(491));
+        assert_eq!(model.embed("same text").unwrap(), vec![0.0, 1.0]);
+        model.query_mode.store(true, Ordering::Relaxed);
+        assert_eq!(model.embed("same text").unwrap(), vec![1.0, 0.0]);
+        assert_eq!(model.embed("same text").unwrap(), vec![1.0, 0.0]);
+        model.query_mode.store(false, Ordering::Relaxed);
+        assert_eq!(model.embed("same text").unwrap(), vec![0.0, 1.0]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn incomplete_or_unreplayable_encoder_formatting_is_rejected() {
+        assert!(encoder_prefixes(&json!({})).unwrap().is_none());
+        for config in [
+            json!({"query_prefix":"query: "}),
+            json!({"query_prefix":true,"document_prefix":"p"}),
+            json!({"query_prefix":"","document_prefix":"p"}),
+            json!({"query_prefix":"q","document_prefix":"p","save_vectors_file":"vectors.json"}),
+            json!({"query_prefix":"q","document_prefix":"p","vectors_file":"vectors.json"}),
+        ] {
+            assert!(encoder_prefixes(&config).is_err());
+        }
     }
 
     #[test]
@@ -910,10 +1306,10 @@ mod tests {
     fn index_context_cannot_be_attached_to_an_edited_claim() {
         let keys =
             json!({"entries":{"cache":{"claim":"invalidate entries","terms":["stale results"]}}});
-        let record = fact("p", "cache", "invalidate entries", &keys).unwrap();
+        let record = fact("p", "cache", "invalidate entries", &keys, &Value::Null).unwrap();
         assert_eq!(record.content, "invalidate entries");
         assert_eq!(record.tags, vec!["stale results"]);
-        assert!(fact("p", "cache", "retain entries", &keys).is_err());
+        assert!(fact("p", "cache", "retain entries", &keys, &Value::Null).is_err());
     }
 
     #[test]

@@ -11,6 +11,74 @@ documents fresh incident-separated fixtures, offline WordNet/MiniLM experiments,
 per-case regression guards and model setup. These do not measure live-agent task
 success.
 
+The [retrieval-encoder study](../../docs/design/long-term-memory-retrieval-encoder-nov10-2026.md)
+adds frozen implicit/no-match cases and records a rejected E5 replacement sweep.
+For native encoder research, the Rust `evaluate_memory` example accepts paired
+`query_prefix` and `document_prefix` fields in `--experiment-config`. They format
+query and indexing inputs separately and keep role-specific memoization entries.
+The query prefix must contain 1–64 characters; the document prefix may contain
+0–64 for query-only instructions. They require native inference and cannot
+be combined with vector import/export. Omit both for the existing MiniLM behavior.
+These fields are evaluation-only; the study documents model hashes, cutoffs,
+limits and reproduction commands.
+
+The [BGE study](../../docs/design/long-term-memory-bge-nov10-2026.md) adds 96 frozen
+cases and rejects both plain and instructed top-one rescue policies. Native
+evaluation accepts `pooling: "cls"` for compatible 384-dimensional BERT encoders;
+omitting it retains MiniLM's masked mean. CLS also requires native inference
+without vector import/export. The pair scorer's
+`--embedding-reference <directory> <texts.json> cls|masked_mean` mode emits vectors
+and exact token inputs for short cross-engine reference comparisons, rejecting
+overlong inputs. No application model or release asset changes.
+
+The [additive follow-up](../../docs/design/long-term-memory-additive-encoders-nov10-2026.md)
+rejects E5-winner and deeper model-agreement rescue policies. Native evaluation
+with `diagnostics: true` exposes label-independent `best_eligible` and
+`candidate_pool` score rows, including filtered exact-copy representatives and
+native append packet previews. Previews retain incumbent positions and full
+claims, and reject duplicate, result-limit or packet-budget failures. They do
+not modify retrieval results or enable a second application model.
+
+The [cross-encoder study](../../docs/design/long-term-memory-cross-encoder-nov10-2026.md)
+tests a joint query/document relevance model and records its rejected policies.
+Native evaluation accepts `diagnostic_pool_limit` (1–128, requires diagnostics)
+to export a broader filtered candidate pool without changing returned results.
+Pool rows include the stored title/body as `document` for model comparisons.
+The Rust `score_memory_pairs` example accepts `--model <directory> --pairs <file>`;
+the pairs file is a JSON array of `{ "id", "query", "document" }` objects with
+unique IDs. It emits JSONL `{ "id", "logit", "tokens" }` rows using paired BERT
+inputs and a single raw classification output. Models are provisioned externally;
+unit tests never download or load weights. The report supplies pinned artifacts,
+reference checks, score grids and reproduction commands.
+
+For Qwen-style instruction-reranker experiments, `score_memory_pairs` also accepts
+`--tokenize-instruction-pairs <tokenizer-directory> <pairs.json> <instruction.txt>`.
+It emits the official prompt's token IDs and distinct yes/no label IDs, and
+rejects prompts above the 512-token research bound instead of clipping them.
+`--tokenize-bounded-instruction-pairs` emits an explicit unsupported row for an
+overlong pair; a pool experiment must retain the whole legacy query result when
+any selected candidate is unsupported. `case_ids` in native evaluation selects
+query rows while retaining the full fixture corpus and sibling distractors;
+unknown, duplicate or out-of-split IDs fail.
+`memory-instruction-scoring.mjs` builds CPU ONNX Runtime prefill/cache inputs and
+reads final-position binary logits; its runtime is supplied by the experiment.
+The application and repository dependencies do not include that runtime or model.
+Its unit tests use local tensor stubs and run through `npm run test:eval`. The
+[instruction-reranker study](../../docs/design/long-term-memory-instruction-reranker-nov10-2026.md)
+records one development-only gain, unchanged heldout results, rejected historical
+regressions and the application backend/resource constraints.
+
+The [episode-capture study](../../docs/design/long-term-memory-episode-capture-nov10-2026.md)
+adds 96 frozen synthetic run-input cases and rejects two direct source-request
+enrichments despite improved historical-episode delivery. Native evaluation accepts
+`episode_capture_projection: "legacy_episode"`, `"requested_episode"` or
+`"intent_episode"` for source-backed fixtures. Each validates the old title/content
+against `capture` metadata before optionally appending an exact request quotation;
+the query is not used to construct it. Fixture `kind` may be `episode`, `procedure`
+or the default `project_fact`; episode fixtures use generated-deduction provenance.
+`record_files` supplies source associations separately from query `file`/`files`.
+The ordinary evaluator and application capture behavior remain unchanged.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

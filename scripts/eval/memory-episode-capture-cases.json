@@ -1,0 +1,2232 @@
+{
+  "version": 1,
+  "description": "Frozen synthetic run-input provenance experiment. Requests describe desired work, not proof it was implemented. No real user session or automatic LLM extraction is represented.",
+  "corpus": [
+    {
+      "id": "download-digest",
+      "title": "Maintenance ticket 101",
+      "content": "Outcome: verified\nChanged: src/ticket_101.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_101.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 101\nThe browser download is sometimes accepted after a mirror returns a truncated archive. Check the archive checksum before installing it.",
+        "outcome": "verified",
+        "files": ["src/ticket_101.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "sqlite-contention",
+      "title": "Maintenance ticket 102",
+      "content": "Outcome: verified\nChanged: src/ticket_102.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_102.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 102\nSaving two settings panels at once intermittently reports that the database is locked. Set a bounded SQLite busy timeout for these writes.",
+        "outcome": "verified",
+        "files": ["src/ticket_102.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "watcher-disposal",
+      "title": "Maintenance ticket 103",
+      "content": "Outcome: verified\nChanged: src/ticket_103.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_103.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 103\nReopening a project creates another filesystem subscription each time. Dispose the old watcher before opening its replacement.",
+        "outcome": "verified",
+        "files": ["src/ticket_103.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "bom-config",
+      "title": "Maintenance ticket 104",
+      "content": "Outcome: verified\nChanged: src/ticket_104.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_104.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 104\nThe configuration parser rejects otherwise valid JSON files saved by an editor with a UTF-8 byte order mark. Remove the leading BOM before parsing.",
+        "outcome": "verified",
+        "files": ["src/ticket_104.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "quoted-tool-path",
+      "title": "Maintenance ticket 105",
+      "content": "Outcome: verified\nChanged: src/ticket_105.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_105.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 105\nLaunching a command fails only when its executable directory contains spaces. Pass the executable and its arguments separately rather than joining an unquoted shell command.",
+        "outcome": "verified",
+        "files": ["src/ticket_105.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ime-submit",
+      "title": "Maintenance ticket 106",
+      "content": "Outcome: verified\nChanged: src/ticket_106.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_106.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 106\nThe chat submits before a composed character is finished when Enter confirms an input method candidate. Ignore submit shortcuts while composition is active.",
+        "outcome": "verified",
+        "files": ["src/ticket_106.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stale-socket",
+      "title": "Maintenance ticket 107",
+      "content": "Outcome: verified\nChanged: src/ticket_107.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_107.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 107\nA crashed background process leaves its Unix socket pathname behind, preventing restart. Check whether the old listener is alive before unlinking a stale socket.",
+        "outcome": "verified",
+        "files": ["src/ticket_107.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "case-only-rename",
+      "title": "Maintenance ticket 108",
+      "content": "Outcome: verified\nChanged: src/ticket_108.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_108.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 108\nA case-only rename is lost on a case-insensitive checkout. Rename through a temporary distinct path before applying the final spelling.",
+        "outcome": "verified",
+        "files": ["src/ticket_108.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "range-resume",
+      "title": "Maintenance ticket 109",
+      "content": "Outcome: verified\nChanged: src/ticket_109.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_109.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 109\nA resumed HTTP download appends bytes from a changed remote object. Bind the range request to its saved validator with If-Range and restart when the representation changed.",
+        "outcome": "verified",
+        "files": ["src/ticket_109.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "pcm-byte-order",
+      "title": "Maintenance ticket 110",
+      "content": "Outcome: verified\nChanged: src/ticket_110.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_110.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 110\nRecorded PCM samples sound distorted when their byte order differs from the device format. Decode samples with the declared endianness before playback.",
+        "outcome": "verified",
+        "files": ["src/ticket_110.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "credentialed-cors",
+      "title": "Maintenance ticket 111",
+      "content": "Outcome: verified\nChanged: src/ticket_111.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_111.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 111\nA browser rejects cross-origin requests containing cookies when the response allows a wildcard origin. Return the exact allowed origin with credential support.",
+        "outcome": "verified",
+        "files": ["src/ticket_111.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "token-clock-skew",
+      "title": "Maintenance ticket 112",
+      "content": "Outcome: verified\nChanged: src/ticket_112.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_112.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 112\nA freshly issued signed token is rejected when the verifier clock is slightly behind the issuer. Apply a small explicit clock-skew allowance to temporal claims.",
+        "outcome": "verified",
+        "files": ["src/ticket_112.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dst-time-gap",
+      "title": "Maintenance ticket 113",
+      "content": "Outcome: verified\nChanged: src/ticket_113.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_113.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 113\nScheduling a local wall time inside a daylight-saving gap silently shifts the job. Detect nonexistent local times and apply an explicit scheduling policy.",
+        "outcome": "verified",
+        "files": ["src/ticket_113.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "symlink-cycle",
+      "title": "Maintenance ticket 114",
+      "content": "Outcome: verified\nChanged: src/ticket_114.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_114.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 114\nA directory walk loops forever when symbolic links form a cycle. Track visited filesystem identities when following links.",
+        "outcome": "verified",
+        "files": ["src/ticket_114.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "grapheme-delete",
+      "title": "Maintenance ticket 115",
+      "content": "Outcome: verified\nChanged: src/ticket_115.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_115.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 115\nBackspace deletes only part of an emoji or a combining sequence. Delete one extended grapheme cluster instead of one scalar value.",
+        "outcome": "verified",
+        "files": ["src/ticket_115.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "atomic-durability",
+      "title": "Maintenance ticket 116",
+      "content": "Outcome: verified\nChanged: src/ticket_116.rs\nChecks: cargo test passed",
+      "files": ["src/ticket_116.rs"],
+      "verified": true,
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 116\nA settings file vanishes after a power loss although its atomic rename completed. Flush the temporary file and its containing directory at the required durability boundary.",
+        "outcome": "verified",
+        "files": ["src/ticket_116.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "capture-download-digest-history-symptom",
+      "incident": "download-digest",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 101",
+      "content": "Outcome: verified\nChanged: src/ticket_101.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 101\nThe browser download is sometimes accepted after a mirror returns a truncated archive. Check the archive checksum before installing it.",
+        "outcome": "verified",
+        "files": ["src/ticket_101.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A mirror served an incomplete browser archive.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-download-digest-history-procedure",
+      "incident": "download-digest",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 101",
+      "content": "Outcome: verified\nChanged: src/ticket_101.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 101\nThe browser download is sometimes accepted after a mirror returns a truncated archive. Check the archive checksum before installing it.",
+        "outcome": "verified",
+        "files": ["src/ticket_101.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Checking a downloaded browser archive before installation.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-download-digest-literal-control",
+      "incident": "download-digest",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 101",
+      "content": "Outcome: verified\nChanged: src/ticket_101.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 101\nThe browser download is sometimes accepted after a mirror returns a truncated archive. Check the archive checksum before installing it.",
+        "outcome": "verified",
+        "files": ["src/ticket_101.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 101",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-download-digest-file-control",
+      "incident": "download-digest",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 101",
+      "content": "Outcome: verified\nChanged: src/ticket_101.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 101\nThe browser download is sometimes accepted after a mirror returns a truncated archive. Check the archive checksum before installing it.",
+        "outcome": "verified",
+        "files": ["src/ticket_101.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_101.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-sqlite-contention-history-symptom",
+      "incident": "sqlite-contention",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 102",
+      "content": "Outcome: verified\nChanged: src/ticket_102.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 102\nSaving two settings panels at once intermittently reports that the database is locked. Set a bounded SQLite busy timeout for these writes.",
+        "outcome": "verified",
+        "files": ["src/ticket_102.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: Concurrent settings saves reported a locked database.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-sqlite-contention-history-procedure",
+      "incident": "sqlite-contention",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 102",
+      "content": "Outcome: verified\nChanged: src/ticket_102.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 102\nSaving two settings panels at once intermittently reports that the database is locked. Set a bounded SQLite busy timeout for these writes.",
+        "outcome": "verified",
+        "files": ["src/ticket_102.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Waiting briefly for an occupied SQLite writer.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-sqlite-contention-literal-control",
+      "incident": "sqlite-contention",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 102",
+      "content": "Outcome: verified\nChanged: src/ticket_102.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 102\nSaving two settings panels at once intermittently reports that the database is locked. Set a bounded SQLite busy timeout for these writes.",
+        "outcome": "verified",
+        "files": ["src/ticket_102.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 102",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-sqlite-contention-file-control",
+      "incident": "sqlite-contention",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 102",
+      "content": "Outcome: verified\nChanged: src/ticket_102.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 102\nSaving two settings panels at once intermittently reports that the database is locked. Set a bounded SQLite busy timeout for these writes.",
+        "outcome": "verified",
+        "files": ["src/ticket_102.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_102.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-watcher-disposal-history-symptom",
+      "incident": "watcher-disposal",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 103",
+      "content": "Outcome: verified\nChanged: src/ticket_103.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 103\nReopening a project creates another filesystem subscription each time. Dispose the old watcher before opening its replacement.",
+        "outcome": "verified",
+        "files": ["src/ticket_103.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: Repeated project opens accumulated filesystem subscriptions.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-watcher-disposal-history-procedure",
+      "incident": "watcher-disposal",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 103",
+      "content": "Outcome: verified\nChanged: src/ticket_103.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 103\nReopening a project creates another filesystem subscription each time. Dispose the old watcher before opening its replacement.",
+        "outcome": "verified",
+        "files": ["src/ticket_103.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Disposing a previous file watcher when replacing it.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-watcher-disposal-literal-control",
+      "incident": "watcher-disposal",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 103",
+      "content": "Outcome: verified\nChanged: src/ticket_103.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 103\nReopening a project creates another filesystem subscription each time. Dispose the old watcher before opening its replacement.",
+        "outcome": "verified",
+        "files": ["src/ticket_103.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 103",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-watcher-disposal-file-control",
+      "incident": "watcher-disposal",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 103",
+      "content": "Outcome: verified\nChanged: src/ticket_103.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 103\nReopening a project creates another filesystem subscription each time. Dispose the old watcher before opening its replacement.",
+        "outcome": "verified",
+        "files": ["src/ticket_103.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_103.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-bom-config-history-symptom",
+      "incident": "bom-config",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 104",
+      "content": "Outcome: verified\nChanged: src/ticket_104.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 104\nThe configuration parser rejects otherwise valid JSON files saved by an editor with a UTF-8 byte order mark. Remove the leading BOM before parsing.",
+        "outcome": "verified",
+        "files": ["src/ticket_104.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: An editor added a UTF-8 BOM to a JSON configuration.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-bom-config-history-procedure",
+      "incident": "bom-config",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 104",
+      "content": "Outcome: verified\nChanged: src/ticket_104.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 104\nThe configuration parser rejects otherwise valid JSON files saved by an editor with a UTF-8 byte order mark. Remove the leading BOM before parsing.",
+        "outcome": "verified",
+        "files": ["src/ticket_104.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Accepting a leading byte-order mark in a JSON settings file.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-bom-config-literal-control",
+      "incident": "bom-config",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 104",
+      "content": "Outcome: verified\nChanged: src/ticket_104.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 104\nThe configuration parser rejects otherwise valid JSON files saved by an editor with a UTF-8 byte order mark. Remove the leading BOM before parsing.",
+        "outcome": "verified",
+        "files": ["src/ticket_104.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 104",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-bom-config-file-control",
+      "incident": "bom-config",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 104",
+      "content": "Outcome: verified\nChanged: src/ticket_104.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 104\nThe configuration parser rejects otherwise valid JSON files saved by an editor with a UTF-8 byte order mark. Remove the leading BOM before parsing.",
+        "outcome": "verified",
+        "files": ["src/ticket_104.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_104.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-quoted-tool-path-history-symptom",
+      "incident": "quoted-tool-path",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 105",
+      "content": "Outcome: verified\nChanged: src/ticket_105.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 105\nLaunching a command fails only when its executable directory contains spaces. Pass the executable and its arguments separately rather than joining an unquoted shell command.",
+        "outcome": "verified",
+        "files": ["src/ticket_105.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A tool executable lived in a directory containing spaces.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-quoted-tool-path-history-procedure",
+      "incident": "quoted-tool-path",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 105",
+      "content": "Outcome: verified\nChanged: src/ticket_105.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 105\nLaunching a command fails only when its executable directory contains spaces. Pass the executable and its arguments separately rather than joining an unquoted shell command.",
+        "outcome": "verified",
+        "files": ["src/ticket_105.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Launching an executable whose path contains spaces.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-quoted-tool-path-literal-control",
+      "incident": "quoted-tool-path",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 105",
+      "content": "Outcome: verified\nChanged: src/ticket_105.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 105\nLaunching a command fails only when its executable directory contains spaces. Pass the executable and its arguments separately rather than joining an unquoted shell command.",
+        "outcome": "verified",
+        "files": ["src/ticket_105.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 105",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-quoted-tool-path-file-control",
+      "incident": "quoted-tool-path",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 105",
+      "content": "Outcome: verified\nChanged: src/ticket_105.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 105\nLaunching a command fails only when its executable directory contains spaces. Pass the executable and its arguments separately rather than joining an unquoted shell command.",
+        "outcome": "verified",
+        "files": ["src/ticket_105.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_105.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-ime-submit-history-symptom",
+      "incident": "ime-submit",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 106",
+      "content": "Outcome: verified\nChanged: src/ticket_106.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 106\nThe chat submits before a composed character is finished when Enter confirms an input method candidate. Ignore submit shortcuts while composition is active.",
+        "outcome": "verified",
+        "files": ["src/ticket_106.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: Enter selected an input method candidate and submitted the chat too.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-ime-submit-history-procedure",
+      "incident": "ime-submit",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 106",
+      "content": "Outcome: verified\nChanged: src/ticket_106.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 106\nThe chat submits before a composed character is finished when Enter confirms an input method candidate. Ignore submit shortcuts while composition is active.",
+        "outcome": "verified",
+        "files": ["src/ticket_106.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Preventing submission while an IME composition is being confirmed.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-ime-submit-literal-control",
+      "incident": "ime-submit",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 106",
+      "content": "Outcome: verified\nChanged: src/ticket_106.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 106\nThe chat submits before a composed character is finished when Enter confirms an input method candidate. Ignore submit shortcuts while composition is active.",
+        "outcome": "verified",
+        "files": ["src/ticket_106.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 106",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-ime-submit-file-control",
+      "incident": "ime-submit",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 106",
+      "content": "Outcome: verified\nChanged: src/ticket_106.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 106\nThe chat submits before a composed character is finished when Enter confirms an input method candidate. Ignore submit shortcuts while composition is active.",
+        "outcome": "verified",
+        "files": ["src/ticket_106.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_106.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-stale-socket-history-symptom",
+      "incident": "stale-socket",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 107",
+      "content": "Outcome: verified\nChanged: src/ticket_107.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 107\nA crashed background process leaves its Unix socket pathname behind, preventing restart. Check whether the old listener is alive before unlinking a stale socket.",
+        "outcome": "verified",
+        "files": ["src/ticket_107.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A daemon could not restart because a crashed listener left a socket file.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-stale-socket-history-procedure",
+      "incident": "stale-socket",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 107",
+      "content": "Outcome: verified\nChanged: src/ticket_107.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 107\nA crashed background process leaves its Unix socket pathname behind, preventing restart. Check whether the old listener is alive before unlinking a stale socket.",
+        "outcome": "verified",
+        "files": ["src/ticket_107.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Removing an abandoned Unix socket after checking the listener.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-stale-socket-literal-control",
+      "incident": "stale-socket",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 107",
+      "content": "Outcome: verified\nChanged: src/ticket_107.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 107\nA crashed background process leaves its Unix socket pathname behind, preventing restart. Check whether the old listener is alive before unlinking a stale socket.",
+        "outcome": "verified",
+        "files": ["src/ticket_107.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 107",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-stale-socket-file-control",
+      "incident": "stale-socket",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 107",
+      "content": "Outcome: verified\nChanged: src/ticket_107.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 107\nA crashed background process leaves its Unix socket pathname behind, preventing restart. Check whether the old listener is alive before unlinking a stale socket.",
+        "outcome": "verified",
+        "files": ["src/ticket_107.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_107.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-case-only-rename-history-symptom",
+      "incident": "case-only-rename",
+      "split": "development",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 108",
+      "content": "Outcome: verified\nChanged: src/ticket_108.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 108\nA case-only rename is lost on a case-insensitive checkout. Rename through a temporary distinct path before applying the final spelling.",
+        "outcome": "verified",
+        "files": ["src/ticket_108.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: Changing only a file name’s letter case was lost by the checkout.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-case-only-rename-history-procedure",
+      "incident": "case-only-rename",
+      "split": "development",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 108",
+      "content": "Outcome: verified\nChanged: src/ticket_108.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 108\nA case-only rename is lost on a case-insensitive checkout. Rename through a temporary distinct path before applying the final spelling.",
+        "outcome": "verified",
+        "files": ["src/ticket_108.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Recording a case-only rename on a case-insensitive filesystem.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-case-only-rename-literal-control",
+      "incident": "case-only-rename",
+      "split": "development",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 108",
+      "content": "Outcome: verified\nChanged: src/ticket_108.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 108\nA case-only rename is lost on a case-insensitive checkout. Rename through a temporary distinct path before applying the final spelling.",
+        "outcome": "verified",
+        "files": ["src/ticket_108.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 108",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-case-only-rename-file-control",
+      "incident": "case-only-rename",
+      "split": "development",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 108",
+      "content": "Outcome: verified\nChanged: src/ticket_108.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 108\nA case-only rename is lost on a case-insensitive checkout. Rename through a temporary distinct path before applying the final spelling.",
+        "outcome": "verified",
+        "files": ["src/ticket_108.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_108.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-range-resume-history-symptom",
+      "incident": "range-resume",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 109",
+      "content": "Outcome: verified\nChanged: src/ticket_109.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 109\nA resumed HTTP download appends bytes from a changed remote object. Bind the range request to its saved validator with If-Range and restart when the representation changed.",
+        "outcome": "verified",
+        "files": ["src/ticket_109.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: Resuming a partial download combined bytes from different remote versions.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-range-resume-history-procedure",
+      "incident": "range-resume",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 109",
+      "content": "Outcome: verified\nChanged: src/ticket_109.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 109\nA resumed HTTP download appends bytes from a changed remote object. Bind the range request to its saved validator with If-Range and restart when the representation changed.",
+        "outcome": "verified",
+        "files": ["src/ticket_109.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Using a saved HTTP validator while resuming a partial download.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-range-resume-literal-control",
+      "incident": "range-resume",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 109",
+      "content": "Outcome: verified\nChanged: src/ticket_109.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 109\nA resumed HTTP download appends bytes from a changed remote object. Bind the range request to its saved validator with If-Range and restart when the representation changed.",
+        "outcome": "verified",
+        "files": ["src/ticket_109.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 109",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-range-resume-file-control",
+      "incident": "range-resume",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 109",
+      "content": "Outcome: verified\nChanged: src/ticket_109.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 109\nA resumed HTTP download appends bytes from a changed remote object. Bind the range request to its saved validator with If-Range and restart when the representation changed.",
+        "outcome": "verified",
+        "files": ["src/ticket_109.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_109.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-pcm-byte-order-history-symptom",
+      "incident": "pcm-byte-order",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 110",
+      "content": "Outcome: verified\nChanged: src/ticket_110.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 110\nRecorded PCM samples sound distorted when their byte order differs from the device format. Decode samples with the declared endianness before playback.",
+        "outcome": "verified",
+        "files": ["src/ticket_110.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: PCM audio was interpreted using the wrong byte order.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-pcm-byte-order-history-procedure",
+      "incident": "pcm-byte-order",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 110",
+      "content": "Outcome: verified\nChanged: src/ticket_110.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 110\nRecorded PCM samples sound distorted when their byte order differs from the device format. Decode samples with the declared endianness before playback.",
+        "outcome": "verified",
+        "files": ["src/ticket_110.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Interpreting the endianness of recorded PCM samples.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-pcm-byte-order-literal-control",
+      "incident": "pcm-byte-order",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 110",
+      "content": "Outcome: verified\nChanged: src/ticket_110.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 110\nRecorded PCM samples sound distorted when their byte order differs from the device format. Decode samples with the declared endianness before playback.",
+        "outcome": "verified",
+        "files": ["src/ticket_110.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 110",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-pcm-byte-order-file-control",
+      "incident": "pcm-byte-order",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 110",
+      "content": "Outcome: verified\nChanged: src/ticket_110.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 110\nRecorded PCM samples sound distorted when their byte order differs from the device format. Decode samples with the declared endianness before playback.",
+        "outcome": "verified",
+        "files": ["src/ticket_110.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_110.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-credentialed-cors-history-symptom",
+      "incident": "credentialed-cors",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 111",
+      "content": "Outcome: verified\nChanged: src/ticket_111.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 111\nA browser rejects cross-origin requests containing cookies when the response allows a wildcard origin. Return the exact allowed origin with credential support.",
+        "outcome": "verified",
+        "files": ["src/ticket_111.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A cross-origin cookie request received a wildcard origin response.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-credentialed-cors-history-procedure",
+      "incident": "credentialed-cors",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 111",
+      "content": "Outcome: verified\nChanged: src/ticket_111.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 111\nA browser rejects cross-origin requests containing cookies when the response allows a wildcard origin. Return the exact allowed origin with credential support.",
+        "outcome": "verified",
+        "files": ["src/ticket_111.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Returning a specific allowed origin for credentialed browser requests.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-credentialed-cors-literal-control",
+      "incident": "credentialed-cors",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 111",
+      "content": "Outcome: verified\nChanged: src/ticket_111.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 111\nA browser rejects cross-origin requests containing cookies when the response allows a wildcard origin. Return the exact allowed origin with credential support.",
+        "outcome": "verified",
+        "files": ["src/ticket_111.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 111",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-credentialed-cors-file-control",
+      "incident": "credentialed-cors",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 111",
+      "content": "Outcome: verified\nChanged: src/ticket_111.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 111\nA browser rejects cross-origin requests containing cookies when the response allows a wildcard origin. Return the exact allowed origin with credential support.",
+        "outcome": "verified",
+        "files": ["src/ticket_111.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_111.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-token-clock-skew-history-symptom",
+      "incident": "token-clock-skew",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 112",
+      "content": "Outcome: verified\nChanged: src/ticket_112.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 112\nA freshly issued signed token is rejected when the verifier clock is slightly behind the issuer. Apply a small explicit clock-skew allowance to temporal claims.",
+        "outcome": "verified",
+        "files": ["src/ticket_112.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A verifier clock slightly behind the issuer rejected a fresh signed token.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-token-clock-skew-history-procedure",
+      "incident": "token-clock-skew",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 112",
+      "content": "Outcome: verified\nChanged: src/ticket_112.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 112\nA freshly issued signed token is rejected when the verifier clock is slightly behind the issuer. Apply a small explicit clock-skew allowance to temporal claims.",
+        "outcome": "verified",
+        "files": ["src/ticket_112.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Allowing a bounded clock difference when validating token timestamps.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-token-clock-skew-literal-control",
+      "incident": "token-clock-skew",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 112",
+      "content": "Outcome: verified\nChanged: src/ticket_112.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 112\nA freshly issued signed token is rejected when the verifier clock is slightly behind the issuer. Apply a small explicit clock-skew allowance to temporal claims.",
+        "outcome": "verified",
+        "files": ["src/ticket_112.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 112",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-token-clock-skew-file-control",
+      "incident": "token-clock-skew",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 112",
+      "content": "Outcome: verified\nChanged: src/ticket_112.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 112\nA freshly issued signed token is rejected when the verifier clock is slightly behind the issuer. Apply a small explicit clock-skew allowance to temporal claims.",
+        "outcome": "verified",
+        "files": ["src/ticket_112.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_112.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-dst-time-gap-history-symptom",
+      "incident": "dst-time-gap",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 113",
+      "content": "Outcome: verified\nChanged: src/ticket_113.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 113\nScheduling a local wall time inside a daylight-saving gap silently shifts the job. Detect nonexistent local times and apply an explicit scheduling policy.",
+        "outcome": "verified",
+        "files": ["src/ticket_113.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A scheduled local time did not exist during a daylight-saving transition.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-dst-time-gap-history-procedure",
+      "incident": "dst-time-gap",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 113",
+      "content": "Outcome: verified\nChanged: src/ticket_113.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 113\nScheduling a local wall time inside a daylight-saving gap silently shifts the job. Detect nonexistent local times and apply an explicit scheduling policy.",
+        "outcome": "verified",
+        "files": ["src/ticket_113.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Handling nonexistent local wall times at a daylight-saving change.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-dst-time-gap-literal-control",
+      "incident": "dst-time-gap",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 113",
+      "content": "Outcome: verified\nChanged: src/ticket_113.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 113\nScheduling a local wall time inside a daylight-saving gap silently shifts the job. Detect nonexistent local times and apply an explicit scheduling policy.",
+        "outcome": "verified",
+        "files": ["src/ticket_113.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 113",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-dst-time-gap-file-control",
+      "incident": "dst-time-gap",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 113",
+      "content": "Outcome: verified\nChanged: src/ticket_113.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 113\nScheduling a local wall time inside a daylight-saving gap silently shifts the job. Detect nonexistent local times and apply an explicit scheduling policy.",
+        "outcome": "verified",
+        "files": ["src/ticket_113.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_113.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-symlink-cycle-history-symptom",
+      "incident": "symlink-cycle",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 114",
+      "content": "Outcome: verified\nChanged: src/ticket_114.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 114\nA directory walk loops forever when symbolic links form a cycle. Track visited filesystem identities when following links.",
+        "outcome": "verified",
+        "files": ["src/ticket_114.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A recursive file walk followed a cycle of symbolic links.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-symlink-cycle-history-procedure",
+      "incident": "symlink-cycle",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 114",
+      "content": "Outcome: verified\nChanged: src/ticket_114.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 114\nA directory walk loops forever when symbolic links form a cycle. Track visited filesystem identities when following links.",
+        "outcome": "verified",
+        "files": ["src/ticket_114.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Detecting cycles when recursively following filesystem links.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-symlink-cycle-literal-control",
+      "incident": "symlink-cycle",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 114",
+      "content": "Outcome: verified\nChanged: src/ticket_114.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 114\nA directory walk loops forever when symbolic links form a cycle. Track visited filesystem identities when following links.",
+        "outcome": "verified",
+        "files": ["src/ticket_114.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 114",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-symlink-cycle-file-control",
+      "incident": "symlink-cycle",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 114",
+      "content": "Outcome: verified\nChanged: src/ticket_114.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 114\nA directory walk loops forever when symbolic links form a cycle. Track visited filesystem identities when following links.",
+        "outcome": "verified",
+        "files": ["src/ticket_114.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_114.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-grapheme-delete-history-symptom",
+      "incident": "grapheme-delete",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 115",
+      "content": "Outcome: verified\nChanged: src/ticket_115.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 115\nBackspace deletes only part of an emoji or a combining sequence. Delete one extended grapheme cluster instead of one scalar value.",
+        "outcome": "verified",
+        "files": ["src/ticket_115.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: Backspace split a multi-code-point visible character.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-grapheme-delete-history-procedure",
+      "incident": "grapheme-delete",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 115",
+      "content": "Outcome: verified\nChanged: src/ticket_115.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 115\nBackspace deletes only part of an emoji or a combining sequence. Delete one extended grapheme cluster instead of one scalar value.",
+        "outcome": "verified",
+        "files": ["src/ticket_115.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Deleting a complete visible character containing several code points.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-grapheme-delete-literal-control",
+      "incident": "grapheme-delete",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 115",
+      "content": "Outcome: verified\nChanged: src/ticket_115.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 115\nBackspace deletes only part of an emoji or a combining sequence. Delete one extended grapheme cluster instead of one scalar value.",
+        "outcome": "verified",
+        "files": ["src/ticket_115.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 115",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-grapheme-delete-file-control",
+      "incident": "grapheme-delete",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 115",
+      "content": "Outcome: verified\nChanged: src/ticket_115.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 115\nBackspace deletes only part of an emoji or a combining sequence. Delete one extended grapheme cluster instead of one scalar value.",
+        "outcome": "verified",
+        "files": ["src/ticket_115.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_115.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-atomic-durability-history-symptom",
+      "incident": "atomic-durability",
+      "split": "heldout",
+      "category": "history-symptom",
+      "answerable": true,
+      "title": "Maintenance ticket 116",
+      "content": "Outcome: verified\nChanged: src/ticket_116.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 116\nA settings file vanishes after a power loss although its atomic rename completed. Flush the temporary file and its containing directory at the required durability boundary.",
+        "outcome": "verified",
+        "files": ["src/ticket_116.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Find the earlier task about this problem: A power failure lost settings after the replacement file had been renamed.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-atomic-durability-history-procedure",
+      "incident": "atomic-durability",
+      "split": "heldout",
+      "category": "history-procedure",
+      "answerable": true,
+      "title": "Maintenance ticket 116",
+      "content": "Outcome: verified\nChanged: src/ticket_116.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 116\nA settings file vanishes after a power loss although its atomic rename completed. Flush the temporary file and its containing directory at the required durability boundary.",
+        "outcome": "verified",
+        "files": ["src/ticket_116.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Which earlier task requested this work? Making an atomic settings-file replacement durable across power loss.",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-atomic-durability-literal-control",
+      "incident": "atomic-durability",
+      "split": "heldout",
+      "category": "literal-control",
+      "answerable": true,
+      "title": "Maintenance ticket 116",
+      "content": "Outcome: verified\nChanged: src/ticket_116.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 116\nA settings file vanishes after a power loss although its atomic rename completed. Flush the temporary file and its containing directory at the required durability boundary.",
+        "outcome": "verified",
+        "files": ["src/ticket_116.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Maintenance ticket 116",
+      "file": null,
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-atomic-durability-file-control",
+      "incident": "atomic-durability",
+      "split": "heldout",
+      "category": "file-control",
+      "answerable": true,
+      "title": "Maintenance ticket 116",
+      "content": "Outcome: verified\nChanged: src/ticket_116.rs\nChecks: cargo test passed",
+      "kind": "episode",
+      "capture": {
+        "task": "Maintenance ticket 116\nA settings file vanishes after a power loss although its atomic rename completed. Flush the temporary file and its containing directory at the required durability boundary.",
+        "outcome": "verified",
+        "files": ["src/ticket_116.rs"],
+        "checks": [
+          {
+            "command": "cargo test",
+            "status": "passed"
+          }
+        ]
+      },
+      "task": "Review the previous work for this file.",
+      "file": "src/ticket_116.rs",
+      "expected_behavior": "Locate the episode describing the requested work; do not infer an implemented fix or root cause from the request or green checks."
+    },
+    {
+      "id": "capture-negative-development-0",
+      "incident": "capture-negative-development-0",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about choosing a TLS cipher suite.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-1",
+      "incident": "capture-negative-development-1",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about configuring a GPU memory allocator.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-2",
+      "incident": "capture-negative-development-2",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about rotating an OAuth refresh token.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-3",
+      "incident": "capture-negative-development-3",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about picking a database join order.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-4",
+      "incident": "capture-negative-development-4",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about choosing audio compression bitrates.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-5",
+      "incident": "capture-negative-development-5",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about controlling a printer paper tray.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-6",
+      "incident": "capture-negative-development-6",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about calibrating a camera exposure.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-7",
+      "incident": "capture-negative-development-7",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about partitioning a spatial index.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-8",
+      "incident": "capture-negative-development-8",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about selecting the checksum algorithm for stored passwords.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-9",
+      "incident": "capture-negative-development-9",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about converting JSON to a canonical signing representation.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-10",
+      "incident": "capture-negative-development-10",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about choosing priorities among queued SQLite queries.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-11",
+      "incident": "capture-negative-development-11",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about changing a socket’s authentication protocol.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-12",
+      "incident": "capture-negative-development-12",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about matching two Unicode strings under a normalization form.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-13",
+      "incident": "capture-negative-development-13",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about computing the width of an IME candidate popup.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-14",
+      "incident": "capture-negative-development-14",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about encrypting temporary files before renaming them.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-development-15",
+      "incident": "capture-negative-development-15",
+      "split": "development",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about deciding how long to retain expired browser downloads.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-0",
+      "incident": "capture-negative-heldout-0",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about selecting a video compression profile.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-1",
+      "incident": "capture-negative-heldout-1",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about preventing DNS rebinding.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-2",
+      "incident": "capture-negative-heldout-2",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about generating a pseudorandom signing nonce.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-3",
+      "incident": "capture-negative-heldout-3",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about a serial port’s baud rate.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-4",
+      "incident": "capture-negative-heldout-4",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about balancing shards across database nodes.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-5",
+      "incident": "capture-negative-heldout-5",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about extracting an archive’s executable permissions.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-6",
+      "incident": "capture-negative-heldout-6",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about parsing a spreadsheet’s formulas.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-7",
+      "incident": "capture-negative-heldout-7",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about restoring deleted email messages.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-8",
+      "incident": "capture-negative-heldout-8",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about calculating an HTTP download’s retry delays.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-9",
+      "incident": "capture-negative-heldout-9",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about selecting a device microphone volume.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-10",
+      "incident": "capture-negative-heldout-10",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about allowing browser origins with a regular expression.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-11",
+      "incident": "capture-negative-heldout-11",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about rotating the private key used to sign tokens.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-12",
+      "incident": "capture-negative-heldout-12",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about choosing a calendar system for local dates.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-13",
+      "incident": "capture-negative-heldout-13",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about preserving symbolic links in a file-copy tool.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-14",
+      "incident": "capture-negative-heldout-14",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about searching text by its grapheme boundaries.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    },
+    {
+      "id": "capture-negative-heldout-15",
+      "incident": "capture-negative-heldout-15",
+      "split": "heldout",
+      "category": "no-match",
+      "answerable": false,
+      "title": "Unsupported request",
+      "content": "No stored assertion supports this request.",
+      "task": "Find the earlier task about encrypting a settings backup at rest.",
+      "no_match_reason": "None of the sixteen source requests concerns the requested operation; sharing a domain is insufficient.",
+      "label_provenance": "Assistant-authored review; not independent human relevance adjudication."
+    }
+  ]
+}

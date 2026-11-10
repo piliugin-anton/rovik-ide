@@ -1,0 +1,57 @@
+{
+  "baseline": "ff9029fd0dc421ec91dc0668e288a9d2bf9f29c1",
+  "registered_before_fixture_inference": true,
+  "upstream": {
+    "id": "Qwen/Qwen3-Reranker-0.6B",
+    "revision": "e61197ed45024b0ed8a2d74b80b4d909f1255473"
+  },
+  "onnx_export": {
+    "id": "onnx-community/Qwen3-Reranker-0.6B-ONNX",
+    "revision": "9995c50e2310679108a55f5ccd16ba8be9f17c20",
+    "variant": "onnx/model_q4.onnx",
+    "bytes": 995235866,
+    "sha256": "787193952a9aa58374381ec7647b160ac6c200a386dbfc3bc998a3c458081330",
+    "provenance": "Community mixed-precision export; graph bytes pinned to repository LFS hash. Not the official upstream ONNX artifact.",
+    "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "tokenizer_byte_identical_to_pinned_upstream": true
+  },
+  "native_runtime": {
+    "engine": "onnxruntime-node",
+    "version": "1.31.1",
+    "provider": "cpu",
+    "intra_op_threads": 3,
+    "scope": "Isolated evaluation package only. Existing Tract/BERT application backend does not support this graph/interface. No production dependency/default/download/release change."
+  },
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-retrieval-encoder-cases.json": "143c57de93c6b67863f92ad222851a91503dd010ace39121ad8bab9191bdfe93"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "frozen_observations_sha256": "bbe1d572a30c40a673ecd6a9b1ad6712bb0be539122671f7a5b8f75ff977e749",
+  "pair_input_sha256": "88738287af5093cdc8afd798c267072d48bf10c13afb5766885b0dff5fa7a5a0",
+  "instruction": "Given a coding task, retrieve a stored memory fact only if it directly answers the task or provides the required corrective action. Reject facts that are merely about the same broad topic.",
+  "instruction_template": "Official prefix + separately tokenized <Instruct>, <Query>, <Document> body + official assistant empty-think suffix; no padding, no silent clipping, research cap512 tokens.",
+  "score": "Last-position yes logit minus no logit. Probability is sigmoid(log_odds); labels come from pinned tokenizer. No generated text or pooled embeddings.",
+  "pool": "Reuse all previously frozen label-independent MiniLM primary pools, capped32 (actual maximum20, no truncation). No gold insertion or altered source facts.",
+  "admission": "Empty MiniLM results without query files only. Rank candidate source records by log_odds then UUID. Require runner-up, winning log_odds floor and top-minus-second log_odds margin floor. Append at most one winning record only when its actual native packet preview accepts it.",
+  "log_odds_grid": [-2, 0, 1, 2, 3, 4, 5, 6, 8, 10, 12],
+  "margin_grid": [0, 1, 2, 3, 4, 6, 8],
+  "policy": {
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_claim_age_hours": 36,
+    "minilm_threshold": 0.3,
+    "minilm_short_query_scale": 0.9166666666666666
+  },
+  "selection": "Original/fresh/new development only. Require unchanged per-record comparator AND no added positive IDs outside required source facts. Labels are scoring audits only, never admission features. Maximize safe complete-answer gains; ties higher log_odds then higher margin. Any candidate requires historical development then heldout and native application backend compatibility before production consideration.",
+  "reference_gate": "Before fixture inference, require finite bounded outputs and yes probability >0.5 for both official README positive pairs, <0.5 for their crossed negatives, correct ordering for each query. These are behavioral references; no independent numerical Q4 versus upstream PyTorch parity is claimed.",
+  "fallback": "On reference failure or no safe gain, reject and leave heldout unscored. Preserve all fixtures and gates.",
+  "execution": {
+    "registered_after_behavioral_reference_checks_before_fixture_inference": true,
+    "prefix_reuse": "Group exactly equal queries, compute exact common token prefix across their frozen candidate prompts. Prefill once; reuse its immutable float32 KV tensors with full attention length and absolute position offsets. No prefix or suffix clipping.",
+    "reference_equivalence_tolerance": 0.001,
+    "fixture_equivalence_audit": "After benchmark, rescore the first eight pair IDs in lexicographic SHA-256 order using full uncached prefill; require log_odds agreement within .001. Also audit threshold/rank boundaries within .001 before accepting a gain."
+  }
+}

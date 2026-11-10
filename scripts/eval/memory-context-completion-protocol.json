@@ -1,0 +1,28 @@
+{
+  "baseline": "60971d73fd61a8cbcf3cd232a0d5359ca653ef18",
+  "branch": "ltm-improvements-nov10-2026",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-context-completion-cases.json": "df6232c8ac8cc743f6fb43f3a3d2d86dff24dc1ae760a8eb3f40eb656a9ad513",
+    "scripts/eval/memory-context-completion-retention-cases.json": "5d983d776d3f59874d4fa0bb581a72327ee35fde814c8e714bf546f027171cba"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "selection": "Select on development, then replay every accepted historical policy view and exposed reserved cases. Preserve each delivered fact, required rank and exact negative packet identities. Keep cohorts, policies, token budgets and capacity controls separate.",
+  "target": "Lowest feasible hybrid groups: oversized title recall 18/32 development and protected-context retention 2/4 at 1000 tokens. Exclude impossible 15-fact/eight-slot controls from improvement selection.",
+  "hypotheses": [
+    "An incumbent canonical title whose claim exceeds the entire known packet allowance cannot provide complete title coverage. Permit an additional eligible compact title in an unprotected slot, retaining the oversized incumbent and all existing protected rank/full-delivery checks.",
+    "If that fails, investigate budget-safe ordering of optional title slots, without moving protected incumbents or accepting per-fact regressions."
+  ],
+  "policy": {
+    "threshold": 0.3,
+    "dimensions": 384,
+    "limit": 8,
+    "budgets": [1000, 2000],
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "constant_claim_age_hours": 36
+  },
+  "validation": "Broader tests stay skipped per user instruction; run native evaluation and relevant focused oversized-record contracts individually.",
+  "limitations": "Eight newly added source symbols and reused exposed prior incidents. New context fixtures are synthetic stress cases with seven/eight requested facts; no real-agent or general precision claim.",
+  "development_followup": "After head-slot and largest-displaced-record fallback placement gave no gain on the development 2/4 pressure group, remove both. Try a concise requested-title match explanation in place of redundant generic BM25 explanation for optional title additions; preserve all claims, evidence and the same packet guard. No reserved candidate outcomes were consulted."
+}

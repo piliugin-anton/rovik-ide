@@ -1,0 +1,47 @@
+{
+  "baseline": "7a28c691a3b14255d3d5b0c663c4b6c9f1f23f73",
+  "registered_before_fixture_scoring": true,
+  "model": {
+    "id": "BAAI/bge-small-en-v1.5",
+    "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+    "model_sha256": "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
+    "bytes": 133093490,
+    "dimensions": 384,
+    "pooling": "normalized unmasked first-token CLS, per official 1_Pooling config",
+    "provenance": "Official pinned float32 ONNX artifact and LFS SHA-256.",
+    "tokenizer_sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+  },
+  "views": {
+    "plain": {
+      "query_prefix": null,
+      "document_prefix": null
+    },
+    "instructed": {
+      "query_prefix": "Represent this sentence for searching relevant passages: ",
+      "document_prefix": ""
+    }
+  },
+  "threshold_grid": [0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.825, 0.85, 0.875, 0.9],
+  "margin_grid": [0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15],
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-retrieval-encoder-cases.json": "143c57de93c6b67863f92ad222851a91503dd010ace39121ad8bab9191bdfe93",
+    "scripts/eval/memory-bge-fresh-cases.json": "03c9769d3ef01525082805461375f0299d13769f854ce0df6790d425353df2a6"
+  },
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline.",
+  "policy": {
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_claim_age_hours": 36,
+    "minilm_threshold": 0.3,
+    "minilm_short_query_scale": 0.9166666666666666,
+    "bge_short_query_scale": 1,
+    "diagnostic_pool_limit": 32
+  },
+  "admission": "Only empty MiniLM results without query files. Rank eligible distinct BGE primary-index records by cosine/UUID and require a runner-up, absolute floor and top-versus-second cosine margin floor. Append at most the winner when the actual native MiniLM packet preview accepts it. No gold insertion, existing-result removal/reordering or aliases.",
+  "selection": "Original/fresh/new-encoder and fresh-BGE development only. Require unchanged per-record comparator and zero newly added positive IDs outside required source facts. Select greatest safe complete-answer gains; ties prefer plain view, then greater margin floor, then greater cosine floor. Check all historical development before candidate heldout. Existing exposed reserved cases are regressions only; fresh BGE heldout queries are the new unscored check. No heldout outcomes tune a policy.",
+  "compatibility": "Verify official pooling/tokenizer/model hashes and cross-check native Tract CLS vectors against native ONNX Runtime on nonfixture reference strings before fixture scoring; verify pinned MiniLM defaults against their existing reference.",
+  "scope": "Native-compatible model experiment. Keep production model/default/download/release unchanged unless a complete safe improvement justifies integration. No new runtime/dependency or model asset in CI."
+}

@@ -1,0 +1,16 @@
+{
+  "baseline": "2b2ff4a39e32eb8a0f71d8880862bac8e1724199",
+  "registered_after_initial_development": true,
+  "registered_before_followup_scoring": true,
+  "fixture": "scripts/eval/memory-episode-capture-cases.json",
+  "fixture_sha256": "1e352078041e1b42ce8f012dad1e5535f9d0100111ea229705422e840ffaef71",
+  "initial_rejection": {
+    "complete": "18/32 -> 32/32",
+    "negative_cases_changed": 11,
+    "previously_delivered_rank_losses": 6
+  },
+  "arm": "intent_episode",
+  "change": "Only replace the generic Requested task (not proof of implementation): heading with Intent only (not an implementation claim):. Preserve the exact same quoted task, legacy title and content, model, cutoffs, datasets, limits, budgets and rejection gates.",
+  "reason": "All history queries contain task and some contain requested/work. A generic indexed source-field heading can create lexical matches independently of the actual source description. Separate label effects from information restoration; do not add synonyms or edit queries.",
+  "selection": "Development only first; candidate must improve complete historical-episode delivery and retain all previously complete source episodes/ranks, all fixed source fields and exact negative IDs/order/delivery. Existing frozen fact suites retain the unchanged per-record comparator. Fresh BGE reserved queries are not used. Only after development passes may reserved capture queries be scored. A source-request gain does not establish corrective-action capture, repair quality or live-agent usefulness."
+}

@@ -361,6 +361,53 @@ async fn a_run_starts_with_the_projects_prior_work_in_its_prompt() {
 }
 
 #[tokio::test]
+async fn explicit_reference_metadata_supplies_file_hints_without_becoming_the_recall_task() {
+    let h = harness(&[
+        ("src/explicit.rs", "fn explicit() {}\n"),
+        ("src/open.rs", "fn open() {}\n"),
+    ])
+    .await;
+    let title = "Zanzibar ownership constraint";
+    remember_verified(
+        &h,
+        title,
+        "Retain per-order token ownership.",
+        &["src/explicit.rs"],
+    );
+    let noise = "Zanzibar editor wrapper distraction";
+    remember_verified(
+        &h,
+        noise,
+        "Active editor context keeps the cursor at a line.",
+        &["src/open.rs"],
+    );
+    let typed = "Locate the frobnicator";
+    let wire = format!(
+        "[Active editor context — file src/open.rs (rust); cursor at line 1, col 1.]\n\nThe user explicitly referenced these project files:\n- src/explicit.rs\n\n{typed}"
+    );
+    let (url, seen) = model(vec![Reply::Text("Done.")]).await;
+    let start = StartKind::Send {
+        message: UserMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: typed.to_string(),
+            meta: Some(json!({"sentContent":wire})),
+            attachments: Vec::new(),
+        },
+    };
+    h.start(h.request(&url, start, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let first = seen.lock().unwrap()[0].to_string();
+    assert!(
+        first.contains(title),
+        "file metadata was not used for recall: {first}"
+    );
+    assert!(
+        !first.contains(noise),
+        "editor wrapper words became recall subjects: {first}"
+    );
+}
+
+#[tokio::test]
 async fn an_edit_is_told_what_was_remembered_about_its_file() {
     let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
     let title = "src/a.rs wants a trailing blank line";

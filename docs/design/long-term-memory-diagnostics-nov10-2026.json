@@ -1,0 +1,3884 @@
+{
+  "baseline": "3cf69f0692d7986f1dc2e1d2caa97e6de4943923",
+  "mode": "Read-only development diagnosis; no threshold/representation/fixture tuning.",
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-cause-field-cases.json": "6806c6d4a85a5de2a0feb7f614d3f74d7ccb193ab6c848fee2d46f9a4d6defe9",
+    "scripts/eval/memory-long-failure-cases.json": "87b8119ce5ce2ee2820d3c3f7049ab9aa4e8ffcdc525fdd2a3772824500e8924",
+    "scripts/eval/memory-title-fit-cases.json": "8de04a699360f170ec88e63078f9d7491625198e4db402cef8eb5df2dd3a8a88",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a"
+  },
+  "diagnostic_policy_views": 272,
+  "native_policy_views_with_on_off_comparison": 544,
+  "accepted_recall_change": false,
+  "candidate_reserved_scored": false,
+  "semantics": "Post-retrieval read-only probes of actual model/claim-hash-bound index rows. Includes negative cosine values, current eligibility and exact-copy representative ranks, task/failure query views, primary/conclusion index views, best nonrequired competitors and selected/full packet state. Probe availability is counterfactual; it does not prove a guarded supplementary lookup or focused planner ran.",
+  "policy": {
+    "model_revision": "chroma-minilm-l6-v2-913d7300-title-claim-native-v1",
+    "dimensions": 384,
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "limit": 8,
+    "memory_budget": 1000,
+    "constant_claim_age_hours": 36
+  },
+  "validation": {
+    "evaluator_tests": 19,
+    "focused_example_clippy": "passed with warnings denied",
+    "native_build": "passed",
+    "diagnostics_off_on_and_previous_baselines": "All 272 case rows retain every legacy field except elapsed timings. Includes non-timing telemetry. Existing per-record comparator passes.",
+    "production_runtime_source": "Unchanged. Only evaluator code and documentation changed.",
+    "broader_tests": "Remain skipped under user instruction; no broad crate/core/frontend suite or stress/reserved replay was run."
+  },
+  "limitations": [
+    "Exposed synthetic incidents and correlated question variants, not generalization, precision or real-agent quality evidence.",
+    "Primary/conclusion ranks describe filtered distinct semantic candidates. The actual focused identifier planner and its packet rollback are not traced; selected match reasons identify records added by those paths.",
+    "Failure-query vectors are diagnostic probes even when normal retrieval would skip the guarded failure lookup.",
+    "Best nonrequired competitors can be useful context; they are not automatically false positives.",
+    "Opt-in diagnostics adds query probes and index scans. Timing is captured before diagnostic collection but cache warming can affect later cases; these runs are not latency benchmarks."
+  ],
+  "source_sha256": {
+    "evaluator": "0b6fb4601ec5ec2d18b8b641c94c8d4dde6bf19268ef4d518d5def495960d53b",
+    "diagnostics": "6593a8a3a802a723c34a3c032942eba35d5ee4e49b9019bd22b17870d34aed4b"
+  },
+  "groups": [
+    {
+      "key": "original",
+      "split": "development",
+      "cases": 110,
+      "positive": {
+        "complete": 65,
+        "total": 70
+      },
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "audit": {
+        "safe": true,
+        "cases": 110,
+        "gains": [],
+        "errors": []
+      },
+      "identical_legacy_case_fields_including_nontiming_telemetry": true,
+      "artifact_sha256": {
+        "prior": "07c50555a4dad18286773529b6216721e32188f8666fb2cbe3a6ecdc650637f3",
+        "normal": "6361da83b2efd884a4063be386d4ba33e4257c5d37949bba916456759cd76f05",
+        "diagnostic": "b1986a9d5569e07edad69ebbda77ba97a0e2485f28a7d2732639e151d49b0f23"
+      },
+      "misses": [
+        {
+          "id": "pagination-implicit",
+          "incident": "pagination",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 0,
+          "packet_tokens": 16,
+          "facts": [
+            {
+              "claim_hash": "fe82f485f2bc6cf5",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000d",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "pagination"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.2307073175907135,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "ranking"
+                },
+                {
+                  "cosine": 0.17927789688110352,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "title": "retention"
+                },
+                {
+                  "cosine": 0.11220316588878632,
+                  "id": "00000000-0000-0000-0000-00000000000f",
+                  "title": "provenance"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.1781797558069229,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 3,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.05252756178379059,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000d",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "worktree-implicit",
+          "incident": "worktree",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 62,
+          "facts": [
+            {
+              "claim_hash": "0129d47feee828a9",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000015",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "worktree"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "eea73540e8399838",
+              "claim_tokens": 13,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "rank": 1,
+              "reason": "semantic cosine 0.412",
+              "title": "generation"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.41212204098701477,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "generation"
+                },
+                {
+                  "cosine": 0.2920037806034088,
+                  "id": "00000000-0000-0000-0000-000000000012",
+                  "title": "retry"
+                },
+                {
+                  "cosine": 0.28850534558296204,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "title": "deletion"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.1561100333929062,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 10,
+                  "id": "00000000-0000-0000-0000-000000000015",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.2560120075941086,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000015",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000015",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "provenance-implicit",
+          "incident": "provenance",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 67,
+          "facts": [
+            {
+              "claim_hash": "42488383c7c34319",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000f",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "provenance"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "6d883068e945c50a",
+              "claim_tokens": 13,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "deduplication"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.27245819568634033,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "deduplication"
+                },
+                {
+                  "cosine": 0.1976398229598999,
+                  "id": "00000000-0000-0000-0000-000000000014",
+                  "title": "verification"
+                },
+                {
+                  "cosine": 0.19704757630825043,
+                  "id": "00000000-0000-0000-0000-000000000007",
+                  "title": "fallback"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.20476624369621277,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 2,
+                  "id": "00000000-0000-0000-0000-00000000000f",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.06769195199012756,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000f",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000f",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "fallback-implicit",
+          "incident": "fallback",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 65,
+          "facts": [
+            {
+              "claim_hash": "9b032bccd634eb64",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "fallback"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "e938563cf6d7cdc3",
+              "claim_tokens": 12,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000b",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "locking"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.23144763708114624,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "title": "locking"
+                },
+                {
+                  "cosine": 0.21249565482139587,
+                  "id": "00000000-0000-0000-0000-000000000012",
+                  "title": "retry"
+                },
+                {
+                  "cosine": 0.2080812305212021,
+                  "id": "00000000-0000-0000-0000-00000000000a",
+                  "title": "isolation"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.14732635021209717,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 5,
+                  "id": "00000000-0000-0000-0000-000000000007",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.08412128686904907,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000007",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000007",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "generation-implicit",
+          "incident": "generation",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 0,
+          "packet_tokens": 16,
+          "facts": [
+            {
+              "claim_hash": "eea73540e8399838",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "generation"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.2474868893623352,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "title": "retention"
+                },
+                {
+                  "cosine": 0.1720973253250122,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "title": "deletion"
+                },
+                {
+                  "cosine": 0.1495959460735321,
+                  "id": "00000000-0000-0000-0000-000000000015",
+                  "title": "worktree"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.16890275478363037,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 3,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.07858413457870483,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000009",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "cases": 45,
+      "positive": {
+        "complete": 27,
+        "total": 30
+      },
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "audit": {
+        "safe": true,
+        "cases": 45,
+        "gains": [],
+        "errors": []
+      },
+      "identical_legacy_case_fields_including_nontiming_telemetry": true,
+      "artifact_sha256": {
+        "prior": "b7819391418f15ccf138e7b52e5df7d09d63a41efe60d5d020fdbb28e5a62674",
+        "normal": "8c64e4eb54a40e7ee17e031bccd4c9d4a471c03782a9db1ac23f018c8ffeb602",
+        "diagnostic": "cd71763fdda2f3c8122a3628a6e8e3d4889c19cd02bafefe64a9df1cc8a1f750"
+      },
+      "misses": [
+        {
+          "id": "cancellation-implicit",
+          "incident": "cancellation",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 0,
+          "packet_tokens": 16,
+          "facts": [
+            {
+              "claim_hash": "be6f5f210a8658ec",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "cancellation"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.2880224883556366,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "title": "resource-cleanup"
+                },
+                {
+                  "cosine": 0.18663109838962555,
+                  "id": "00000000-0000-0000-0000-000000000002",
+                  "title": "atomic-save"
+                },
+                {
+                  "cosine": 0.14974159002304077,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.2011766880750656,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 2,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.08684580028057098,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000003",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "rate-limits-implicit",
+          "incident": "rate-limits",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 76,
+          "facts": [
+            {
+              "claim_hash": "383eda49b3342ef3",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000d",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "rate-limits"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "cc4d0e08b98253ac",
+              "claim_tokens": 19,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "rank": 1,
+              "reason": "BM25 lexical match, 2 task-term matches, semantic match",
+              "title": "http-cache"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.3041703402996063,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "http-cache"
+                },
+                {
+                  "cosine": 0.19411781430244446,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "title": "resource-cleanup"
+                },
+                {
+                  "cosine": 0.1874859482049942,
+                  "id": "00000000-0000-0000-0000-000000000007",
+                  "title": "csrf"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.22230340540409088,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 2,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.08186693489551544,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000d",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "optimistic-locking-implicit",
+          "incident": "optimistic-locking",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 3,
+          "packet_tokens": 201,
+          "facts": [
+            {
+              "claim_hash": "2a74b375c84cbaef",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000b",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "optimistic-locking"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "7e87bb119ff59d6a",
+              "claim_tokens": 20,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000013",
+              "rank": 1,
+              "reason": "BM25 lexical match, semantic match",
+              "title": "unicode-offsets"
+            },
+            {
+              "claim_hash": "94583a0829176aff",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000f",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "shell-arguments"
+            },
+            {
+              "claim_hash": "cb4d2597cd1fd88c",
+              "claim_tokens": 16,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000002",
+              "rank": 3,
+              "reason": "semantic cosine 0.317",
+              "title": "atomic-save"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.36168235540390015,
+                  "id": "00000000-0000-0000-0000-000000000013",
+                  "title": "unicode-offsets"
+                },
+                {
+                  "cosine": 0.3167436718940735,
+                  "id": "00000000-0000-0000-0000-000000000002",
+                  "title": "atomic-save"
+                },
+                {
+                  "cosine": 0.23753124475479126,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "clipboard"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.21009010076522827,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 5,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.15159225463867188,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000b",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "cause",
+      "split": "development",
+      "cases": 20,
+      "positive": {
+        "complete": 3,
+        "total": 12
+      },
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 20,
+        "delivered_recall": 0.25,
+        "mrr": 0.15922619047619047,
+        "ndcg_at_8": 0.239576733680564,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 0.5
+      },
+      "audit": {
+        "safe": true,
+        "cases": 20,
+        "gains": [],
+        "errors": []
+      },
+      "identical_legacy_case_fields_including_nontiming_telemetry": true,
+      "artifact_sha256": {
+        "prior": "62616dff99da01472314d6c86cef2955815a812671f4df683f4617c04d2926fc",
+        "normal": "58dfd349f96f32cb1508d81cee98cac7e58df7e5705cdf567d8671c501d4d678",
+        "diagnostic": "d346c7a7510b8ac55838ad5790d59ed48847957c5f675df8b3cf9ea5f6ec5efa"
+      },
+      "misses": [
+        {
+          "id": "cause-packing-hidden-cause",
+          "incident": "packing",
+          "category": "hidden-cause",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 996,
+          "facts": [
+            {
+              "claim_hash": "172a1a75e859625b",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "lexical_rank": 7,
+              "selected_rank": 7,
+              "stage": "selected_not_full",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "09684125c3af3cfb",
+              "claim_tokens": 198,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 1,
+              "reason": "BM25 lexical match, 4 task-term matches",
+              "title": "Recorded finding leader"
+            },
+            {
+              "claim_hash": "dc9b41c1509e040f",
+              "claim_tokens": 198,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 2,
+              "reason": "BM25 lexical match, 4 task-term matches",
+              "title": "Recorded finding clones"
+            },
+            {
+              "claim_hash": "6bd17a431dd38d42",
+              "claim_tokens": 192,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000002",
+              "rank": 3,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding clock"
+            },
+            {
+              "claim_hash": "9df18d516e7039cd",
+              "claim_tokens": 187,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000004",
+              "rank": 4,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding envelope"
+            },
+            {
+              "claim_hash": "19eb7e8676df3f5c",
+              "claim_tokens": 210,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 5,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding hints"
+            },
+            {
+              "claim_hash": "5fcb7a1dd968f7c2",
+              "claim_tokens": 188,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000006",
+              "rank": 6,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding indexing"
+            },
+            {
+              "claim_hash": "172a1a75e859625b",
+              "claim_tokens": 187,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 7,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding packing"
+            },
+            {
+              "claim_hash": "34ffc9a64a22e7c3",
+              "claim_tokens": 210,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "rank": 8,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding pools"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.1968984752893448,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                },
+                {
+                  "cosine": 0.18024180829524994,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                },
+                {
+                  "cosine": 0.17285406589508057,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "title": "Recorded finding clones"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.14691022038459778,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 7,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.04998825490474701,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000008",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.3182893395423889,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 1,
+              "index_view": "conclusion",
+              "indexed_records": 1,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-packing-paragraph-control",
+          "incident": "packing",
+          "category": "paragraph-control",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 996,
+          "facts": [
+            {
+              "claim_hash": "172a1a75e859625b",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "lexical_rank": 7,
+              "selected_rank": 7,
+              "stage": "selected_not_full",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "09684125c3af3cfb",
+              "claim_tokens": 198,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 1,
+              "reason": "BM25 lexical match, 4 task-term matches",
+              "title": "Recorded finding leader"
+            },
+            {
+              "claim_hash": "dc9b41c1509e040f",
+              "claim_tokens": 198,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 2,
+              "reason": "BM25 lexical match, 4 task-term matches",
+              "title": "Recorded finding clones"
+            },
+            {
+              "claim_hash": "6bd17a431dd38d42",
+              "claim_tokens": 192,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000002",
+              "rank": 3,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding clock"
+            },
+            {
+              "claim_hash": "9df18d516e7039cd",
+              "claim_tokens": 187,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000004",
+              "rank": 4,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding envelope"
+            },
+            {
+              "claim_hash": "19eb7e8676df3f5c",
+              "claim_tokens": 210,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 5,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding hints"
+            },
+            {
+              "claim_hash": "5fcb7a1dd968f7c2",
+              "claim_tokens": 188,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000006",
+              "rank": 6,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding indexing"
+            },
+            {
+              "claim_hash": "172a1a75e859625b",
+              "claim_tokens": 187,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 7,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding packing"
+            },
+            {
+              "claim_hash": "34ffc9a64a22e7c3",
+              "claim_tokens": 210,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "rank": 8,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding pools"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.1968984752893448,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                },
+                {
+                  "cosine": 0.18024180829524994,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                },
+                {
+                  "cosine": 0.17285406589508057,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "title": "Recorded finding clones"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.14691022038459778,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 7,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.04998825490474701,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000008",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.3182893395423889,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 2,
+              "index_view": "conclusion",
+              "indexed_records": 2,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.19228756427764893,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 2,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.12600177526474,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000008",
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-packing-short-control",
+          "incident": "packing",
+          "category": "short-control",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 996,
+          "facts": [
+            {
+              "claim_hash": "e4f31c395d5d46a2",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "lexical_rank": 8,
+              "selected_rank": 8,
+              "stage": "selected_not_full",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "09684125c3af3cfb",
+              "claim_tokens": 198,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 1,
+              "reason": "BM25 lexical match, 4 task-term matches",
+              "title": "Recorded finding leader"
+            },
+            {
+              "claim_hash": "dc9b41c1509e040f",
+              "claim_tokens": 198,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 2,
+              "reason": "BM25 lexical match, 4 task-term matches",
+              "title": "Recorded finding clones"
+            },
+            {
+              "claim_hash": "6bd17a431dd38d42",
+              "claim_tokens": 192,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000002",
+              "rank": 3,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding clock"
+            },
+            {
+              "claim_hash": "9df18d516e7039cd",
+              "claim_tokens": 187,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000004",
+              "rank": 4,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding envelope"
+            },
+            {
+              "claim_hash": "19eb7e8676df3f5c",
+              "claim_tokens": 210,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 5,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding hints"
+            },
+            {
+              "claim_hash": "5fcb7a1dd968f7c2",
+              "claim_tokens": 188,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000006",
+              "rank": 6,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding indexing"
+            },
+            {
+              "claim_hash": "34ffc9a64a22e7c3",
+              "claim_tokens": 210,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "rank": 7,
+              "reason": "BM25 lexical match, 3 task-term matches",
+              "title": "Recorded finding pools"
+            },
+            {
+              "claim_hash": "e4f31c395d5d46a2",
+              "claim_tokens": 16,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 8,
+              "reason": "BM25 lexical match, 2 task-term matches",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.1968984752893448,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                },
+                {
+                  "cosine": 0.18024180829524994,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                },
+                {
+                  "cosine": 0.17285406589508057,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "title": "Recorded finding clones"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.14680670201778412,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 7,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.05009177327156067,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000008",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.3182893395423889,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 1,
+              "index_view": "conclusion",
+              "indexed_records": 1,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-indexing-hidden-cause",
+          "incident": "indexing",
+          "category": "hidden-cause",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 239,
+          "facts": [
+            {
+              "claim_hash": "5fcb7a1dd968f7c2",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000006",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Recorded finding indexing"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "172a1a75e859625b",
+              "claim_tokens": 187,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 1,
+              "reason": "BM25 lexical match, 2 task-term matches",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.09665273874998093,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "title": "Recorded finding clones"
+                },
+                {
+                  "cosine": 0.09354263544082642,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "Recorded finding pools"
+                },
+                {
+                  "cosine": 0.07806369662284851,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.10732246935367584,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 1,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": 0.010669730603694916,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000006",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.21110861003398895,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 1,
+              "index_view": "conclusion",
+              "indexed_records": 1,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-indexing-paragraph-control",
+          "incident": "indexing",
+          "category": "paragraph-control",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 239,
+          "facts": [
+            {
+              "claim_hash": "5fcb7a1dd968f7c2",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000006",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Recorded finding indexing"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "172a1a75e859625b",
+              "claim_tokens": 187,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 1,
+              "reason": "BM25 lexical match, 2 task-term matches",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.09665273874998093,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "title": "Recorded finding clones"
+                },
+                {
+                  "cosine": 0.09354263544082642,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "Recorded finding pools"
+                },
+                {
+                  "cosine": 0.07806369662284851,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.10732246935367584,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 1,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": 0.010669730603694916,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000006",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.21110861003398895,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 2,
+              "index_view": "conclusion",
+              "indexed_records": 2,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.1736527681350708,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 2,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.03745584189891815,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000006",
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-indexing-short-control",
+          "incident": "indexing",
+          "category": "short-control",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 239,
+          "facts": [
+            {
+              "claim_hash": "72372ded6989b00d",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000006",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Recorded finding indexing"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "172a1a75e859625b",
+              "claim_tokens": 187,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 1,
+              "reason": "BM25 lexical match, 2 task-term matches",
+              "title": "Recorded finding packing"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.09665273874998093,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "title": "Recorded finding clones"
+                },
+                {
+                  "cosine": 0.09354263544082642,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "Recorded finding pools"
+                },
+                {
+                  "cosine": 0.07806369662284851,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.18134380877017975,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 1,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": 0.08469107002019882,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000006",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.21110861003398895,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 1,
+              "index_view": "conclusion",
+              "indexed_records": 1,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000006",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-clones-hidden-cause",
+          "incident": "clones",
+          "category": "hidden-cause",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 261,
+          "facts": [
+            {
+              "claim_hash": "dc9b41c1509e040f",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Recorded finding clones"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "19eb7e8676df3f5c",
+              "claim_tokens": 210,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "Recorded finding hints"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.02595285326242447,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                },
+                {
+                  "cosine": 0.01681525819003582,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "Recorded finding packing"
+                },
+                {
+                  "cosine": 0.0072266655042767525,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "Recorded finding pools"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": -0.01118939183652401,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 6,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.03714224509894848,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000003",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.04601046070456505,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 1,
+              "index_view": "conclusion",
+              "indexed_records": 1,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-clones-paragraph-control",
+          "incident": "clones",
+          "category": "paragraph-control",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 261,
+          "facts": [
+            {
+              "claim_hash": "dc9b41c1509e040f",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Recorded finding clones"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "19eb7e8676df3f5c",
+              "claim_tokens": 210,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "Recorded finding hints"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.02595285326242447,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                },
+                {
+                  "cosine": 0.01681525819003582,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "Recorded finding packing"
+                },
+                {
+                  "cosine": 0.0072266655042767525,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "Recorded finding pools"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": -0.01118939183652401,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 6,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.03714224509894848,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000003",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.04601046070456505,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 2,
+              "index_view": "conclusion",
+              "indexed_records": 2,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.21376332640647888,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 1,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": 0.16775286570191383,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000003",
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cause-clones-short-control",
+          "incident": "clones",
+          "category": "short-control",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 1,
+          "packet_tokens": 261,
+          "facts": [
+            {
+              "claim_hash": "11c74a22afc6d188",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Recorded finding clones"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "19eb7e8676df3f5c",
+              "claim_tokens": 210,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000005",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "Recorded finding hints"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.02595285326242447,
+                  "id": "00000000-0000-0000-0000-000000000004",
+                  "title": "Recorded finding envelope"
+                },
+                {
+                  "cosine": 0.01681525819003582,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "Recorded finding packing"
+                },
+                {
+                  "cosine": 0.0072266655042767525,
+                  "id": "00000000-0000-0000-0000-000000000009",
+                  "title": "Recorded finding pools"
+                }
+              ],
+              "eligible_distinct_records": 8,
+              "index_view": "primary",
+              "indexed_records": 8,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.12288644164800644,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 1,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": 0.09693358838558197,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000003",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.04601046070456505,
+                  "id": "00000000-0000-0000-0000-000000000005",
+                  "title": "Recorded finding hints"
+                }
+              ],
+              "eligible_distinct_records": 1,
+              "index_view": "conclusion",
+              "indexed_records": 1,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000003",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "cases": 45,
+      "positive": {
+        "complete": 26,
+        "total": 30
+      },
+      "metrics": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "audit": {
+        "safe": true,
+        "cases": 45,
+        "gains": [],
+        "errors": []
+      },
+      "identical_legacy_case_fields_including_nontiming_telemetry": true,
+      "artifact_sha256": {
+        "prior": "223c77bddbb4d904c22cbdcdebf2142d26103ad387893f4098c8b7a76da2e145",
+        "normal": "e81c689d011f0ba84f1682be4170024f8afbf4176fe2a3170b1f3d2215a3cfdb",
+        "diagnostic": "919b6487d948ab364c8cf086df6aa69f9cd094a44f76341a483433ec390bb69e"
+      },
+      "misses": [
+        {
+          "id": "long-failure-timezone-implicit",
+          "incident": "timezone",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 527,
+          "facts": [
+            {
+              "claim_hash": "2f51c414c3671d5b",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000011",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "timezone"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "b9b65fc0bc39b052",
+              "claim_tokens": 20,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000014",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, 1 failure-term matches",
+              "title": "websocket"
+            },
+            {
+              "claim_hash": "38eef71b8dd56357",
+              "claim_tokens": 15,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "pagination-order"
+            },
+            {
+              "claim_hash": "94583a0829176aff",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000f",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "shell-arguments"
+            },
+            {
+              "claim_hash": "be6f5f210a8658ec",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 4,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "cancellation"
+            },
+            {
+              "claim_hash": "2e2341e2f3cddce5",
+              "claim_tokens": 19,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000012",
+              "rank": 5,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "transactional-outbox"
+            },
+            {
+              "claim_hash": "cb4d2597cd1fd88c",
+              "claim_tokens": 16,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000002",
+              "rank": 6,
+              "reason": "BM25 lexical match",
+              "title": "atomic-save"
+            },
+            {
+              "claim_hash": "0c1e63ef7e55ad25",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 7,
+              "reason": "BM25 lexical match",
+              "title": "filesystem-watch"
+            },
+            {
+              "claim_hash": "91cef56fc57fbcca",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 8,
+              "reason": "BM25 lexical match",
+              "title": "csrf"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.24519729614257812,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.20697665214538574,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20555640757083893,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "title": "optimistic-locking"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.08126312494277954,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 13,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.16393417119979858,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000011",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.28429466485977173,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.21293015778064728,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20870299637317657,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "title": "resource-cleanup"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": 0.04767625406384468,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 17,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.23661841079592705,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000011",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "long-failure-rate-limits-implicit",
+          "incident": "rate-limits",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 540,
+          "facts": [
+            {
+              "claim_hash": "383eda49b3342ef3",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000d",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "rate-limits"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "cc4d0e08b98253ac",
+              "claim_tokens": 19,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000009",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, 1 failure-term matches",
+              "title": "http-cache"
+            },
+            {
+              "claim_hash": "b9b65fc0bc39b052",
+              "claim_tokens": 20,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000014",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches, 1 failure-term matches",
+              "title": "websocket"
+            },
+            {
+              "claim_hash": "38eef71b8dd56357",
+              "claim_tokens": 15,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "pagination-order"
+            },
+            {
+              "claim_hash": "94583a0829176aff",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000f",
+              "rank": 4,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "shell-arguments"
+            },
+            {
+              "claim_hash": "be6f5f210a8658ec",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 5,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "cancellation"
+            },
+            {
+              "claim_hash": "2e2341e2f3cddce5",
+              "claim_tokens": 19,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000012",
+              "rank": 6,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "transactional-outbox"
+            },
+            {
+              "claim_hash": "0c1e63ef7e55ad25",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 7,
+              "reason": "BM25 lexical match",
+              "title": "filesystem-watch"
+            },
+            {
+              "claim_hash": "91cef56fc57fbcca",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 8,
+              "reason": "BM25 lexical match",
+              "title": "csrf"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.24519729614257812,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.20697665214538574,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20555640757083893,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "title": "optimistic-locking"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.20071589946746826,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 5,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.04448139667510986,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000d",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.28429466485977173,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.21293015778064728,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20870299637317657,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "title": "resource-cleanup"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": 0.16909022629261017,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 6,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.11520443856716156,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000d",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000d",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "long-failure-optimistic-locking-implicit",
+          "incident": "optimistic-locking",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 532,
+          "facts": [
+            {
+              "claim_hash": "2a74b375c84cbaef",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000b",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "optimistic-locking"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "94583a0829176aff",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000f",
+              "rank": 1,
+              "reason": "BM25 lexical match, 2 failure-term matches",
+              "title": "shell-arguments"
+            },
+            {
+              "claim_hash": "b9b65fc0bc39b052",
+              "claim_tokens": 20,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000014",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches, 1 failure-term matches",
+              "title": "websocket"
+            },
+            {
+              "claim_hash": "38eef71b8dd56357",
+              "claim_tokens": 15,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "pagination-order"
+            },
+            {
+              "claim_hash": "be6f5f210a8658ec",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 4,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "cancellation"
+            },
+            {
+              "claim_hash": "2e2341e2f3cddce5",
+              "claim_tokens": 19,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000012",
+              "rank": 5,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "transactional-outbox"
+            },
+            {
+              "claim_hash": "7e87bb119ff59d6a",
+              "claim_tokens": 20,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000013",
+              "rank": 6,
+              "reason": "BM25 lexical match",
+              "title": "unicode-offsets"
+            },
+            {
+              "claim_hash": "0c1e63ef7e55ad25",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 7,
+              "reason": "BM25 lexical match",
+              "title": "filesystem-watch"
+            },
+            {
+              "claim_hash": "91cef56fc57fbcca",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 8,
+              "reason": "BM25 lexical match",
+              "title": "csrf"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.24519729614257812,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.20697665214538574,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20196397602558136,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "title": "resource-cleanup"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.20555640757083893,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 3,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.0396408885717392,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000b",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.28429466485977173,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.21293015778064728,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20870299637317657,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "title": "resource-cleanup"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": 0.17438924312591553,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 5,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.1099054217338562,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000b",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "long-failure-resource-cleanup-implicit",
+          "incident": "resource-cleanup",
+          "category": "implicit",
+          "required_count": 1,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 531,
+          "facts": [
+            {
+              "claim_hash": "0a51c0d0306997da",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000000e",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "resource-cleanup"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "b9b65fc0bc39b052",
+              "claim_tokens": 20,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000014",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, 1 failure-term matches",
+              "title": "websocket"
+            },
+            {
+              "claim_hash": "38eef71b8dd56357",
+              "claim_tokens": 15,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "pagination-order"
+            },
+            {
+              "claim_hash": "383eda49b3342ef3",
+              "claim_tokens": 14,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000d",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "rate-limits"
+            },
+            {
+              "claim_hash": "94583a0829176aff",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000f",
+              "rank": 4,
+              "reason": "BM25 lexical match, 1 failure-term matches",
+              "title": "shell-arguments"
+            },
+            {
+              "claim_hash": "be6f5f210a8658ec",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000003",
+              "rank": 5,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "cancellation"
+            },
+            {
+              "claim_hash": "2e2341e2f3cddce5",
+              "claim_tokens": 19,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000012",
+              "rank": 6,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "transactional-outbox"
+            },
+            {
+              "claim_hash": "0c1e63ef7e55ad25",
+              "claim_tokens": 18,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000008",
+              "rank": 7,
+              "reason": "BM25 lexical match",
+              "title": "filesystem-watch"
+            },
+            {
+              "claim_hash": "91cef56fc57fbcca",
+              "claim_tokens": 21,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000007",
+              "rank": 8,
+              "reason": "BM25 lexical match",
+              "title": "csrf"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.24519729614257812,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.20697665214538574,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.20555640757083893,
+                  "id": "00000000-0000-0000-0000-00000000000b",
+                  "title": "optimistic-locking"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.20196397602558136,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 4,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.043233320116996765,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000e",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.28429466485977173,
+                  "id": "00000000-0000-0000-0000-000000000008",
+                  "title": "filesystem-watch"
+                },
+                {
+                  "cosine": 0.21293015778064728,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "symlink-loop"
+                },
+                {
+                  "cosine": 0.18052393198013306,
+                  "id": "00000000-0000-0000-0000-000000000014",
+                  "title": "websocket"
+                }
+              ],
+              "eligible_distinct_records": 20,
+              "index_view": "primary",
+              "indexed_records": 20,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": 0.20870299637317657,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": 3,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.07559166848659515,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-00000000000e",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "failure_probe",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000000e",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "fit",
+      "split": "development",
+      "cases": 52,
+      "positive": {
+        "complete": 28,
+        "total": 32
+      },
+      "metrics": {
+        "candidate_recall": 0.875,
+        "cases": 52,
+        "delivered_recall": 0.875,
+        "mrr": 0.19825148809523813,
+        "ndcg_at_8": 0.35578079873603075,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "audit": {
+        "safe": true,
+        "cases": 52,
+        "gains": [],
+        "errors": []
+      },
+      "identical_legacy_case_fields_including_nontiming_telemetry": true,
+      "artifact_sha256": {
+        "prior": "cf34158771c876202d52b79a6bd368f0902d34d601b89a31925428a235d93ea2",
+        "normal": "c2381aed80e9dc0206dabe83c5fcad001e68beb90152e92759db3ae1e9f8fcb3",
+        "diagnostic": "e043d692b0629ab060357d2abe7bd9072312046c0ed68b2ed8f6f6d139db6e66"
+      },
+      "misses": [
+        {
+          "id": "title-fit-OnnxMiniLm-four",
+          "incident": "OnnxMiniLm",
+          "category": "four",
+          "required_count": 4,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 523,
+          "facts": [
+            {
+              "claim_hash": "931c7628fb0e8e31",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000021",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "ONNX Mini LM"
+            },
+            {
+              "claim_hash": "2a5c224fc600eb59",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002e",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Semantic index"
+            },
+            {
+              "claim_hash": "8fae814f0d257d58",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000029",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Retrieval weights"
+            },
+            {
+              "claim_hash": "89b5861a5bc68361",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000028",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Retrieval telemetry"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "e95b8e2eb4b265cd",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 1"
+            },
+            {
+              "claim_hash": "081a3bb16d484585",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000010",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 5"
+            },
+            {
+              "claim_hash": "dc871dee47a5ac91",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000e",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 3"
+            },
+            {
+              "claim_hash": "b8e702d5389a6884",
+              "claim_tokens": 4280,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000026",
+              "rank": 4,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Telemetry"
+            },
+            {
+              "claim_hash": "07999643a2cbf49a",
+              "claim_tokens": 4070,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000027",
+              "rank": 5,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Weights"
+            },
+            {
+              "claim_hash": "d56e44ced443aa71",
+              "claim_tokens": 3755,
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002d",
+              "rank": 6,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Semantic Index"
+            },
+            {
+              "claim_hash": "2ca6782757fc1184",
+              "claim_tokens": 3545,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000022",
+              "rank": 7,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Onnx Mini Lm"
+            },
+            {
+              "claim_hash": "e0aa45d1959e375a",
+              "claim_tokens": 17,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000002f",
+              "rank": 8,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "crowding"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.5057269930839539,
+                  "id": "00000000-0000-0000-0000-000000000012",
+                  "title": "Crowding observation 7"
+                },
+                {
+                  "cosine": 0.5027030110359192,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "Crowding observation 5"
+                },
+                {
+                  "cosine": 0.5009916424751282,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "title": "Crowding observation 6"
+                }
+              ],
+              "eligible_distinct_records": 30,
+              "index_view": "primary",
+              "indexed_records": 54,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.2837793827056885,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 17,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.22194761037826538,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000021",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.34853997826576233,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 12,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.15718701481819153,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-00000000002e",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.4743739664554596,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 9,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.03135302662849426,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000029",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.25924965739250183,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 18,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.24647733569145203,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000028",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "title-fit-SemanticIndex-four",
+          "incident": "SemanticIndex",
+          "category": "four",
+          "required_count": 4,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 523,
+          "facts": [
+            {
+              "claim_hash": "2a5c224fc600eb59",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002e",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Semantic index"
+            },
+            {
+              "claim_hash": "931c7628fb0e8e31",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000021",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "ONNX Mini LM"
+            },
+            {
+              "claim_hash": "8fae814f0d257d58",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000029",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Retrieval weights"
+            },
+            {
+              "claim_hash": "89b5861a5bc68361",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000028",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Retrieval telemetry"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "e95b8e2eb4b265cd",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 1"
+            },
+            {
+              "claim_hash": "081a3bb16d484585",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000010",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 5"
+            },
+            {
+              "claim_hash": "dc871dee47a5ac91",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000e",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 3"
+            },
+            {
+              "claim_hash": "b8e702d5389a6884",
+              "claim_tokens": 4280,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000026",
+              "rank": 4,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Telemetry"
+            },
+            {
+              "claim_hash": "07999643a2cbf49a",
+              "claim_tokens": 4070,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000027",
+              "rank": 5,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Weights"
+            },
+            {
+              "claim_hash": "2ca6782757fc1184",
+              "claim_tokens": 3545,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000022",
+              "rank": 6,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Onnx Mini Lm"
+            },
+            {
+              "claim_hash": "d56e44ced443aa71",
+              "claim_tokens": 3755,
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002d",
+              "rank": 7,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Semantic Index"
+            },
+            {
+              "claim_hash": "e0aa45d1959e375a",
+              "claim_tokens": 17,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000002f",
+              "rank": 8,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "crowding"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.5039708018302917,
+                  "id": "00000000-0000-0000-0000-000000000012",
+                  "title": "Crowding observation 7"
+                },
+                {
+                  "cosine": 0.5028533339500427,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "Crowding observation 5"
+                },
+                {
+                  "cosine": 0.5016610026359558,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "title": "Crowding observation 6"
+                }
+              ],
+              "eligible_distinct_records": 30,
+              "index_view": "primary",
+              "indexed_records": 54,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.3587028980255127,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 12,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.14526790380477905,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-00000000002e",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.27877095341682434,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 17,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.2251998484134674,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000021",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.4656200706958771,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 10,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.03835073113441467,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000029",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.26218777894973755,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 18,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.2417830228805542,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000028",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "title-fit-RetrievalWeights-four",
+          "incident": "RetrievalWeights",
+          "category": "four",
+          "required_count": 4,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 523,
+          "facts": [
+            {
+              "claim_hash": "8fae814f0d257d58",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000029",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Retrieval weights"
+            },
+            {
+              "claim_hash": "931c7628fb0e8e31",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000021",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "ONNX Mini LM"
+            },
+            {
+              "claim_hash": "2a5c224fc600eb59",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002e",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Semantic index"
+            },
+            {
+              "claim_hash": "89b5861a5bc68361",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000028",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Retrieval telemetry"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "e95b8e2eb4b265cd",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 1"
+            },
+            {
+              "claim_hash": "081a3bb16d484585",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000010",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 5"
+            },
+            {
+              "claim_hash": "dc871dee47a5ac91",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000e",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 3"
+            },
+            {
+              "claim_hash": "b8e702d5389a6884",
+              "claim_tokens": 4280,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000026",
+              "rank": 4,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Telemetry"
+            },
+            {
+              "claim_hash": "d56e44ced443aa71",
+              "claim_tokens": 3755,
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002d",
+              "rank": 5,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Semantic Index"
+            },
+            {
+              "claim_hash": "2ca6782757fc1184",
+              "claim_tokens": 3545,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000022",
+              "rank": 6,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Onnx Mini Lm"
+            },
+            {
+              "claim_hash": "07999643a2cbf49a",
+              "claim_tokens": 4070,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000027",
+              "rank": 7,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Weights"
+            },
+            {
+              "claim_hash": "e0aa45d1959e375a",
+              "claim_tokens": 17,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000002f",
+              "rank": 8,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "crowding"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.5205066800117493,
+                  "id": "00000000-0000-0000-0000-000000000012",
+                  "title": "Crowding observation 7"
+                },
+                {
+                  "cosine": 0.517675518989563,
+                  "id": "00000000-0000-0000-0000-00000000000c",
+                  "title": "Crowding observation 1"
+                },
+                {
+                  "cosine": 0.516200840473175,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "Crowding observation 5"
+                }
+              ],
+              "eligible_distinct_records": 30,
+              "index_view": "primary",
+              "indexed_records": 54,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.4767298400402069,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 9,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.04377683997154236,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000029",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.27853477001190186,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 16,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.2419719099998474,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000021",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.34184056520462036,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 13,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.1786661148071289,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-00000000002e",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.2616279125213623,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 18,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.25887876749038696,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000028",
+                  "within_pool": false
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "title-fit-RetrievalTelemetry-four",
+          "incident": "RetrievalTelemetry",
+          "category": "four",
+          "required_count": 4,
+          "required_delivered": 0,
+          "returned": 8,
+          "packet_tokens": 523,
+          "facts": [
+            {
+              "claim_hash": "89b5861a5bc68361",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000028",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "below_semantic_admission",
+              "title": "Retrieval telemetry"
+            },
+            {
+              "claim_hash": "931c7628fb0e8e31",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000021",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "ONNX Mini LM"
+            },
+            {
+              "claim_hash": "2a5c224fc600eb59",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002e",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "semantic_pool_limit",
+              "title": "Semantic index"
+            },
+            {
+              "claim_hash": "8fae814f0d257d58",
+              "exclusions": [],
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000029",
+              "lexical_rank": null,
+              "selected_rank": null,
+              "stage": "candidate_or_supplementary_guard",
+              "title": "Retrieval weights"
+            }
+          ],
+          "note": "Read-only index probes after retrieval. Supplementary scores do not prove that a guarded lookup ran; candidate_or_supplementary_guard deliberately leaves that distinction open. Focused identifier placement and packet rollback are not traced by semantic probes. Nonrequired competitors may be useful context.",
+          "selected": [
+            {
+              "claim_hash": "e95b8e2eb4b265cd",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000000c",
+              "rank": 1,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 1"
+            },
+            {
+              "claim_hash": "d525180becb2bda9",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000011",
+              "rank": 2,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 6"
+            },
+            {
+              "claim_hash": "081a3bb16d484585",
+              "claim_tokens": 57,
+              "full": true,
+              "id": "00000000-0000-0000-0000-000000000010",
+              "rank": 3,
+              "reason": "BM25 lexical match, 1 task-term matches, semantic match",
+              "title": "Crowding observation 5"
+            },
+            {
+              "claim_hash": "07999643a2cbf49a",
+              "claim_tokens": 4070,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000027",
+              "rank": 4,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Weights"
+            },
+            {
+              "claim_hash": "d56e44ced443aa71",
+              "claim_tokens": 3755,
+              "full": false,
+              "id": "00000000-0000-0000-0000-00000000002d",
+              "rank": 5,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Semantic Index"
+            },
+            {
+              "claim_hash": "2ca6782757fc1184",
+              "claim_tokens": 3545,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000022",
+              "rank": 6,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Onnx Mini Lm"
+            },
+            {
+              "claim_hash": "e0aa45d1959e375a",
+              "claim_tokens": 17,
+              "full": true,
+              "id": "00000000-0000-0000-0000-00000000002f",
+              "rank": 7,
+              "reason": "BM25 lexical match, 1 task-term matches",
+              "title": "crowding"
+            },
+            {
+              "claim_hash": "b8e702d5389a6884",
+              "claim_tokens": 4280,
+              "full": false,
+              "id": "00000000-0000-0000-0000-000000000026",
+              "rank": 8,
+              "reason": "BM25 lexical match, requested complete symbol match",
+              "title": "Retrieval Telemetry"
+            }
+          ],
+          "views": [
+            {
+              "best_nonrequired": [
+                {
+                  "cosine": 0.5072008967399597,
+                  "id": "00000000-0000-0000-0000-000000000012",
+                  "title": "Crowding observation 7"
+                },
+                {
+                  "cosine": 0.5050661563873291,
+                  "id": "00000000-0000-0000-0000-000000000011",
+                  "title": "Crowding observation 6"
+                },
+                {
+                  "cosine": 0.5034043192863464,
+                  "id": "00000000-0000-0000-0000-000000000010",
+                  "title": "Crowding observation 5"
+                }
+              ],
+              "eligible_distinct_records": 30,
+              "index_view": "primary",
+              "indexed_records": 54,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": 0.26683735847473145,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 18,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.24036353826522827,
+                  "passes_cutoff": false,
+                  "representative_id": "00000000-0000-0000-0000-000000000028",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.28200170397758484,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 15,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.22519919276237488,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000021",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.3595081567764282,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 12,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.1476927399635315,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-00000000002e",
+                  "within_pool": false
+                },
+                {
+                  "cosine": 0.5045444965362549,
+                  "cutoff": 0.2750000059604645,
+                  "eligible_distinct_rank": 3,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": true,
+                  "margin_to_best_nonrequired": -0.002656400203704834,
+                  "passes_cutoff": true,
+                  "representative_id": "00000000-0000-0000-0000-000000000029",
+                  "within_pool": true
+                }
+              ]
+            },
+            {
+              "best_nonrequired": [],
+              "eligible_distinct_records": 0,
+              "index_view": "conclusion",
+              "indexed_records": 0,
+              "probe_only": true,
+              "query_view": "task",
+              "targets": [
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000028",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000021",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-00000000002e",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                },
+                {
+                  "cosine": null,
+                  "cutoff": 0.30000001192092896,
+                  "eligible_distinct_rank": null,
+                  "id": "00000000-0000-0000-0000-000000000029",
+                  "indexed": false,
+                  "margin_to_best_nonrequired": null,
+                  "passes_cutoff": false,
+                  "representative_id": null,
+                  "within_pool": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "baseline": "2b2ff4a39e32eb8a0f71d8880862bac8e1724199",
+  "registered_before_fixture_scoring": true,
+  "source": {
+    "path": "src-tauri/crates/rovik-core/src/agent_run/memory.rs",
+    "reflect_function_sha256": "56ef96fb87c2fee77383139120afcd5a1df78cc80e9d74dcb4cf25d28f1b02e9",
+    "capture_limit": "Existing task_query input is at most 2000 characters; preserve exact text, never infer completion or a remedy."
+  },
+  "fixture_sha256": "1e352078041e1b42ce8f012dad1e5535f9d0100111ea229705422e840ffaef71",
+  "fixture": "scripts/eval/memory-episode-capture-cases.json",
+  "arms": ["legacy_episode", "requested_episode"],
+  "candidate": "Preserve the entire legacy episode content byte-for-byte, then append a separately labeled Requested task paragraph quoted from the bounded source task. This is an evaluation-only projection until acceptance.",
+  "policy": {
+    "model": "Pinned Chroma MiniLM",
+    "threshold": 0.3,
+    "short_query_scale": 0.9166666666666666,
+    "limit": 8,
+    "memory_budget": 1000,
+    "deterministic_age_hours": 36
+  },
+  "selection": "Development only first; candidate must improve complete historical-episode delivery and retain all previously complete source episodes/ranks, all fixed source fields and exact negative IDs/order/delivery. Existing frozen fact suites retain the unchanged per-record comparator. Fresh BGE reserved queries are not used. Only after development passes may reserved capture queries be scored. A source-request gain does not establish corrective-action capture, repair quality or live-agent usefulness.",
+  "capture_gates": [
+    "Legacy title/outcome/changed files/check statuses unchanged",
+    "Requested task must be an exact quote from the source, not query-derived text",
+    "Reject overlong input instead of clipping comparison references",
+    "Requests remain explicitly labeled as requested work; checks do not validate their implementation",
+    "Production old records/hashes/verification and write leases stay unchanged"
+  ],
+  "hash_encoding": "JSON.stringify(parsed,null,2) plus newline; reflect function is the exact source slice from fn reflect( up to its following doc comment."
+}
