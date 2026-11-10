@@ -703,13 +703,21 @@ mod tests {
             &root,
             "echo one; while [ ! -e go ]; do sleep 0.05; done; echo two >&2; sleep 30",
         );
-        assert_eq!(first.output.trim(), "one");
-        std::fs::write(Path::new(&root).join("go"), "").unwrap();
         let id = first.status.id;
+        // Process startup can outlast the initial polling window on a busy
+        // runner. Release the second line only after observing the first.
+        let mut initial = first.output;
+        assert!(until(|| {
+            initial.push_str(&output(chat, &id).unwrap().output);
+            initial.ends_with('\n')
+        }));
+        assert_eq!(initial.trim(), "one");
+        assert_eq!(output(chat, &id).unwrap().output, "", "already read");
+        std::fs::write(Path::new(&root).join("go"), "").unwrap();
         let mut later = String::new();
         assert!(until(|| {
-            later = output(chat, &id).unwrap().output;
-            !later.is_empty()
+            later.push_str(&output(chat, &id).unwrap().output);
+            later.ends_with('\n')
         }));
         assert_eq!(
             later.trim(),
