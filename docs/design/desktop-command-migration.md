@@ -723,8 +723,11 @@ and cleaned up when its mount operation completes. Ordinary upgrade refusal
 leaves the channel open; only successful unmount releases it.
 
 The native workflow tests the transport and adapter before running the mounted
-regression. This implementation still needs a successful native mounted run;
-unit tests and Linux mounts do not establish FSKit busy-unmount behavior.
+regression. The [native run on `de70889`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42881256926)
+passed both stages on GitHub's macOS runner with macFUSE 5.5. The mounted
+regression verifies busy-leaf and busy-parent refusal, writes after refusal,
+partial draining, and recovery of saved edits after reconstructing the parent,
+child and grandchild hierarchy. It also checks that child edits remain isolated.
 
 The native GUI run exposed idle RPC disconnections and unordered terminal input.
 Frame deadlines now begin with the first received byte rather than socket
@@ -741,8 +744,7 @@ enabled. The disposable hosted runner now configures FSKit's separate
 `enabledModules.plist`, preserving existing entries, and restarts `fskitd` to
 reload it. The setup script refuses ordinary machines. This follows the
 [FSKit enablement issue](https://github.com/macfuse/macfuse/issues/1194); normal
-Rovik installations continue to use System Settings. A successful mounted
-regression is still required before claiming macOS draining is validated.
+Rovik installations continue to use System Settings.
 
 With FSKit approval configured, the native request trace on `b65c3c5` showed
 startup `STATFS` arriving with UID 0 and being rejected with `EACCES` by the
