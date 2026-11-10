@@ -1374,35 +1374,51 @@ async function run() {
     await keys([MOD, 'a'], Keys.BACKSPACE, Keys.ESC);
   });
 
-  await step('open: a changed file from the tree opens at its first change, lit', async () => {
-    // A change far down a long file, made outside the app (an editor, a
-    // script): the file opens with it in view and marked against git, not
-    // at its top.
-    const path = join(DEMO, 'long.ts');
-    // Earlier editor steps left this tab open. Close it before the external
-    // write so this tests opening from disk, without racing its file watcher.
-    await click(row('long.ts'));
-    await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts selected');
-    await click('.tab.active .tab-close');
-    await waitFor(async () => !(await tabs()).includes('long.ts'), 'long.ts closed');
-    write(path, readFileSync(path, 'utf8').replace('// line 200:', '// line 200 changed:'));
-    await click(row('long.ts'));
-    await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts opened');
-    await waitFor(() => d.exists('.monaco-editor .editor-reveal-flash'), 'the change lit', 5_000);
-    await waitFor(
-      async () => (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
-      'the change in view'
-    );
-    const shown = await panelText('.monaco-editor .view-lines');
-    assert(!shown.includes('line 1:'), 'the top of the file is out of view');
-    await waitFor(() => d.exists('.monaco-editor .git-line-modified'), 'the change marked', 5_000);
-    // And still in view once the light has faded.
-    await sleep(1600);
-    assert(
-      (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
-      'the change still in view after a moment'
-    );
-  });
+  await step(
+    'open: Files hides change marks; Git reveals and highlights the first change',
+    async () => {
+      // A change far down a long file, made outside the app (an editor, a
+      // script): Files opens plain text, while Git reveals and marks the change.
+      const path = join(DEMO, 'long.ts');
+      // Earlier editor steps left this tab open. Close it before the external
+      // write so this tests opening from disk, without racing its file watcher.
+      await click(row('long.ts'));
+      await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts selected');
+      await click('.tab.active .tab-close');
+      await waitFor(async () => !(await tabs()).includes('long.ts'), 'long.ts closed');
+      write(path, readFileSync(path, 'utf8').replace('// line 200:', '// line 200 changed:'));
+      await click(row('long.ts'));
+      await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts opened');
+      assert(
+        !(await d.exists('.monaco-editor .editor-reveal-flash')),
+        'Files does not flash changes'
+      );
+      assert(!(await d.exists('.monaco-editor .git-line-modified')), 'Files hides change marks');
+      await sidebar('Git');
+      const changed = '.git-file-row[title="long.ts: click to open with its changes marked"]';
+      await waitFor(() => d.exists(changed), 'Git to list the changed file');
+      await click(changed);
+      await waitFor(() => d.exists('.monaco-editor .editor-reveal-flash'), 'the change lit', 5_000);
+      await waitFor(
+        async () => (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
+        'the change in view'
+      );
+      const shown = await panelText('.monaco-editor .view-lines');
+      assert(!shown.includes('line 1:'), 'the top of the file is out of view');
+      await waitFor(
+        () => d.exists('.monaco-editor .git-line-modified'),
+        'the change marked',
+        5_000
+      );
+      // And still in view once the light has faded.
+      await sleep(1600);
+      assert(
+        (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
+        'the change still in view after a moment'
+      );
+      await sidebar('Files');
+    }
+  );
 
   await step('terminal: run a command', async () => {
     await openTerminal();
