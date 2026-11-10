@@ -291,6 +291,20 @@ function askedToFront(logFile) {
   return text.split('asked this one to come to the front').length - 1;
 }
 
+/** Restore native focus after another app process owned the foreground. */
+async function focusDrivenProject() {
+  if (PLATFORM !== 'darwin') return;
+  const logFile = join(OUT, 'app.log');
+  const before = askedToFront(logFile);
+  const request = launchRovik([DEMO], 'focus-driven-project');
+  assert((await exited(request, 60_000)) === 0, 'the driven project handles activation');
+  await waitFor(() => askedToFront(logFile) > before, 'the driven window to receive activation');
+  await waitFor(
+    () => d.exec('return document.hasFocus()'),
+    'the driven window to have native focus'
+  );
+}
+
 /** The first line a child prints (the scripted model's base URL). */
 function firstLine(child, timeout = 15_000) {
   return new Promise((done, fail) => {
@@ -1043,6 +1057,7 @@ async function run() {
         } finally {
           second.kill();
           await exited(second, 15_000).catch(() => {});
+          await focusDrivenProject();
         }
       }
     );
@@ -2021,22 +2036,36 @@ async function run() {
     }
   });
 
-  await step('settings: add a model provider', () =>
-    addProvider('Fake', `http://127.0.0.1:${MODEL_PORT}/v1`, 2)
-  );
+  await step('settings: add a model provider', async () => {
+    await addProvider('Fake', `http://127.0.0.1:${MODEL_PORT}/v1`, 2);
+    // This fixture changes branches explicitly in the Git scenarios. Keep
+    // chat sends on that branch instead of leaving a branch question pending.
+    await click('.sidebar-settings-button');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.settings-menu-item')].find((b) => b.innerText.trim().startsWith('Agent runs'));`,
+        'page'
+      )
+    );
+    const offer = await mark(
+      `return [...document.querySelectorAll('.modal .setting-checkbox')].find((l) => l.innerText.includes('Offer a new chat a branch of its own'))?.querySelector('input[type="checkbox"]');`,
+      'branch-offer'
+    );
+    if (await d.exec('return document.querySelector(arguments[0]).checked', offer))
+      await click(offer);
+    await closeModal();
+  });
 
   await step('chat: a reply streams in', async () => {
     await sidebar('AI Chat');
     await waitFor(() => d.exists('.chat-input-contenteditable'), 'the chat');
     await send('Hello there, what is this project?');
-    // The first mounted run includes cold backend setup. Wait for completion
-    // using the same run budget as send(), then check the actual answer.
     await waitFor(
       async () =>
         (await chatText()).includes('Echo of your message') &&
         (await d.exists('.chat-send-button:not(.stop)')),
       'the first reply and run completion',
-      60_000
+      30_000
     );
     assert((await chatText()).includes('Echo of your message'), 'the reply streamed in');
   });
@@ -2094,7 +2123,11 @@ async function run() {
           'closing the other window preserves isolation'
         );
       } finally {
-        if (second.exitCode === null && second.signalCode === null) second.kill();
+        if (second.exitCode === null && second.signalCode === null) {
+          second.kill();
+          await exited(second, 15_000);
+        }
+        await focusDrivenProject();
         if (await d.exists('.chat-send-button.stop')) {
           await click('.chat-send-button.stop');
           await waitFor(
