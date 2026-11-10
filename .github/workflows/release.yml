@@ -247,7 +247,7 @@ jobs:
             args: --target x86_64-apple-darwin
           - name: Windows
             runner: windows-latest
-            args: ''
+            args: --config src-tauri/tauri.windows-backend.conf.json
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -269,6 +269,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Package the Windows desktop backend
+        if: runner.os == 'Windows'
+        run: npm run package:windows-backend
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -10,6 +10,7 @@
     "serve": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.node.json",
     "tauri": "tauri",
+    "package:windows-backend": "node scripts/package-windows-backend.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "tsc -p tsconfig.test.json --noEmit && node scripts/test.mjs",

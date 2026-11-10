@@ -879,3 +879,27 @@ caller-prepared `ensure_command` API still preserves its command unchanged;
 packaged UI activation must explicitly arrange a self-contained backend image.
 Packaging that image, integrating installer/updater behavior, retained-image
 cleanup, and WSL execution validation remain. Windows UI startup stays embedded.
+
+### Phase 22: Package and exercise the Windows standalone backend
+
+Windows releases build `rovik-desktopd` from the same workspace revision and
+profile as the UI. `npm run package:windows-backend` uses Cargo's executable
+artifact path and prepares `src-tauri/binaries/rovik-desktopd.exe`. The release
+workflow merges `tauri.windows-backend.conf.json` into both installer formats,
+placing the daemon at `backend/rovik-desktopd.exe` in the installed resources.
+Generated executables stay outside version control.
+
+The Windows CI job builds a debug NSIS installer with that resource mapping,
+installs it into a temporary directory, and runs the native backend lifecycle
+contracts against the installed daemon via `ROVIK_PACKAGED_BACKEND`. Missing
+resources and version mismatches fail the check. The contracts cover concurrent
+owners, crash recovery, guarded upgrades, saved state, and retained executable
+images. The test installation is uninstalled afterward.
+
+For a local Windows bundle, run `npm run package:windows-backend` followed by
+`npm run tauri -- build --config src-tauri/tauri.windows-backend.conf.json`.
+Use `--profile dev` for the packaging command when building a debug bundle.
+The ordinary UI remains embedded: resolving the installed resource, attaching
+and reconnecting through the retained-image launcher, and adapting update/exit
+behavior are still required before shared Windows UI activation. This phase
+packages and tests the daemon; it does not change updater shutdown behavior.

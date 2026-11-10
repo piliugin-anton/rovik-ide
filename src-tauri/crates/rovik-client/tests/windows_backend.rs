@@ -2,7 +2,22 @@
 #![cfg(windows)]
 
 use rovik_client::local_backend::{directory, rpc::Client, Lease};
-use std::{process::Child, time::Duration};
+use std::{path::PathBuf, process::Child, time::Duration};
+
+fn executable() -> PathBuf {
+    match std::env::var_os("ROVIK_PACKAGED_BACKEND") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            assert!(
+                path.is_absolute() && path.is_file(),
+                "installed backend is missing: {}",
+                path.display()
+            );
+            path
+        }
+        None => PathBuf::from(env!("CARGO_BIN_EXE_rovik-desktopd")),
+    }
+}
 
 struct Daemon(Child);
 impl Drop for Daemon {
@@ -19,7 +34,7 @@ async fn competing_processes_share_one_backend_and_detaching_keeps_it_alive() {
     let config = root.path().join("config");
     let spawn = || {
         Daemon(
-            rovik_core::process::command(env!("CARGO_BIN_EXE_rovik-desktopd"))
+            rovik_core::process::command(executable())
                 .arg("--data")
                 .arg(&data)
                 .arg("--config")
@@ -43,6 +58,7 @@ async fn competing_processes_share_one_backend_and_detaching_keeps_it_alive() {
     })
     .await
     .expect("backend ready");
+    assert_eq!(a.ready.version, env!("CARGO_PKG_VERSION"));
     let b = Client::connect(&endpoint).await.unwrap();
     assert_eq!(a.ready.boot, b.ready.boot);
     assert_ne!(a.ready.session, b.ready.session);
@@ -90,11 +106,7 @@ mod desktop_attach;
 
 #[tokio::test]
 async fn windows_recover_after_a_crash_with_stale_siblings_and_persisted_state() {
-    desktop_attach::check(
-        std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd")),
-        None,
-    )
-    .await;
+    desktop_attach::check(&executable(), None).await;
 }
 
 #[path = "support/desktop_upgrade.rs"]
@@ -102,7 +114,7 @@ mod desktop_upgrade;
 
 #[tokio::test]
 async fn windows_upgrade_preserves_a_busy_owner_and_waits_for_clean_shutdown() {
-    desktop_upgrade::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
+    desktop_upgrade::check(&executable()).await;
 }
 
 #[tokio::test]
@@ -111,8 +123,8 @@ async fn installing_a_new_source_preserves_the_running_backend_image() {
     use std::io::Write;
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("installed.exe");
-    let original = std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"));
-    std::fs::copy(original, &source).unwrap();
+    let original = executable();
+    std::fs::copy(&original, &source).unwrap();
     let data = root.path().join("data");
     let config = root.path().join("config");
     let endpoint = directory(&data);
@@ -136,7 +148,7 @@ async fn installing_a_new_source_preserves_the_running_backend_image() {
     drop(host);
     assert!(Lease::acquire(&endpoint).unwrap().is_some());
     // A PE overlay changes the image identity while retaining a valid executable.
-    std::fs::copy(original, &source).unwrap();
+    std::fs::copy(&original, &source).unwrap();
     std::fs::OpenOptions::new()
         .append(true)
         .open(&source)
