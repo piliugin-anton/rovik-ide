@@ -312,6 +312,21 @@ impl Connection {
         Ok(Self::local(client))
     }
 
+    /// Launches a standalone backend through retained-image preparation on Windows.
+    #[cfg(any(unix, windows))]
+    pub async fn attach_backend(
+        executable: &std::path::Path,
+        data: &std::path::Path,
+        config: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        let (stream, ready) =
+            crate::local_backend::ensure_backend(executable, data, config).await?;
+        let directory = crate::local_backend::directory(data);
+        let client =
+            crate::local_backend::rpc::Client::from_connected(&directory, stream, ready).await?;
+        Ok(Self::local(client))
+    }
+
     /// Attaches to an existing local backend. Failure is returned to the
     /// window; a second private backend is never initialized here.
     #[cfg(any(unix, windows))]

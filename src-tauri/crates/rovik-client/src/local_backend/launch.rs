@@ -94,6 +94,8 @@ async fn ensure_prepared(
             ) => {}
         Err(e) => return Err(e),
     }
+    #[cfg(windows)]
+    super::host::wait_for_legacy_windows(data).await?;
     let mut command = prepare()?;
     command.arg("--data").arg(data).arg("--config").arg(config);
     command.stdin(std::process::Stdio::null());

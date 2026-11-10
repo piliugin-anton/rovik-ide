@@ -2,14 +2,14 @@
 #![recursion_limit = "256"]
 
 use crate::instances::Instances;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{process, rt};
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 use rovik_core::{EventSink, Paths};
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -106,7 +106,17 @@ pub fn run() {
                 command.stderr(std::process::Stdio::inherit());
                 rt::block_on(DesktopConnection::attach(command, &data, &config))?
             };
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            let connection = {
+                rovik_core::os_lock::take_slot(&data.join("window-slots"));
+                let executable = windows_backend_path(app.handle())?;
+                rt::block_on(DesktopConnection::attach_backend(
+                    &executable,
+                    &data,
+                    &config,
+                ))?
+            };
+            #[cfg(not(any(unix, windows)))]
             let connection = {
                 let backend = Arc::new(rt::block_on(DesktopBackend::open(
                     Paths::new(data.clone(), config.clone()),
@@ -137,7 +147,7 @@ pub fn run() {
             app.manage(connection);
             // Embedded windows retain claims while their private core is busy.
             // Shared-mode focus claims follow only the visible project.
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             {
                 let handle = app.handle().clone();
                 rt::spawn(async move {
@@ -464,7 +474,7 @@ pub fn run() {
 
 // Only embedded mode owns a host lifetime. A shared-mode window manages
 // DesktopConnection alone and must never shut down the daemon on exit.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 struct EmbeddedHost(Arc<DesktopBackend>);
 
 /// Detaches the client, shuts down a private embedded host if present, and
@@ -475,7 +485,7 @@ fn before_exit(app: &tauri::AppHandle) {
             log::error!("Could not detach desktop client: {error}");
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     if let Some(host) = app.try_state::<EmbeddedHost>() {
         rt::block_on(host.0.shutdown());
     }
@@ -526,7 +536,7 @@ const NEW_WINDOW: &str = "--new-window";
 /// Whether the backend is at work on a chat of the project `project`
 /// (None: of the chats without a project): a run, Autopilot's driver, a
 /// stage waiting out a rate limit (rovik_core::chat_hold).
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 async fn at_work_in(backend: &DesktopConnection, project: Option<String>) -> bool {
     use rovik_client::desktop_api::projects::ProjectRequest;
     match backend
@@ -591,14 +601,14 @@ async fn project_claim(
     path: Option<String>,
     focus_other: bool,
 ) -> Result<instances::Claim, String> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let open = app.state::<Instances>().open_project();
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let keep_open = match open {
         Some(project) => at_work_in(&backend, project).await,
         None => false,
     };
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let keep_open = false;
     let claim = rt::spawn_blocking(move || {
         let path = path.as_deref().map(std::path::Path::new);
@@ -796,9 +806,9 @@ fn init_log() {
 }
 
 /// Shared events are read through the journal after the UI is ready.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 struct WindowEvents;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl EventSink for WindowEvents {
     fn agent(&self, _: &AgentEvent) {}
 }
@@ -836,7 +846,7 @@ async fn desktop_reconnect(
     root: Option<String>,
     project_id: Option<String>,
 ) -> Result<(), String> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let project = match (root, project_id) {
             (Some(root), Some(id)) => Some((root, id)),
@@ -845,14 +855,43 @@ async fn desktop_reconnect(
         };
         let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let config = app.path().app_config_dir().map_err(|e| e.to_string())?;
-        let mut command = rovik_command()?;
-        command.arg(rovik_client::local_backend::host::HOST_FLAG);
-        command.stderr(std::process::Stdio::inherit());
-        backend.reconnect(command, &data, &config, project).await
+        #[cfg(unix)]
+        {
+            let mut command = rovik_command()?;
+            command.arg(rovik_client::local_backend::host::HOST_FLAG);
+            command.stderr(std::process::Stdio::inherit());
+            backend.reconnect(command, &data, &config, project).await
+        }
+        #[cfg(windows)]
+        {
+            let executable = windows_backend_path(&app).map_err(|e| e.to_string())?;
+            backend
+                .reconnect_backend(&executable, &data, &config, project)
+                .await
+        }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (app, backend, root, project_id);
         Err("Restart this window to recover its embedded backend".into())
     }
+}
+
+/// Release resources are authoritative; development builds can use Cargo's sibling binary.
+#[cfg(windows)]
+fn windows_backend_path(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let packaged = app
+        .path()
+        .resource_dir()?
+        .join("backend/rovik-desktopd.exe");
+    if cfg!(debug_assertions) && !packaged.is_file() {
+        let executable = std::env::current_exe()?;
+        let directory = executable
+            .parent()
+            .ok_or("Cannot locate the development backend directory")?;
+        return Ok(directory.join("rovik-desktopd.exe"));
+    }
+    Ok(packaged)
 }

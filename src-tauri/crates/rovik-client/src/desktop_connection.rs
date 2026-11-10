@@ -101,6 +101,34 @@ impl DesktopConnection {
         Ok(Self::new(Connection::attach(command, data, config).await?))
     }
 
+    /// Attaches to a standalone executable, retaining its Windows image across updates.
+    #[cfg(any(unix, windows))]
+    pub async fn attach_backend(
+        executable: &std::path::Path,
+        data: &std::path::Path,
+        config: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        Ok(Self::new(
+            Connection::attach_backend(executable, data, config).await?,
+        ))
+    }
+
+    /// Recovers through the standalone launcher without replaying accepted commands.
+    #[cfg(any(unix, windows))]
+    pub async fn reconnect_backend(
+        &self,
+        executable: &std::path::Path,
+        data: &std::path::Path,
+        config: &std::path::Path,
+        project: Option<(String, String)>,
+    ) -> Result<(), String> {
+        self.reconnect_with(
+            Connection::attach_backend(executable, data, config),
+            project,
+        )
+        .await
+    }
+
     /// Replaces a failed session explicitly. Only validated project registration
     /// is restored; callers recreate subscriptions and refresh authoritative state.
     #[cfg(any(unix, windows))]
@@ -111,10 +139,18 @@ impl DesktopConnection {
         config: &std::path::Path,
         project: Option<(String, String)>,
     ) -> Result<(), String> {
+        self.reconnect_with(Connection::attach(command, data, config), project)
+            .await
+    }
+
+    #[cfg(any(unix, windows))]
+    async fn reconnect_with(
+        &self,
+        open: impl std::future::Future<Output = std::io::Result<Connection>>,
+        project: Option<(String, String)>,
+    ) -> Result<(), String> {
         self.replace(async {
-            let connection = Connection::attach(command, data, config)
-                .await
-                .map_err(|e| e.to_string())?;
+            let connection = open.await.map_err(|e| e.to_string())?;
             if let Some((root, project_id)) = project {
                 if let Err(error) = connection
                     .desktop(

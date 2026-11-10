@@ -9,9 +9,13 @@ import { parseArgs } from 'node:util';
 const { values } = parseArgs({
   options: {
     profile: { type: 'string', default: 'release' },
+    'if-windows': { type: 'boolean', default: false },
   },
 });
-if (process.platform !== 'win32') throw new Error('Package the Windows backend on Windows.');
+if (process.platform !== 'win32') {
+  if (values['if-windows']) process.exit(0);
+  throw new Error('Package the Windows backend on Windows.');
+}
 if (!['dev', 'release'].includes(values.profile)) throw new Error('Use --profile dev or release.');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const built = spawnSync(

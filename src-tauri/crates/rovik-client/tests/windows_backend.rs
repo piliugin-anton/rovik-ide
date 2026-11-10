@@ -166,3 +166,11 @@ async fn installing_a_new_source_preserves_the_running_backend_image() {
     drop(stream);
     drop(host);
 }
+
+#[path = "support/desktop_standalone.rs"]
+mod desktop_standalone;
+
+#[tokio::test]
+async fn standalone_ui_sessions_recover_without_an_embedded_fallback() {
+    desktop_standalone::check(&executable()).await;
+}

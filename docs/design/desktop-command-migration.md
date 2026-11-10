@@ -903,3 +903,31 @@ The ordinary UI remains embedded: resolving the installed resource, attaching
 and reconnecting through the retained-image launcher, and adapting update/exit
 behavior are still required before shared Windows UI activation. This phase
 packages and tests the daemon; it does not change updater shutdown behavior.
+
+### Phase 23: Windows UI clients and update lifetime
+
+Windows UI startup now attaches to the bundled `backend/rovik-desktopd.exe`
+through `DesktopConnection::attach_backend`. That launcher retains the executable
+outside the installation directory before starting it. Recovery uses the same
+path and the common validated project-restore logic; neither path constructs an
+embedded Core. Release resources are authoritative. Debug builds may use Cargo's
+sibling executable, which `npm start` builds first on Windows.
+
+UI processes take native window slots separately from backend execution slots.
+Closing a window or exiting for an update detaches its session and releases its
+focus claims without shutting down execution. The updater still warns that the
+Windows installer closes other UI windows; it no longer reports shared backend
+chats as work that the installer stops. The retained backend can keep working
+while its installation resource is replaced, and normal guarded negotiation
+controls when a subsequent UI can replace it.
+
+Before opening a new Core on Windows, the launcher and daemon check for occupied
+legacy execution slots. Existing older embedded windows must close first. A
+brief bounded wait allows a retiring shared process to finish exiting. Errors
+refuse startup rather than opening another Core on the same data. Regression
+coverage checks the legacy slot guard and standalone UI attachment, detach,
+crash recovery, and missing-executable refusal; the installed-resource CI run
+uses these same contracts.
+
+Native multiwindow UI and WSL execution validation, installer upgrade-in-place
+coverage with an active retained backend, and safe retained-image cleanup remain.

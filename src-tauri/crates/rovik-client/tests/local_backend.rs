@@ -493,3 +493,13 @@ mod desktop_upgrade;
 async fn an_upgrade_refuses_live_clients_then_retires_under_the_ownership_lock() {
     desktop_upgrade::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
 }
+
+#[cfg(target_os = "linux")]
+#[path = "support/desktop_standalone.rs"]
+mod desktop_standalone;
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn standalone_ui_sessions_recover_without_an_embedded_fallback() {
+    desktop_standalone::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
+}

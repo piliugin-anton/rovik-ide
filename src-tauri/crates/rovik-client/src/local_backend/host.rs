@@ -42,6 +42,8 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         // Another launcher won. It alone initializes the database and mounts.
         return Ok(());
     };
+    #[cfg(windows)]
+    wait_for_legacy_windows(&paths.data_dir).await?;
     let backend = Arc::new(
         DesktopBackend::open(
             paths,
@@ -151,9 +153,69 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Allows a retiring owner to exit, but refuses coexistence with an embedded UI.
+#[cfg(windows)]
+pub(super) async fn wait_for_legacy_windows(data: &std::path::Path) -> std::io::Result<()> {
+    // A retiring shared host can still be exiting after releasing its pipe lease.
+    let wait = async {
+        loop {
+            match legacy_windows_closed(data) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+        .await
+        .map_err(|_| {
+            std::io::Error::other("Close older Rovik windows before starting the shared backend")
+        })?
+}
+
+#[cfg(any(windows, test))]
+fn legacy_windows_closed(data: &std::path::Path) -> std::io::Result<()> {
+    use std::fs::{File, TryLockError};
+    for slot in 1..=64 {
+        let file = match File::open(data.join("slots").join(format!("slot-{slot}.lock"))) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        match file.try_lock_shared() {
+            Ok(()) => file.unlock()?,
+            Err(TryLockError::WouldBlock) => return Err(std::io::ErrorKind::WouldBlock.into()),
+            Err(TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_execution_slots_must_be_released_before_shared_startup() {
+        let root = tempfile::tempdir().unwrap();
+        legacy_windows_closed(root.path()).unwrap();
+        let held = rovik_core::os_lock::try_hold(&root.path().join("slots/slot-1.lock"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            legacy_windows_closed(root.path()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(held);
+        legacy_windows_closed(root.path()).unwrap();
+        let window = rovik_core::os_lock::try_hold(&root.path().join("window-slots/slot-1.lock"))
+            .unwrap()
+            .unwrap();
+        legacy_windows_closed(root.path()).unwrap();
+        drop(window);
+    }
 
     #[test]
     fn headless_startup_requires_explicit_unambiguous_absolute_directories() {

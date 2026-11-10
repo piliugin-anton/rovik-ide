@@ -9,7 +9,7 @@
 // Only embedded hosts retain a previous project's claims while its private
 // execution is still busy, using the compatibility policy in rovik-client.
 
-#[cfg(any(not(unix), test))]
+#[cfg(any(not(any(unix, windows)), test))]
 use rovik_client::project_ownership::EmbeddedOwnership;
 use rovik_core::os_lock::Held;
 use std::collections::HashMap;
@@ -57,7 +57,7 @@ impl Claim {
 struct AtWork {
     keys: Vec<String>,
     path: String,
-    #[cfg(any(not(unix), test))]
+    #[cfg(any(not(any(unix, windows)), test))]
     project: Option<Option<String>>,
 }
 
@@ -164,7 +164,7 @@ impl Instances {
             claims.at_work.push(AtWork {
                 keys: before,
                 path: was,
-                #[cfg(any(not(unix), test))]
+                #[cfg(any(not(any(unix, windows)), test))]
                 project: was_project,
             });
         } else {
@@ -203,13 +203,13 @@ impl Instances {
 
     /// The project open in the window, if known: its ID (None: the chats
     /// without a project).
-    #[cfg(any(not(unix), test))]
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn open_project(&self) -> Option<Option<String>> {
         self.claims().project.clone()
     }
 
     /// The projects left for another while their chats were at work here.
-    #[cfg(any(not(unix), test))]
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn left_at_work(&self) -> Vec<Option<String>> {
         let claims = self.claims();
         claims
@@ -221,7 +221,7 @@ impl Instances {
 
     /// Lets go of the projects left at work whose chats are done (an ID
     /// `still` doesn't name), and those whose project was never known.
-    #[cfg(any(not(unix), test))]
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn let_go_done(&self, still: impl Fn(&Option<String>) -> bool) {
         let mut claims = self.claims();
         let (busy, done): (Vec<AtWork>, Vec<AtWork>) = std::mem::take(&mut claims.at_work)
@@ -256,7 +256,7 @@ impl Instances {
     }
 
     /// Ownership policy for this window's private embedded backend.
-    #[cfg(any(not(unix), test))]
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn ownership(&self) -> EmbeddedOwnership {
         EmbeddedOwnership::new(self.dir.clone(), self.token.clone())
     }
