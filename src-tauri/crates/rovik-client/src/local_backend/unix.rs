@@ -1,11 +1,11 @@
-use super::{read_ready, write_ready, Ready, PROTOCOL};
+//! Same-user Unix socket transport and lifetime ownership.
 use std::fs::{File, OpenOptions, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
+/// Authenticated local transport used by the common RPC layer.
+pub type Stream = tokio::net::UnixStream;
 
 /// Exclusive ownership of a backend directory. Held for the daemon's
 /// lifetime; the lock file is never deleted or replaced.
@@ -21,7 +21,7 @@ impl Lease {
         Self::acquire_named(directory, "owner.lock")
     }
 
-    fn acquire_named(directory: &Path, name: &str) -> io::Result<Option<Self>> {
+    pub(super) fn acquire_named(directory: &Path, name: &str) -> io::Result<Option<Self>> {
         match std::fs::DirBuilder::new().mode(0o700).create(directory) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
@@ -65,10 +65,18 @@ impl Lease {
         }
     }
 
-    /// Publishes readiness after service initialization. Only the owner
-    /// may remove a stale endpoint left by a crashed predecessor.
-    pub fn listen(&self, version: &str) -> io::Result<Listener<'_>> {
-        let path = self.directory.join("rpc.sock");
+    pub(super) fn directory(&self) -> &Path {
+        &self.directory
+    }
+}
+
+pub(super) struct Endpoint {
+    socket: UnixListener,
+    path: PathBuf,
+}
+impl Endpoint {
+    pub fn bind(directory: &Path, name: &str) -> io::Result<Self> {
+        let path = directory.join(format!("{name}.sock"));
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -76,239 +84,34 @@ impl Lease {
         }
         let socket = UnixListener::bind(&path)?;
         std::fs::set_permissions(&path, Permissions::from_mode(0o600))?;
-        Ok(Listener {
-            socket,
-            lease: self,
-            boot: uuid::Uuid::new_v4().to_string(),
-            version: version.into(),
-        })
+        Ok(Self { socket, path })
     }
-}
-
-/// A ready daemon's listener. Dropping it closes the socket before releasing ownership.
-pub struct Listener<'a> {
-    socket: UnixListener,
-    lease: &'a Lease,
-    boot: String,
-    version: String,
-}
-
-impl Listener<'_> {
-    pub(super) fn boot(&self) -> &str {
-        &self.boot
-    }
-
-    /// Accepts a same-user client and sends its bounded readiness handshake.
-    pub async fn accept(&self) -> io::Result<UnixStream> {
-        self.accept_pending().await?.finish().await
-    }
-
-    /// Accepts and checks peer ownership without waiting for handshake IO.
-    /// Safe to use in a select loop: handshake work belongs to its client task.
-    pub async fn accept_pending(&self) -> io::Result<Pending> {
+    pub async fn accept(&self) -> io::Result<Stream> {
         let (stream, _) = self.socket.accept().await?;
-        if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Backend client belongs to another user",
-            ));
-        }
-        Ok(Pending {
-            stream,
-            ready: Ready {
-                protocol: PROTOCOL,
-                boot: self.boot.clone(),
-                version: self.version.clone(),
-                session: uuid::Uuid::new_v4().to_string(),
-            },
-        })
+        check_peer(&stream)?;
+        Ok(stream)
     }
 }
-
-/// A same-user connection awaiting protocol acknowledgement.
-pub struct Pending {
-    stream: UnixStream,
-    ready: Ready,
-}
-
-impl Pending {
-    /// The identity used by handlers and the separate private event stream.
-    pub fn session(&self) -> &str {
-        &self.ready.session
-    }
-
-    /// Completes a bounded handshake before any operation can be dispatched.
-    pub async fn finish(mut self) -> io::Result<UnixStream> {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            write_ready(&mut self.stream, &self.ready).await?;
-            let protocol = self.stream.read_u32().await?;
-            if protocol != PROTOCOL {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Incompatible local client protocol",
-                ));
-            }
-            Ok(self.stream)
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Backend client did not complete its handshake",
-            )
-        })?
-    }
-}
-
-impl Drop for Listener<'_> {
+impl Drop for Endpoint {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(self.lease.directory.join("rpc.sock")) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
             if e.kind() != io::ErrorKind::NotFound {
-                log::warn!("Couldn't remove the backend endpoint: {e}");
+                log::warn!("Couldn't remove backend endpoint: {e}");
             }
         }
     }
 }
-
-/// Connects to an initialized same-user backend. Protocol mismatch is
-/// returned as Unsupported, never as permission to launch another owner.
-pub async fn connect(directory: &Path) -> io::Result<(UnixStream, Ready)> {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let mut stream = UnixStream::connect(directory.join("rpc.sock")).await?;
-        if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Backend belongs to another user",
-            ));
-        }
-        let ready = read_ready(&mut stream).await?;
-        stream.write_u32(PROTOCOL).await?;
-        Ok((stream, ready))
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Backend connection timed out"))?
+pub(super) async fn connect_endpoint(directory: &Path, name: &str) -> io::Result<Stream> {
+    let stream = Stream::connect(directory.join(format!("{name}.sock"))).await?;
+    check_peer(&stream)?;
+    Ok(stream)
 }
-
-/// Connects first, otherwise starts the packaged daemon once and waits for
-/// readiness. Concurrent launchers are arbitrated by the daemon's lease.
-pub async fn ensure_backend(
-    executable: &Path,
-    data: &Path,
-    config: &Path,
-) -> io::Result<(UnixStream, Ready)> {
-    let command = rovik_core::process::command(executable);
-    ensure_command(command, data, config).await
-}
-
-/// Attaches first, or launches a caller-prepared packaged command. AppImages
-/// use their original launcher; no second private Core is ever a fallback.
-pub async fn ensure_command(
-    mut command: std::process::Command,
-    data: &Path,
-    config: &Path,
-) -> io::Result<(UnixStream, Ready)> {
-    let directory = super::directory(data);
-    std::fs::create_dir_all(data)?;
-    // Serialize upgrade and launch, without taking the host's lifetime lease.
-    let _launch = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Some(lease) = Lease::acquire_named(&directory, "launch.lock")? {
-                return Ok::<_, io::Error>(lease);
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Another backend launcher is still starting or upgrading",
-        )
-    })??;
-    if let Some((host, reply)) = super::control::negotiate(&directory).await? {
-        match reply {
-            super::control::Reply::Retiring => {
-                // The retiring host retains ownership through all cleanup. A
-                // timeout must never turn into permission to force replacement.
-                tokio::time::timeout(Duration::from_secs(30), async {
-                    loop {
-                        if Lease::acquire(&directory)?.is_some() {
-                            return Ok::<_, io::Error>(());
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                })
-                .await
-                .map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Backend is still shutting down; reopen Rovik after it finishes",
-                    )
-                })??;
-            }
-            super::control::Reply::Busy(reason) if host.protocol != PROTOCOL => {
-                return Err(io::Error::new(io::ErrorKind::Unsupported, format!("Backend upgrade deferred: {reason}. Finish its work and close its windows, then reopen Rovik.")));
-            }
-            super::control::Reply::Current | super::control::Reply::Busy(_) => {}
-        }
+fn check_peer(stream: &Stream) -> io::Result<()> {
+    if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Backend peer belongs to another user",
+        ));
     }
-    match connect(&directory).await {
-        Ok(connected) => return Ok(connected),
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) => {}
-        Err(e) => return Err(e),
-    }
-    command.arg("--data").arg(data).arg("--config").arg(config);
-    command.stdin(std::process::Stdio::null());
-    rovik_core::process::own_session(&mut command);
-    rovik_core::process::close_inherited(&mut command);
-    let mut child = command.spawn()?;
-    let (exited, mut exit) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let result = child.wait();
-        match &result {
-            Ok(status) if !status.success() => {
-                log::warn!("Local backend launcher exited with {status}")
-            }
-            Err(error) => log::warn!("Couldn't reap the local backend launcher: {error}"),
-            _ => {}
-        }
-        let _ = exited.send(result);
-    });
-    let mut launcher_done = false;
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match connect(&directory).await {
-                Ok(connected) => return Ok(connected),
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                    ) => {}
-                Err(e) => return Err(e),
-            }
-            tokio::select! {
-                result = &mut exit, if !launcher_done => {
-                    launcher_done = true;
-                    match result {
-                        Ok(Ok(status)) if status.success() => {}, // A competing launcher won.
-                        Ok(Ok(status)) => return Err(io::Error::other(format!("Local backend launcher exited with {status}"))),
-                        Ok(Err(error)) => return Err(error),
-                        Err(error) => return Err(io::Error::other(error)),
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {},
-            }
-        }
-    })
-    .await
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Local backend did not become ready within 30 seconds",
-        )
-    })?
+    Ok(())
 }

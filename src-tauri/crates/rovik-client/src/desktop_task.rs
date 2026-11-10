@@ -18,7 +18,7 @@ impl Drop for Active {
     }
 }
 /// Cancelled tasks remain active until their futures have actually been dropped.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn active() -> bool {
     ACTIVE.load(Ordering::SeqCst) != 0
 }

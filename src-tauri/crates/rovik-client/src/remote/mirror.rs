@@ -48,7 +48,7 @@ pub(super) struct Pulls {
 
 impl Pulls {
     /// In-flight pulls must finish locally; failed pulls retry from their saved cursor.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(super) fn retains_work(&self) -> bool {
         self.coming || self.going || self.again
     }

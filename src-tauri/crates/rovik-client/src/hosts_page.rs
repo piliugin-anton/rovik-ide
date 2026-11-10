@@ -380,7 +380,7 @@ impl HostsPage {
 
     /// Reconstruct drained connections on the next refresh if retirement is
     /// refused. Their settings and credentials have not changed.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) fn retry_drained(&self, ids: &[String]) {
         if ids.is_empty() {
             return;

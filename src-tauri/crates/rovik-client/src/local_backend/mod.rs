@@ -5,23 +5,35 @@
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod control;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+mod handshake;
+#[cfg(any(unix, windows))]
 pub mod host;
+#[cfg(any(unix, windows))]
+mod launch;
 #[cfg(unix)]
+#[path = "unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod platform;
+#[cfg(any(unix, windows))]
 pub mod rpc;
-#[cfg(unix)]
-mod unix;
-#[cfg(unix)]
-pub use unix::{connect, ensure_backend, ensure_command, Lease, Listener, Pending};
+#[cfg(any(unix, windows))]
+pub use handshake::{connect, Listener, Pending};
+#[cfg(any(unix, windows))]
+pub use launch::{ensure_backend, ensure_command};
+#[cfg(any(unix, windows))]
+pub use platform::{Lease, Stream};
 
 /// Version of the local bootstrap protocol, independent of remote RPC.
 pub const PROTOCOL: u32 = 20;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const MAX_HANDSHAKE: usize = 4096;
 
 /// Identifies one initialized backend and the capabilities it serves.
@@ -46,7 +58,7 @@ pub fn compatible(ready: Ready) -> io::Result<Ready> {
     Ok(ready)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn read_ready(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Ready> {
     let len = stream.read_u32().await? as usize;
     if len == 0 || len > MAX_HANDSHAKE {
@@ -62,7 +74,7 @@ async fn read_ready(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Ready> 
     compatible(ready)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_ready(stream: &mut (impl AsyncWrite + Unpin), ready: &Ready) -> io::Result<()> {
     let bytes = serde_json::to_vec(ready).map_err(io::Error::other)?;
     if bytes.len() > MAX_HANDSHAKE {

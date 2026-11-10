@@ -372,7 +372,7 @@ impl Remote {
     }
 
     /// State that cannot be released just by closing an idle connection.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     fn retained_remote_work(&self) -> Option<&'static str> {
         if self.jobs.has_pending() {
             return Some("Remote result imports are still finishing");
@@ -400,7 +400,7 @@ impl Remote {
     }
 
     /// Whether connections, buffered events, or retained work still own state.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) async fn prevents_replacement(&self) -> bool {
         self.receivers.load(std::sync::atomic::Ordering::SeqCst) != 0
             || !self.hosts.states().is_empty()
@@ -411,7 +411,7 @@ impl Remote {
 
     /// Queries on the writer queue so earlier detached placements have finished.
     /// Keep the in-memory routing intact if a later resource refuses retirement.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     async fn verify_saved_mirrors(&self) -> Result<(), String> {
         self.lock().checkpoint_decisions()?;
         let chats = {
@@ -456,7 +456,7 @@ impl Remote {
 
     /// Detaches server-owned execution after local work pauses, joining buffered events.
     /// The caller must exclude new clients and pause maintenance and results.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) async fn drain_for_upgrade(&self, wait: Duration) -> Result<(), String> {
         if let Some(reason) = self.retained_remote_work() {
             return Err(reason.into());

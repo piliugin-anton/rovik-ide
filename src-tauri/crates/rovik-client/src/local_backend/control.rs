@@ -1,11 +1,11 @@
 //! Stable, bounded upgrade negotiation, independent of desktop command RPC.
-use super::{Lease, PROTOCOL};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{io, os::unix::fs::PermissionsExt, path::Path, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
+use super::{
+    platform::{connect_endpoint, Endpoint},
+    Lease, Stream, PROTOCOL,
 };
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{io, path::Path, time::Duration};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const CONTROL: u32 = 1;
 const LIMIT: usize = 4096;
@@ -76,53 +76,21 @@ pub(super) enum Reply {
 
 /// Control endpoint held under the same lifetime lease as command RPC.
 pub(super) struct Listener<'a> {
-    socket: UnixListener,
+    socket: Endpoint,
     _lease: &'a Lease,
-    path: std::path::PathBuf,
 }
 impl<'a> Listener<'a> {
-    /// Only the lifetime owner may replace a stale control socket.
     pub fn bind(lease: &'a Lease, directory: &Path) -> io::Result<Self> {
-        let path = directory.join("control.sock");
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        let socket = UnixListener::bind(&path)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         Ok(Self {
-            socket,
+            socket: Endpoint::bind(directory, "control")?,
             _lease: lease,
-            path,
         })
     }
-    /// Admits only peers belonging to the host user.
-    pub async fn accept(&self) -> io::Result<UnixStream> {
-        let (stream, _) = self.socket.accept().await?;
-        check_peer(&stream)?;
-        Ok(stream)
-    }
-}
-impl Drop for Listener<'_> {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.path) {
-            if e.kind() != io::ErrorKind::NotFound {
-                log::warn!("Couldn't remove backend control endpoint: {e}");
-            }
-        }
+    pub async fn accept(&self) -> io::Result<Stream> {
+        self.socket.accept().await
     }
 }
 
-fn check_peer(stream: &UnixStream) -> io::Result<()> {
-    if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Backend control peer belongs to another user",
-        ));
-    }
-    Ok(())
-}
 /// Reads a bounded frame before allocating its payload.
 pub(super) async fn read<T: DeserializeOwned>(
     stream: &mut (impl tokio::io::AsyncRead + Unpin),
@@ -157,7 +125,7 @@ pub(super) async fn write<T: Serialize>(
 /// Missing endpoints belong to old hosts or hosts not yet ready. Never kill them.
 pub(super) async fn negotiate(directory: &Path) -> io::Result<Option<(Hello, Reply)>> {
     tokio::time::timeout(TIMEOUT, async {
-        let mut stream = match UnixStream::connect(directory.join("control.sock")).await {
+        let mut stream = match connect_endpoint(directory, "control").await {
             Ok(stream) => stream,
             Err(e)
                 if matches!(
@@ -169,7 +137,6 @@ pub(super) async fn negotiate(directory: &Path) -> io::Result<Option<(Hello, Rep
             }
             Err(e) => return Err(e),
         };
-        check_peer(&stream)?;
         let host: Hello = read(&mut stream).await?;
         if host.control != CONTROL {
             return Err(io::Error::new(
@@ -266,6 +233,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn automatic_replacement_waits_for_the_old_owners_cleanup() {
         let root = tempfile::tempdir().unwrap();

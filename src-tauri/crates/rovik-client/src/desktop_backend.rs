@@ -212,7 +212,7 @@ impl DesktopBackend {
     }
 
     /// Freezes host discovery and drains accepted local remote work before pausing results.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn pause_producers(
         &self,
     ) -> (
@@ -226,7 +226,7 @@ impl DesktopBackend {
 
     /// The host must keep admission closed and producers paused until this
     /// returns, including if the negotiating client disconnects.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn prepare_replacement(&self) -> Result<(), String> {
         if let Some(reason) = self.service_replacement_blocker() {
             return Err(reason.into());
@@ -260,7 +260,7 @@ impl DesktopBackend {
     }
 
     /// The host must stop accepting clients and hold the maintenance pause first.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn service_replacement_blocker(&self) -> Option<&'static str> {
         if crate::desktop_task::active() {
             return Some("Client operations are still finishing");

@@ -15,7 +15,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) enum EventSource {
     Embedded(SessionEvents),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Local(crate::local_backend::rpc::EventStream),
 }
 
@@ -23,7 +23,7 @@ impl EventSource {
     async fn next(&mut self) -> Result<DesktopEvent, String> {
         match self {
             Self::Embedded(events) => events.next().await,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Local(events) => events.next().await,
         }
     }
@@ -34,7 +34,7 @@ impl EventSource {
                 events.session().cancel_sink(&sink);
                 Ok(())
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Local(events) => events.reject(sink).await,
         }
     }

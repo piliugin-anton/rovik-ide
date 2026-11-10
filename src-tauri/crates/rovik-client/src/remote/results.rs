@@ -101,7 +101,7 @@ impl Jobs {
     }
 
     /// Includes jobs already dequeued by a paused worker.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(super) fn has_pending(&self) -> bool {
         self.pending.load(std::sync::atomic::Ordering::SeqCst) != 0
     }
@@ -134,7 +134,7 @@ impl Remote {
     }
 
     /// Joins any accepted result import before checking upgrade eligibility.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) async fn pause_results(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.result_turn.clone().lock_owned().await
     }
@@ -142,7 +142,7 @@ impl Remote {
     /// Let accepted local work finish before pausing its worker. The host bounds
     /// this wait while admission and maintenance stay closed. Cancelling only
     /// cancels the wait; imports, transfers, and relays keep running.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) async fn pause_for_upgrade(&self) -> tokio::sync::OwnedMutexGuard<()> {
         loop {
             while self.retained_remote_work().is_some() {

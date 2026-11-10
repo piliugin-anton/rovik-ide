@@ -61,7 +61,7 @@ rovik-protocol = { workspace = true, features = ["testing"] }
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 # The standalone desktop daemon also needs vendored OpenSSL on Intel Macs.
 [target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]

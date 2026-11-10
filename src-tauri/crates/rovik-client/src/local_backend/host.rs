@@ -58,8 +58,15 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
         let control = control::Listener::bind(&lease, &directory)?;
         let hello = control::Hello::new(listener.boot());
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        #[cfg(unix)]
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let termination = async {
+            #[cfg(unix)]
+            terminate.recv().await;
+            #[cfg(not(unix))]
+            std::future::pending::<()>().await;
+        };
+        tokio::pin!(termination);
         let mut clients = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
@@ -129,7 +136,7 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("Local backend client task: {error}");
                     }
                 },
-                _ = terminate.recv() => break,
+                _ = &mut termination => break,
                 result = tokio::signal::ctrl_c() => { result?; break; },
             }
         }
@@ -151,15 +158,26 @@ mod tests {
     #[test]
     fn headless_startup_requires_explicit_unambiguous_absolute_directories() {
         let parse = |args: &[&str]| paths(args.iter().map(OsString::from));
-        let valid = parse(&["--config", "/config with spaces", "--data", "/data"]).unwrap();
-        assert_eq!(valid.data_dir, PathBuf::from("/data"));
-        assert_eq!(valid.config_dir, PathBuf::from("/config with spaces"));
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = root.path().join("config with spaces");
+        let valid = paths([
+            OsString::from("--config"),
+            config.clone().into_os_string(),
+            OsString::from("--data"),
+            data.clone().into_os_string(),
+        ])
+        .unwrap();
+        assert_eq!(valid.data_dir, data);
+        assert_eq!(valid.config_dir, config);
+        let data = data.to_str().unwrap();
+        let config = config.to_str().unwrap();
         for args in [
             vec![],
-            vec!["--data", "/data"],
-            vec!["--data", "relative", "--config", "/config"],
-            vec!["--data", "/data", "--config", "/config", "--data", "/other"],
-            vec!["--data", "/data", "--config", "/config", "--new-window"],
+            vec!["--data", data],
+            vec!["--data", "relative", "--config", config],
+            vec!["--data", data, "--config", config, "--data", data],
+            vec!["--data", data, "--config", config, "--new-window"],
         ] {
             assert!(parse(&args).is_err());
         }

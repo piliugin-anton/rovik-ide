@@ -1,8 +1,10 @@
 # Desktop command migration
 
 Unix desktop windows now attach automatically to the shared daemon. Windows
-retains an embedded host pending named-pipe transport. Every migrated service
-and its event transport can attach through authenticated local RPC. Never fall
+retains an embedded host pending installer handoff and packaged UI activation;
+the standalone daemon and client APIs now support authenticated named pipes.
+Every migrated service and its event transport can attach through authenticated
+local RPC. Never fall
 back to an embedded backend after an IPC failure.
 
 Desktop-only operations use a separate, versioned local request enum in
@@ -54,15 +56,26 @@ existing protocol and routing. Native window actions stay in Tauri.
 16. **Completed**: Drain local remote-work queues before pausing results and detach
     verified server-owned runs/drivers for restoration by the replacement.
 
+17. **Completed**: macOS mount draining, native FSKit validation, and the full
+    42-scenario mounted GUI suite. Physical-Mac kernel validation remains separate.
+
+18. **Implemented; native validation pending**: Windows named-pipe transport,
+    standalone host startup, and attachment/recovery APIs using the shared RPC
+    and guarded replacement contracts. Packaged Windows UI activation is separate.
+
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
-pretend they are ready for IPC. Windows remains embedded until its transport is ready.
+pretend they are ready for IPC. Windows remains embedded until installer handoff
+and packaged UI activation are validated.
 
 ## Following this migration
 
-Windows named pipes; draining child chat views and remote resources for
-upgrades; macOS virtual-volume draining; GUI multi-window smoke testing and macOS mounted validation. Linux
-mounted multi-client execution is covered by the required contract below.
+Windows installer handoff and packaged UI activation, followed by native
+multi-window and WSL execution validation. The installer must not kill a busy
+backend or replace its running executable while it retains work. Physical-Mac
+kernel mount validation still requires a Mac; hosted macOS FSKit and the full
+GUI suite have passed. Earlier remaining-work notes below describe their
+respective phases; this section records the current remaining scope.
 
 ## Private event transport prerequisite
 
@@ -763,3 +776,35 @@ startup `STATFS` arriving with UID 0 and being rejected with `EACCES` by the
 owner-only session. The FSKit message adapter now permits root and the mount
 owner so the system mount service can initialize the volume. Other users remain
 subject to fuser's access check; the kernel transport's policy is unchanged.
+
+## Windows named-pipe transport and standalone startup
+
+The standalone `rovik-desktopd` and `DesktopConnection` attachment/recovery APIs
+now support Windows. Unix sockets and Windows pipes share the bounded readiness
+handshake, command/private-event RPC, control negotiation, launcher serialization,
+and retained-work checks. Wire versions and existing Unix endpoint names stay
+unchanged. Windows upgrades conservatively retain resources reported by the
+core's replacement blocker; this phase does not add WSL mount draining.
+
+Windows endpoint names combine the current user's SID with the data directory's
+volume/file identity, so directory aliases resolve to one owner. Local-only
+pipes have a protected DACL granting access solely to that user. Both ends check
+the peer process's token before exchanging protocol data. First-instance pipe
+handles arbitrate daemon and launcher ownership; process death releases them
+without stale lock-file removal or thread-affine mutex ownership. Listeners
+retain their pending pipe across cancellation and create its successor before
+handing off an accepted connection.
+
+The ordinary Windows UI remains embedded for this phase. Enabling shared UI
+startup also requires an installer handoff that preserves a busy backend and
+handles Windows executable locking. Do not start the standalone daemon against
+an embedded window's data directory; use separate data/config directories for
+standalone testing until packaged activation is implemented.
+
+Regression coverage includes shared boot/distinct sessions, ownership through
+shutdown, endpoint preemption refusal, cancelled accepts, directory aliases,
+the published pipe's DACL, existing-owner attachment without launching, and the
+common RPC framing/cancellation suite on real platform endpoints. A native
+Windows process test starts competing daemons, proves only one initializes,
+detaches all clients, reopens the same backend, and checks ownership release
+after process exit. These tests run in the existing Windows CI job without WSL.

@@ -1,5 +1,5 @@
 //! Standalone entry point for the same host used by the desktop executable.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn main() {
     rovik_core::process::adopt_login_shell_path();
     rovik_core::overlay::confine::require();
@@ -14,10 +14,8 @@ fn main() {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn main() {
-    eprintln!(
-        "Local backend hosting needs the Windows named-pipe transport, which is not available yet."
-    );
+    eprintln!("Local backend hosting is unsupported on this platform.");
     std::process::exit(1);
 }

@@ -2,7 +2,7 @@
 use super::{ChatSync, State};
 use rovik_core::{atomic_file, os_lock};
 use serde::{Deserialize, Serialize};
-#[cfg(any(unix, test))]
+#[cfg(any(unix, windows, test))]
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -110,7 +110,7 @@ impl State {
     }
 
     /// Retry failed writes and checkpoint every live choice before retirement.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(super) fn checkpoint_decisions(&mut self) -> Result<(), String> {
         let chats: BTreeSet<String> = self
             .kept

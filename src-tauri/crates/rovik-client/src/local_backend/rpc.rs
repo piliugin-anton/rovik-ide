@@ -1,7 +1,7 @@
 //! Bounded typed RPC over the authenticated local stream. Calls are never
 //! automatically retried: a lost reply may follow a committed mutation.
 
-use super::{connect, Ready};
+use super::{connect, Ready, Stream};
 use crate::desktop_api::DesktopRequest;
 use crate::desktop_backend::DesktopBackend;
 use crate::desktop_session::{DesktopEvent, SessionEvents};
@@ -12,7 +12,6 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{io, path::Path, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::UnixStream,
     sync::Mutex,
 };
 
@@ -144,7 +143,7 @@ async fn write(stream: &mut (impl AsyncWrite + Unpin), value: &impl Serialize) -
 pub struct Client {
     /// The backend instance and session this connection belongs to.
     pub ready: Ready,
-    stream: Mutex<Option<UnixStream>>,
+    stream: Mutex<Option<Stream>>,
     directory: std::path::PathBuf,
     closing: tokio::sync::watch::Sender<bool>,
 }
@@ -171,7 +170,7 @@ impl Client {
 
     pub(crate) async fn from_connected(
         directory: &Path,
-        stream: UnixStream,
+        stream: Stream,
         ready: Ready,
     ) -> io::Result<Self> {
         let client = Self {
@@ -396,7 +395,7 @@ fn detached() -> io::Error {
 /// Serves requests after the listener has authenticated the peer. A
 /// disconnected client does not cancel an already accepted operation.
 pub async fn serve(
-    mut stream: UnixStream,
+    mut stream: Stream,
     backend: Arc<DesktopBackend>,
     session_id: String,
 ) -> io::Result<()> {
@@ -475,7 +474,7 @@ pub async fn serve(
 
 /// The private event connection of one desktop client.
 pub struct EventStream {
-    stream: UnixStream,
+    stream: Stream,
 }
 
 impl EventStream {
@@ -503,8 +502,8 @@ impl EventStream {
     }
 }
 
-async fn serve_events(stream: UnixStream, mut events: SessionEvents) -> io::Result<()> {
-    let (mut input, mut output) = stream.into_split();
+async fn serve_events(stream: Stream, mut events: SessionEvents) -> io::Result<()> {
+    let (mut input, mut output) = tokio::io::split(stream);
     let session = events.session();
     // Read complete cancellation frames independently: selecting directly on
     // read() would discard partially read frames whenever an event arrived.
@@ -559,9 +558,19 @@ async fn serve_events(stream: UnixStream, mut events: SessionEvents) -> io::Resu
 mod tests {
     use super::*;
 
+    async fn stream_pair() -> (Stream, Stream) {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = super::super::platform::Endpoint::bind(root.path(), "rpc").unwrap();
+        let (server, client) = tokio::join!(
+            endpoint.accept(),
+            super::super::platform::connect_endpoint(root.path(), "rpc")
+        );
+        (client.unwrap(), server.unwrap())
+    }
+
     #[tokio::test]
     async fn idle_between_frames_does_not_start_the_frame_deadline() {
-        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        let (mut sender, mut receiver) = stream_pair().await;
         let wait = Duration::from_millis(10);
         write(&mut sender, &ClientFrame::Ping).await.unwrap();
         assert!(matches!(
@@ -583,7 +592,7 @@ mod tests {
         let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
         frame.extend(payload);
         for prefix in [1, 4, 5] {
-            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let (mut sender, mut receiver) = stream_pair().await;
             sender.write_all(&frame[..prefix]).await.unwrap();
             let result =
                 read_after_idle::<ClientFrame>(&mut receiver, Duration::from_millis(10)).await;
@@ -593,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn detaching_interrupts_a_pending_reply_even_when_control_cannot_reconnect() {
-        let (mut client, mut server) = pair();
+        let (mut client, mut server) = pair().await;
         let directory = tempfile::tempdir().unwrap();
         client.directory = directory.path().to_path_buf();
         let (accepted, received) = tokio::sync::oneshot::channel();
@@ -629,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_calls_reject_cloud_replies_and_do_not_reuse_the_connection() {
-        let (client, mut server) = pair();
+        let (client, mut server) = pair().await;
         let peer = tokio::spawn(async move {
             let frame: ClientFrame = read(&mut server).await.unwrap();
             assert!(matches!(frame, ClientFrame::Desktop { id: 1, .. }));
@@ -658,8 +667,8 @@ mod tests {
         );
     }
 
-    fn pair() -> (Client, UnixStream) {
-        let (client, server) = UnixStream::pair().unwrap();
+    async fn pair() -> (Client, Stream) {
+        let (client, server) = stream_pair().await;
         (
             Client {
                 ready: Ready {
@@ -678,7 +687,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_lost_reply_invalidates_the_connection_without_retrying() {
-        let (client, mut server) = pair();
+        let (client, mut server) = pair().await;
         let peer = tokio::spawn(async move {
             let request: Frame = read(&mut server).await.unwrap();
             assert!(matches!(
@@ -700,7 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_mismatched_reply_cannot_be_used_by_a_later_call() {
-        let (client, mut server) = pair();
+        let (client, mut server) = pair().await;
         let peer = tokio::spawn(async move {
             let _: Frame = read(&mut server).await.unwrap();
             write(
@@ -726,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_an_inflight_call_invalidates_the_connection() {
-        let (client, mut server) = pair();
+        let (client, mut server) = pair().await;
         let client = Arc::new(client);
         let calling = client.clone();
         let task = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
@@ -741,7 +750,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_a_desktop_operation_invalidates_its_connection() {
-        let (client, mut server) = pair();
+        let (client, mut server) = pair().await;
         let client = Arc::new(client);
         let calling = client.clone();
         let task = tokio::spawn(async move {
@@ -762,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_host_calls_preserve_their_destination() {
-        let (client, mut server) = pair();
+        let (client, mut server) = pair().await;
         let peer = tokio::spawn(async move {
             let call: ClientFrame = read(&mut server).await.unwrap();
             assert!(
@@ -791,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_frames_are_rejected_before_allocating_the_payload() {
-        let (mut server, mut client) = UnixStream::pair().unwrap();
+        let (mut server, mut client) = stream_pair().await;
         server.write_u32((MAX_MESSAGE + 1) as u32).await.unwrap();
         assert_eq!(
             read::<Frame>(&mut client).await.unwrap_err().kind(),

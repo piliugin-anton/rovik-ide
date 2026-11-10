@@ -17,7 +17,7 @@ struct State {
 /// A window's command boundary; each replacement owns a fresh resource session.
 pub struct DesktopConnection {
     state: Mutex<State>,
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     replacement: tokio::sync::Mutex<()>,
     closing: tokio::sync::watch::Sender<bool>,
 }
@@ -34,7 +34,7 @@ impl DesktopConnection {
                 closed: false,
                 report: Arc::new(|reason| log::warn!("Desktop events disconnected: {reason}")),
             }),
-            #[cfg(any(unix, test))]
+            #[cfg(any(unix, windows, test))]
             replacement: Default::default(),
             closing: tokio::sync::watch::channel(false).0,
         }
@@ -86,13 +86,13 @@ impl DesktopConnection {
     }
 
     /// Attaches to an authenticated local host without an embedded fallback.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn connect(directory: &std::path::Path) -> std::io::Result<Self> {
         Ok(Self::new(Connection::connect(directory).await?))
     }
 
     /// Launches the host only when discovery is absent, then attaches this window.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn attach(
         command: std::process::Command,
         data: &std::path::Path,
@@ -103,7 +103,7 @@ impl DesktopConnection {
 
     /// Replaces a failed session explicitly. Only validated project registration
     /// is restored; callers recreate subscriptions and refresh authoritative state.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn reconnect(
         &self,
         command: std::process::Command,
@@ -134,7 +134,7 @@ impl DesktopConnection {
         .await
     }
 
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     async fn replace(
         &self,
         open: impl std::future::Future<Output = Result<Connection, String>>,

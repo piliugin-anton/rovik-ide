@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 /// One explicit backend destination for a window's adapted commands.
 pub struct Connection {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     journal_reader: tokio::sync::Mutex<Option<crate::local_backend::rpc::Client>>,
     closing: tokio::sync::watch::Sender<bool>,
     backend: Backend,
@@ -19,7 +19,7 @@ enum Backend {
         backend: Arc<DesktopBackend>,
         lease: crate::desktop_session::SessionLease,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Local(crate::local_backend::rpc::Client),
 }
 
@@ -30,7 +30,7 @@ impl Connection {
         }
         match &self.backend {
             Backend::Embedded { lease, .. } => !lease.session.is_closed(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Backend::Local(client) => client.usable(),
         }
     }
@@ -45,10 +45,10 @@ impl Connection {
                 lease.session.close("Desktop client detached");
                 Ok(())
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Backend::Local(client) => client.close().await.map_err(|error| error.to_string()),
         };
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Ok(mut reader) = self.journal_reader.try_lock() {
             reader.take();
         }
@@ -102,7 +102,7 @@ impl Connection {
                         .unwrap_or_else(|| e.to_string())
                 })
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Backend::Local(client) => {
                 let mut reader = self.journal_reader.lock().await;
                 if reader.is_none() {
@@ -147,7 +147,7 @@ impl Connection {
                     Backend::Embedded { lease, .. } => {
                         lease.session.events().map(EventSource::Embedded)
                     }
-                    #[cfg(unix)]
+                    #[cfg(any(unix, windows))]
                     Backend::Local(client) => client
                         .events()
                         .await
@@ -174,7 +174,7 @@ impl Connection {
                     self.connection.events.remove(&self.sink);
                     match &self.connection.backend {
                         Backend::Embedded { lease, .. } => lease.session.cancel_sink(&self.sink),
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         Backend::Local(_) => {}
                     }
                 }
@@ -277,7 +277,7 @@ impl Connection {
                 }
                 request.dispatch_in(backend, Some(&lease.session)).await
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Backend::Local(client) => client
                 .desktop(request)
                 .await
@@ -292,14 +292,14 @@ impl Connection {
             backend: Backend::Embedded { backend, lease },
             events: Default::default(),
             closing: tokio::sync::watch::channel(false).0,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             journal_reader: Default::default(),
         }
     }
 
     /// Attaches to the single local host, launching the packaged command only
     /// when discovery is absent. Authentication or compatibility errors fail closed.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn attach(
         command: std::process::Command,
         data: &std::path::Path,
@@ -314,13 +314,13 @@ impl Connection {
 
     /// Attaches to an existing local backend. Failure is returned to the
     /// window; a second private backend is never initialized here.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn connect(directory: &std::path::Path) -> std::io::Result<Self> {
         let client = crate::local_backend::rpc::Client::connect(directory).await?;
         Ok(Self::local(client))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn local(client: crate::local_backend::rpc::Client) -> Self {
         Self {
             backend: Backend::Local(client),
@@ -345,7 +345,7 @@ impl Connection {
                 }
                 backend.dispatch(request).await
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Backend::Local(client) => client.call(request).await.map_err(transport)?,
         }
     }
@@ -371,13 +371,13 @@ impl Connection {
                 }
                 backend.remote.host_call(host, request).await
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Backend::Local(client) => client.call_host(host, request).await.map_err(transport)?,
         }
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn transport(error: std::io::Error) -> Fail {
     let code = match error.kind() {
         std::io::ErrorKind::Unsupported => rovik_protocol::FailCode::Version,

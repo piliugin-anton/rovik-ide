@@ -95,7 +95,7 @@ impl Maintenance {
     }
     /// Holds startup/refresh still while a host checks replacement eligibility.
     /// Dropping the guard resumes scheduling when replacement is refused.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) async fn pause(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.turn.clone().lock_owned().await
     }

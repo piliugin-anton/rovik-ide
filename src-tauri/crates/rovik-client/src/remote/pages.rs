@@ -87,7 +87,7 @@ pub(super) struct Pages {
 
 impl Pages {
     /// Forwarded ports retain remote resources until explicitly closed.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(super) fn retains_forwarding(&self) -> bool {
         !self.forwards().is_empty()
     }
