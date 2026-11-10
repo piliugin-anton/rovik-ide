@@ -333,9 +333,12 @@ pub async fn check_disk_contract(owner: DesktopConnection, other: DesktopConnect
     use std::path::Path;
     use std::time::Duration;
     let root = tempfile::tempdir().unwrap();
-    let a = root.path().join("a");
-    let b = root.path().join("b");
-    let replacement = root.path().join("replacement");
+    // macOS watches report /private/var even when temp_dir uses /var.
+    // Compare physical paths so alias spelling cannot look like another client.
+    let physical_root = root.path().canonicalize().unwrap();
+    let a = physical_root.join("a");
+    let b = physical_root.join("b");
+    let replacement = physical_root.join("replacement");
     for path in [&a, &b, &replacement] {
         std::fs::create_dir(path).unwrap();
     }
