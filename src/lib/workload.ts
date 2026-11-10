@@ -8,6 +8,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { plural } from './textUtils';
 
 export interface WorkloadStatus {
+  /** Visible chat currently receiving priority across all connected windows. */
+  focusedDialogId?: string | null;
   /** As set; null: auto. */
   slots: number | null;
   /** What auto gives on this machine now. */

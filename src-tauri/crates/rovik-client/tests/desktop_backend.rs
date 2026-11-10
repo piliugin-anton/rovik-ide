@@ -20,6 +20,8 @@ mod desktop_pages;
 mod desktop_projects;
 #[path = "support/desktop_tasks.rs"]
 mod desktop_tasks;
+#[path = "support/desktop_workload.rs"]
+mod desktop_workload;
 
 use rovik_client::desktop_backend::DesktopBackend;
 use rovik_client::desktop_connection::DesktopConnection;
@@ -109,6 +111,11 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
         DesktopConnection::embedded(backend.clone()),
         DesktopConnection::embedded(backend.clone()),
         &[std::process::id()],
+    )
+    .await;
+    desktop_workload::check(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
     )
     .await;
     desktop_browser::check(&connection, &other).await;

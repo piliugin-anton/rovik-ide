@@ -53,6 +53,7 @@ pub struct Session {
     pub(crate) filesystem: Arc<crate::filesystem::WatcherState>,
     pub(crate) git_history: Arc<std::sync::atomic::AtomicU64>,
     project_cleanup: Mutex<Option<Cleanup>>,
+    workload_cleanup: Mutex<Option<Cleanup>>,
     closed: AtomicBool,
     failure: watch::Sender<Option<String>>,
     queued_bytes: Mutex<usize>,
@@ -72,6 +73,7 @@ impl Session {
             chat_requests: Default::default(),
             git_history: Default::default(),
             project_cleanup: Default::default(),
+            workload_cleanup: Default::default(),
             closed: AtomicBool::new(false),
             failure,
             queued_bytes: Mutex::new(0),
@@ -114,6 +116,9 @@ impl Session {
         if let Some(cleanup) = lock(&self.project_cleanup).take() {
             cleanup();
         }
+        if let Some(cleanup) = lock(&self.workload_cleanup).take() {
+            cleanup();
+        }
         lock(&self.streams).clear();
         let resources = std::mem::take(&mut *lock(&self.resources));
         for (_, resource) in resources {
@@ -134,6 +139,22 @@ impl Session {
         remote.set_client_project(self.id(), project);
         let id = self.id.clone();
         *cleanup = Some(Box::new(move || remote.set_client_project(&id, None)));
+        Ok(())
+    }
+
+    /// Registers focus and disconnect cleanup under the same session lock.
+    pub(crate) fn set_workload(
+        &self,
+        workload: Arc<crate::workload::WorkloadState>,
+        dialog: Option<String>,
+    ) -> Result<(), String> {
+        let mut cleanup = lock(&self.workload_cleanup);
+        if self.is_closed() {
+            return Err("Desktop session ended; reconnect before setting workload focus".into());
+        }
+        workload.set_focus(self.id(), dialog)?;
+        let client = self.id().to_string();
+        *cleanup = Some(Box::new(move || workload.release(&client)));
         Ok(())
     }
 

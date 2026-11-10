@@ -1,3 +1,4 @@
+import { workloadFocus } from '../lib/workloadFocus';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Accessor,
@@ -435,11 +436,18 @@ export default function ChatPanel(props: ChatProps) {
     setOwnModeChat(open && worksOnItsOwn(open.place, cloud.hosts) ? open.id : null);
   });
   onCleanup(() => setOwnModeChat(null));
-  // The chat on screen goes first in the queue for heavy work (builds,
-  // tests) when several chats want the CPU at once (src-tauri/src/workload).
-  createEffect(() => {
-    const id = store.state.chatVisible ? (activeDialogId() ?? null) : null;
-    void invoke('workload_focus', { dialogId: id }).catch(() => {});
+  // Visible selections belong to this window. Returning to it promotes its
+  // chat again; disposal releases only this window's selection.
+  const priority = workloadFocus({
+    chat: () => (store.state.chatVisible ? (activeDialogId() ?? null) : null),
+    send: (dialogId) => invoke('workload_focus', { dialogId }),
+    failed: (error) => console.error('Could not update workload priority:', error),
+  });
+  createEffect(priority.refresh);
+  onMount(() => window.addEventListener('focus', priority.refresh));
+  onCleanup(() => {
+    window.removeEventListener('focus', priority.refresh);
+    priority.stop();
   });
 
   // The Settings dialog lives in App (gear next to the project selector).

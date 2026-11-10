@@ -2288,3 +2288,9 @@ RPC. Each request uses its own project configuration and unsaved buffer, leaving
 the source file untouched. Disconnecting a client cancels its formatter process;
 backend shutdown waits for formatter cleanup. Other clients can keep formatting
 and sending commands while a formatter is busy.
+
+Heavy-command slot limits and queue status now belong to the shared backend.
+Each window retains its visible-chat selection; the most recently selected chat
+gets priority, and returning to a window promotes its chat again. Hiding a chat
+or disconnecting a window releases only its selection. Cloud priority updates
+are ordered, and reconnecting hosts receive the current selection.

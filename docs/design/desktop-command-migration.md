@@ -203,7 +203,7 @@ cover subscription lifecycle, cross-client rejection, and reuse after errors.
 Frontend tests cover stale callbacks, late replies, metadata ordering, and OS
 opener failures.
 
-Workload and remaining native startup hooks still need migration.
+Remaining native startup hooks still need migration.
 Automatic daemon activation, session reconstruction, Windows transport, and
 mounted multi-window FUSE validation remain. The app still selects embedded mode.
 
@@ -229,7 +229,37 @@ files, useful errors and connection reuse, and disconnect cleanup while another
 client continues formatting. Platform-specific Windows wrapper tests are retained;
 this environment validates the Linux paths.
 
-Workload commands and native startup hooks remain before automatic daemon
-attachment. Workload focus still needs an explicit policy for competing windows.
+Native startup hooks remain before automatic daemon attachment.
 Session reconstruction, Windows transport, and mounted multi-window FUSE
 validation also remain; the app continues to select embedded mode.
+
+## Workload queue ownership
+
+Focus, slot-limit settings, and queue status now use typed desktop RPC. Slot
+limits are shared and persisted by the backend, with serialized writes retaining
+the existing automatic mode and 1–8 clamping. Status also reports the effective
+focused chat.
+
+Each client retains its own visible-chat selection. The most recently reported
+selection wins; returning to a window promotes its chat again. Hiding or closing
+a chat releases only that client's selection, falling back to the most recent
+remaining client. Session disconnect performs the same cleanup, and a closed
+session cannot register a late selection. The UI serializes and coalesces its
+reports so delayed replies cannot restore a selection after component disposal.
+
+Local priority changes immediately. A single backend worker coalesces pending
+cloud updates and sends them in order, independently of UI commands. Reconnecting
+hosts receive the latest selection, including an explicit clear. Host failures
+are logged, as with other shared host settings. Backend shutdown clears local
+priority, sends the final cloud clear, and joins the sender; host calls retain
+the existing bounded timeout.
+
+Unit and frontend tests cover selection ownership, disconnect/disposal cleanup,
+late calls, promotion, and coalescing behind slow work. Remote fixtures cover
+reconnect snapshots. Embedded and real-daemon fixtures verify shared limits,
+automatic mode, clamping, priority fallback, and continued commands after another
+client disconnects.
+
+Remaining work: native startup hooks, automatic daemon attachment and session
+reconstruction, Windows transport, and mounted multi-window FUSE validation.
+The app still selects embedded mode.

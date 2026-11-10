@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Shared workload settings and session-owned focus selections.
+    pub workload: Arc<crate::workload::WorkloadState>,
     /// Cancellable editor formatter workers.
     pub formatters: Arc<crate::formatter::FormatterState>,
     /// Private, one-shot page requests for the owning UI client.
@@ -134,7 +136,9 @@ impl DesktopBackend {
             }
         }));
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
+        let workload = crate::workload::WorkloadState::new(remote.clone());
         Ok(Self {
+            workload,
             formatters: Default::default(),
             pages,
             journal,
@@ -203,6 +207,7 @@ impl DesktopBackend {
     /// once the service moves into a shared process.
     pub async fn shutdown(&self) {
         self.sessions.close_all();
+        self.workload.shutdown().await;
         self.terminals.end_all();
         let lsp = self.lsp.clone();
         if let Err(error) = rovik_core::rt::spawn_blocking(move || lsp.shutdown()).await {
@@ -260,7 +265,9 @@ mod routing_tests {
             remote.clone(),
             "test",
         ));
+        let workload = crate::workload::WorkloadState::new(remote.clone());
         DesktopBackend {
+            workload,
             formatters: Default::default(),
             pages,
             journal: Default::default(),

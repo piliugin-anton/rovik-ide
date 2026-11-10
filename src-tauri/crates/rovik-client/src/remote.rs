@@ -199,6 +199,9 @@ pub struct Remote {
     sign_outs: Mutex<Option<Arc<dyn OwedSignOuts>>>,
     /// The ports forwarded for the chats' pages (remote/pages.rs).
     pages: pages::Pages,
+    // Unset until a UI reports priority; Some(None) is an explicit clear
+    // that reconnecting hosts must receive too.
+    workload_focus: tokio::sync::Mutex<Option<Option<String>>>,
 }
 
 /// Whether the project with this id is open in another of Rovik's windows:
@@ -316,6 +319,7 @@ impl Remote {
             refresh: Mutex::new(None),
             sign_outs: Mutex::new(None),
             pages: pages::Pages::default(),
+            workload_focus: Default::default(),
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
         remote
@@ -1289,6 +1293,25 @@ impl Remote {
         Ok(reply)
     }
 
+    /// Sends only cloud priority; local priority is already applied by the backend.
+    /// The same lock orders reconnect snapshots after any earlier update.
+    pub(crate) async fn send_workload_focus(&self, dialog_id: Option<String>) {
+        let mut focus = self.workload_focus.lock().await;
+        *focus = Some(dialog_id.clone());
+        futures_util::future::join_all(self.hosts.ready().into_iter().map(|(host, client)| {
+            let dialog_id = dialog_id.clone();
+            async move {
+                if let Err(error) = client
+                    .call_within(Request::WorkloadFocus { dialog_id }, HOSTS_WAIT)
+                    .await
+                {
+                    log::warn!("{host} didn't take workload priority: {error}");
+                }
+            }
+        }))
+        .await;
+    }
+
     /// Settings → Network changed how cloud hosts connect (their rows, the
     /// timeout, a proxy or its password they go through): each ready host
     /// is sent the configuration again, with it. Before the frontend
@@ -1334,6 +1357,22 @@ impl Remote {
             let sent = client.call_within(Request::AgentConfigure(Box::new(config)), HOSTS_WAIT);
             if let Err(fail) = sent.await {
                 log::warn!("{host} didn't take the configuration: {fail}");
+            }
+        }
+        {
+            let focus = self.workload_focus.lock().await;
+            if let Some(dialog_id) = focus.as_ref() {
+                if let Err(error) = client
+                    .call_within(
+                        Request::WorkloadFocus {
+                            dialog_id: dialog_id.clone(),
+                        },
+                        HOSTS_WAIT,
+                    )
+                    .await
+                {
+                    log::warn!("{host} didn't take workload priority: {error}");
+                }
             }
         }
         if self.serves(host, features::AUTONOMY) {

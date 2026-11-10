@@ -1967,3 +1967,30 @@ async fn memory_sync_leaves_an_older_daemon_on_its_existing_protocol() {
         .unwrap();
     assert!(fake.requests.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn workload_priority_is_replayed_to_a_reconnecting_host_including_a_clear() {
+    let app = App::new();
+    let (remote, fake) = connected(&app).await;
+    remote.send_workload_focus(Some("watched".into())).await;
+    remote.configure(HOST).await;
+    remote.send_workload_focus(None).await;
+    remote.configure(HOST).await;
+    let selected: Vec<_> = fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|request| {
+            if let Request::WorkloadFocus { dialog_id } = request {
+                Some(dialog_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        selected,
+        vec![Some("watched".into()), Some("watched".into()), None, None]
+    );
+}

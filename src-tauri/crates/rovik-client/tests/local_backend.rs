@@ -21,6 +21,8 @@ mod desktop_pages;
 mod desktop_projects;
 #[path = "support/desktop_tasks.rs"]
 mod desktop_tasks;
+#[path = "support/desktop_workload.rs"]
+mod desktop_workload;
 
 use rovik_client::local_backend::{connect, directory};
 use std::process::{Child, Command, Stdio};
@@ -185,6 +187,15 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
             .await
             .unwrap(),
         &[first.0.id(), second.0.id()],
+    )
+    .await;
+    desktop_workload::check(
+        rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+            .await
+            .unwrap(),
+        rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+            .await
+            .unwrap(),
     )
     .await;
     desktop_browser::check(&adapter, &other_adapter).await;

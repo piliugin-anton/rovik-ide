@@ -23,6 +23,7 @@ pub mod projects;
 pub mod settings;
 pub mod terminal;
 pub mod vfs;
+pub mod workload;
 
 /// A desktop response preserves both string and structured UI errors.
 pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
@@ -31,6 +32,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Shared workload queue and client-owned priority.
+    Workload(Box<workload::WorkloadRequest>),
     /// Editor formatter discovery and execution.
     Formatter(Box<formatter::FormatterRequest>),
     /// Scoped UI callbacks for opening forwarded pages.
@@ -93,6 +96,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Workload(request) => request.dispatch(backend, session).await,
                 Self::Formatter(request) => request.dispatch(backend, session),
                 Self::Pages(request) => request.dispatch(backend, session),
                 Self::Browser(request) => request.dispatch(backend, session).await,

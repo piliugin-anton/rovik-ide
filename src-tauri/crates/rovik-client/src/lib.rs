@@ -94,3 +94,6 @@ pub mod desktop_pages;
 
 /// Backend-owned editor formatter discovery and execution.
 pub mod formatter;
+
+/// Shared workload controls and client-owned priority.
+pub mod workload;
