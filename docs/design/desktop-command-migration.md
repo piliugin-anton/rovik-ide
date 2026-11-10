@@ -59,7 +59,7 @@ existing protocol and routing. Native window actions stay in Tauri.
 17. **Completed**: macOS mount draining, native FSKit validation, and the full
     42-scenario mounted GUI suite. Physical-Mac kernel validation remains separate.
 
-18. **Implemented; native validation pending**: Windows named-pipe transport,
+18. **Completed**: Windows named-pipe transport,
     standalone host startup, and attachment/recovery APIs using the shared RPC
     and guarded replacement contracts. Packaged Windows UI activation is separate.
 
@@ -70,8 +70,9 @@ and packaged UI activation are validated.
 
 ## Following this migration
 
-Windows installer handoff and packaged UI activation, followed by native
-multi-window and WSL execution validation. The installer must not kill a busy
+Windows crash/reconnect and guarded-upgrade validation, installer handoff, and
+packaged UI activation, followed by native multi-window and WSL execution
+validation. The installer must not kill a busy
 backend or replace its running executable while it retains work. Physical-Mac
 kernel mount validation still requires a Mac; hosted macOS FSKit and the full
 GUI suite have passed. Earlier remaining-work notes below describe their
@@ -808,3 +809,14 @@ common RPC framing/cancellation suite on real platform endpoints. A native
 Windows process test starts competing daemons, proves only one initializes,
 detaches all clients, reopens the same backend, and checks ownership release
 after process exit. These tests run in the existing Windows CI job without WSL.
+
+The [native Windows CI run on `0b83da1`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42907660967)
+passed the Windows workspace tests and doctests, including the pipe ACL,
+ownership, private-session, RPC, and competing-daemon process regressions.
+Lease contention accepts both Windows busy-instance error codes. The ACL test
+compares the actual trustee SID, preserving exact identity checks even when
+Windows renders an administrator account using an SDDL alias.
+
+The Windows UI still uses its embedded host. Native crash/reconnect and upgrade
+scenarios, installer handoff, packaged UI activation, and WSL execution
+validation are the next integration phase.
