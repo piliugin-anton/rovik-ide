@@ -696,9 +696,8 @@ ROVIK_MOUNTED_BACKEND=1 cargo test --manifest-path src-tauri/Cargo.toml -p rovik
 ```
 
 The test requires a working mount and fails rather than skipping when unavailable.
-Hosted macOS CI builds the platform path and runs the non-mounted drain tests;
-it does not install or enable macFUSE. Native mounted validation is still required
-for both macFUSE backends.
+Ordinary macOS build CI runs the non-mounted drain tests. The dedicated mounted
+workflow validates FSKit; the kernel backend still requires a physical Mac.
 
 The **E2E** workflow’s manual `macos-mounts` platform invokes the
 **macOS mounted backend** workflow and attempts this FSKit regression on a hosted macOS runner. It installs macFUSE, requests FSKit module
@@ -733,8 +732,10 @@ The native GUI run exposed idle RPC disconnections and unordered terminal input.
 Frame deadlines now begin with the first received byte rather than socket
 readiness, and frontend terminal writes are sequenced per terminal. Queued input
 is rejected after an earlier write fails or the backend generation changes.
-The two-window project tests passed; full isolated-chat GUI validation still
-requires a working mounted backend. Native kernel-backend validation remains
+The two-window project tests passed. The macOS GUI workflow now installs FSKit
+and requires chat isolation, including a regression for an unlanded edit while
+another window opens and closes. Its native result remains to be validated.
+Native kernel-backend validation remains
 unavailable on GitHub-hosted virtual machines.
 
 The native run on `596556f` passed 58 fuser tests, three adapter tests and an

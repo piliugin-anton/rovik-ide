@@ -84,6 +84,12 @@ The copy is the build as it ships, kept before the bridge build replaces
 it: the other windows of the `instances:` steps (without it, they're
 skipped).
 
+The macOS CI job installs and enables macFUSE's FSKit module and passes
+`--require-isolation`. This makes fallback to the project directory a failure
+and adds a mounted chat regression: another window opens, the chat writes an
+unlanded edit, and closing that window must preserve the view and its isolation.
+Use the same flag locally with a working mount driver and a second app binary.
+
 The bridge works on Linux too (`--driver bridge` with a bridge build),
 which is how it's checked without a Mac. A bridge build must never ship:
 its CSP allows `eval` and a connection to the runner.

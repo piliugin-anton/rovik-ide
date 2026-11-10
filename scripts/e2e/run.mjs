@@ -6,7 +6,7 @@
 //
 //   node scripts/e2e/run.mjs --app <binary> --out <dir> [--driver webdriver|bridge]
 //        [--tauri-driver <path>] [--native-driver <path>] [--only <regex>]
-//        [--second-app <binary>]
+//        [--second-app <binary>] [--require-isolation]
 //
 // webdriver (Linux, Windows): starts tauri-driver, which starts the app
 // through WebKitWebDriver or msedgedriver. bridge (macOS, where WKWebView
@@ -26,6 +26,7 @@ import {
   appendFileSync,
 } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebDriver, Keys, sleep } from './webdriver.mjs';
 import { BridgeDriver } from './bridge.mjs';
@@ -40,6 +41,7 @@ const PROJECTS = join(WORK, 'projects');
 const DEMO = join(PROJECTS, 'demo');
 const MODEL_PORT = Number(args['model-port'] ?? 18080);
 const ONLY = args.only ? new RegExp(args.only, 'i') : null;
+const REQUIRE_ISOLATION = Boolean(args['require-isolation']);
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
 const APP = resolve(args.app ?? '');
 const APPIMAGE = /\.AppImage$/i.test(APP);
@@ -205,6 +207,28 @@ function launchRovik(argv, name, env = {}) {
     }
   }
   return startChild(SECOND_APP, argv, { name, env: { ...own, ...env } });
+}
+
+/** Published project claims, used to wait for a window to finish opening. */
+function heldBy(pid) {
+  const data =
+    PLATFORM === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support')
+      : PLATFORM === 'win32'
+        ? process.env.APPDATA
+        : join(WORK, 'app', 'data');
+  const claims = join(data, 'rovik-ide', 'open-projects');
+  if (!existsSync(claims)) return [];
+  return readdirSync(claims)
+    .filter((file) => file.endsWith('.json'))
+    .flatMap((file) => {
+      try {
+        const holder = JSON.parse(readFileSync(join(claims, file), 'utf8'));
+        return holder.pid === pid ? [holder] : [];
+      } catch {
+        return [];
+      }
+    });
 }
 
 /** `child`'s exit code, once it ends; fails after `timeout` ms. */
@@ -1017,18 +1041,6 @@ async function run() {
       await step(
         'instances: New window starts without a project; the chats without one stay in the first',
         async () => {
-          const claims = join(WORK, 'app', 'data', 'rovik-ide', 'open-projects');
-          const heldBy = (pid) =>
-            readdirSync(claims)
-              .filter((f) => f.endsWith('.json'))
-              .map((f) => {
-                try {
-                  return JSON.parse(readFileSync(join(claims, f), 'utf8'));
-                } catch {
-                  return null;
-                }
-              })
-              .filter((holder) => holder?.pid === pid);
           const newWindows = () => {
             try {
               return execFileSync('pgrep', ['-f', 'rovik-ide --new-window'], { encoding: 'utf8' })
@@ -2006,6 +2018,71 @@ async function run() {
     await waitFor(() => d.exists('.chat-send-button:not(.stop)'), 'the run to end', 30_000);
   });
 
+  if (REQUIRE_ISOLATION) {
+    await step('chat: opening and closing another window preserves the isolated view', async () => {
+      assert(SECOND_APP, '--require-isolation needs --second-app with the bridge driver');
+      const before = toolResults().length;
+      await send(
+        'Show the working directory.\n@tool bash {"command":"pwd"}\n@text Found the working directory.'
+      );
+      const result = await waitFor(() => toolResults()[before], 'the chat working directory');
+      const view = result
+        .split('\n')
+        .find((line) => line.startsWith('/'))
+        ?.trim();
+      assert(view && resolve(view) !== DEMO, `the chat must use an isolated view: ${result}`);
+      assert(existsSync(join(view, 'package.json')), `the mounted view exists: ${view}`);
+      const side = join(PROJECTS, 'mount-peer');
+      write(join(side, 'peer.txt'), 'another window\n');
+      const sideLog = join(OUT, 'app-mount-peer.log');
+      const second = launchRovik([side], 'mount-peer', { ROVIK_LOG_FILE: sideLog });
+      try {
+        // A request for its project is handled only once the other UI is ready.
+        await waitFor(
+          () => heldBy(second.pid).some((claim) => claim.path === side),
+          'the peer to open its project',
+          30_000
+        );
+        const probe = launchRovik([side], 'mount-peer-probe');
+        assert((await exited(probe, 60_000)) === 0, 'the peer owns its project');
+        await waitFor(() => askedToFront(sideLog) > 0, 'the peer to handle activation');
+        assert(second.exitCode === null, 'the other window remains open');
+        const writes = toolResults().length;
+        await send(
+          'Write in the isolated view.\n@tool write {"path":"window-isolation.txt","content":"private edit\\n"}\n@thinkslow 120\n@text Written.'
+        );
+        await waitFor(() => toolResults()[writes], 'the isolated write');
+        assert(
+          readFileSync(join(view, 'window-isolation.txt'), 'utf8') === 'private edit\n',
+          'the edit is in the view'
+        );
+        assert(
+          !existsSync(join(DEMO, 'window-isolation.txt')),
+          'the pending edit is absent from the project'
+        );
+        second.kill();
+        await exited(second, 15_000);
+        assert(
+          readFileSync(join(view, 'window-isolation.txt'), 'utf8') === 'private edit\n',
+          'closing the other window preserves the mount and edit'
+        );
+        assert(
+          !existsSync(join(DEMO, 'window-isolation.txt')),
+          'closing the other window preserves isolation'
+        );
+      } finally {
+        if (second.exitCode === null && second.signalCode === null) second.kill();
+        if (await d.exists('.chat-send-button.stop')) {
+          await click('.chat-send-button.stop');
+          await waitFor(
+            async () => !(await d.exists('.chat-send-button.stop')),
+            'the test run to stop'
+          );
+        }
+      }
+    });
+  }
+
   /** Settings → Agent runs → "Open the files the agent edits". */
   async function openFilesAfterAgentEdits(on) {
     await click('.sidebar-settings-button');
@@ -2080,6 +2157,7 @@ async function run() {
       );
       const told = await notIsolated();
       if (told) {
+        assert(!REQUIRE_ISOLATION, `isolation is required: ${told}`);
         note(`the chat wasn't isolated: ${told}`);
         rmSync(join(DEMO, 'hello.txt'));
         return;

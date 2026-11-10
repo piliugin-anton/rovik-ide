@@ -265,6 +265,11 @@ jobs:
       # on a developer's machine (without it npx fetches an unrelated "tsc"
       # package, the check fails and the agent's changes don't land).
       - run: npm install -g typescript
+      - name: Install and enable macFUSE's FSKit module
+        run: |
+          brew install --cask macfuse
+          python3 -m unittest discover -s scripts -p enable_ci_fskit_test.py
+          python3 scripts/enable_ci_fskit.py
       - name: Build the app
         run: |
           npx tauri build --bundles app
@@ -317,7 +322,7 @@ jobs:
           exe=$(ls "$app/Contents/MacOS/" | head -1)
           echo "APP=$app/Contents/MacOS/$exe" >> "$GITHUB_ENV"
       - name: Run the scenarios
-        run: node scripts/e2e/run.mjs --app "$APP" --out e2e-out --driver bridge --second-app "$SECOND_APP"
+        run: node scripts/e2e/run.mjs --app "$APP" --out e2e-out --driver bridge --second-app "$SECOND_APP" --require-isolation
       - name: Logs of a failed run
         if: failure()
         run: |
