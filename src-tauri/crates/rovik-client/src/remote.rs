@@ -10,6 +10,7 @@ use crate::client::{Client, DaemonInfo, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
 use git2::Oid;
+#[cfg(test)]
 use results::Job;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest};
 use rovik_core::agent_run::subagent::Kind;
@@ -188,10 +189,12 @@ pub struct Remote {
     state: Mutex<State>,
     cloud: Mutex<Option<CloudSink>>,
     /// The queue of results to import and land (remote/results.rs).
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: results::Jobs,
     result_turn: Arc<tokio::sync::Mutex<()>>,
     results_closing: std::sync::atomic::AtomicBool,
     receivers: Arc<std::sync::atomic::AtomicUsize>,
+    receivers_done: Arc<tokio::sync::Notify>,
+    background_work: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether a project is open in another of Rovik's windows, each a
     /// process with its own connections (the app's instances.rs).
     elsewhere: Mutex<Option<crate::project_ownership::EmbeddedOwnership>>,
@@ -306,7 +309,7 @@ impl State {
 
 impl Remote {
     pub fn new(core: Core) -> Arc<Remote> {
-        let (jobs, queue) = mpsc::unbounded_channel();
+        let (jobs, queue) = results::channel();
         let remote = Arc::new_cyclic(|me| Remote {
             core,
             hosts: Hosts::default(),
@@ -317,6 +320,8 @@ impl Remote {
             result_turn: Default::default(),
             results_closing: Default::default(),
             receivers: Default::default(),
+            receivers_done: Default::default(),
+            background_work: Default::default(),
             elsewhere: Mutex::new(None),
             refresh: Mutex::new(None),
             sign_outs: Mutex::new(None),
@@ -327,23 +332,104 @@ impl Remote {
         remote
     }
 
-    /// Remote producers are not drained by local automatic upgrades. Refuse
-    /// replacement even while a configured host is offline or reconnecting.
+    fn spawn(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> tokio::task::JoinHandle<()> {
+        rovik_core::rt::spawn(self.track(future))
+    }
+
+    /// Registers detached event work before scheduling it, preserving the
+    /// caller's runtime and counting futures that have not been polled yet.
+    fn track(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        struct Working(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Working {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        self.background_work
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let working = Working(self.background_work.clone());
+        async move {
+            let _working = working;
+            future.await;
+        }
+    }
+
+    /// State that cannot be released just by closing an idle connection.
     #[cfg(any(unix, test))]
-    pub(crate) fn prevents_replacement(&self) -> bool {
-        if self.receivers.load(std::sync::atomic::Ordering::SeqCst) != 0
-            || !self.hosts.states().is_empty()
+    fn retained_remote_work(&self) -> Option<&'static str> {
+        if self.jobs.has_pending() {
+            return Some("Remote result imports are still finishing");
+        }
+        if self
+            .background_work
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != 0
         {
-            return true;
+            return Some("Remote event work is still finishing");
+        }
+        if self.pages.retains_forwarding() {
+            return Some("Forwarded remote ports still retain work");
         }
         let state = self.lock();
-        !state.chats.is_empty()
+        let retained = !state.chats.is_empty()
             || !state.pulls.is_empty()
             || !state.moving.is_empty()
             || !state.running.is_empty()
             || !state.driving.is_empty()
             || !state.uploads.is_empty()
             || !state.steer_uploads.is_empty()
+            || !state.backs.is_empty()
+            || !state.held.is_empty();
+        retained.then_some("Remote chats or transfers still retain work")
+    }
+
+    /// Whether connections, buffered events, or retained work still own state.
+    #[cfg(any(unix, test))]
+    pub(crate) fn prevents_replacement(&self) -> bool {
+        self.receivers.load(std::sync::atomic::Ordering::SeqCst) != 0
+            || !self.hosts.states().is_empty()
+            || self.retained_remote_work().is_some()
+    }
+
+    /// Stops only connections without retained work, then joins buffered events.
+    /// The caller must exclude new clients and pause maintenance and results.
+    #[cfg(any(unix, test))]
+    pub(crate) async fn drain_for_upgrade(&self, wait: Duration) -> Result<(), String> {
+        if let Some(reason) = self.retained_remote_work() {
+            return Err(reason.into());
+        }
+        for (host, _) in self.hosts.states() {
+            // Keep policies and home-host identity for a resumed host. Settings
+            // remain on disk; no remote chat is stopped or deleted.
+            self.hosts.disconnect(&host);
+        }
+        let joined = tokio::time::timeout(wait, async {
+            loop {
+                let changed = self.receivers_done.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.receivers.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    break;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        if joined.is_err() {
+            return Err("Remote event receivers are still finishing; retry the upgrade".into());
+        }
+        if self.prevents_replacement() {
+            return Err(
+                "Remote events retained new work while draining; retry after it finishes".into(),
+            );
+        }
+        Ok(())
     }
 
     /// Where uploads' and pushes' progress goes from now on.
@@ -467,15 +553,19 @@ impl Remote {
         self.hosts.connect(host, connector, identity, sink);
         let (me, host) = (self.me.clone(), host.to_string());
         // Removed hosts may still have buffered events or an import in flight.
-        struct Receiving(Arc<std::sync::atomic::AtomicUsize>);
+        struct Receiving(
+            Arc<std::sync::atomic::AtomicUsize>,
+            Arc<tokio::sync::Notify>,
+        );
         impl Drop for Receiving {
             fn drop(&mut self) {
                 self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                self.1.notify_waiters();
             }
         }
         self.receivers
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let receiving = Receiving(self.receivers.clone());
+        let receiving = Receiving(self.receivers.clone(), self.receivers_done.clone());
         tokio::spawn(async move {
             let _receiving = receiving;
             while let Some(incoming) = rx.recv().await {
@@ -1547,7 +1637,7 @@ impl Remote {
                 }
                 self.after_connecting(host).await;
                 let (remote, host_for_memory) = (self.me.clone(), host.to_string());
-                rovik_core::rt::spawn(async move {
+                self.spawn(async move {
                     if let Some(remote) = remote.upgrade() {
                         remote.sync_host_memories(&host_for_memory).await;
                     }
@@ -1683,7 +1773,7 @@ impl Remote {
                 self.lock().running.remove(dialog_id);
                 self.pull_later(host, dialog_id, Duration::ZERO);
                 let (remote, host, dialog) = (self.me.clone(), host.to_string(), dialog_id.clone());
-                rovik_core::rt::spawn(async move {
+                self.spawn(async move {
                     if let Some(remote) = remote.upgrade() {
                         remote.memory_sync_hint(&host, &dialog).await;
                     }

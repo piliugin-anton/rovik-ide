@@ -2067,3 +2067,141 @@ async fn upgrade_pauses_resume_results_but_shutdown_never_restarts_queued_import
         "offline mirrors still retain work"
     );
 }
+
+#[tokio::test]
+async fn idle_connections_drain_but_live_mirrors_are_left_connected() {
+    let app = App::new();
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    let _pause = remote.pause_results().await;
+    remote.lock().chats.insert("retained".into(), HOST.into());
+    assert!(remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap_err()
+        .contains("chats"));
+    assert!(remote.hosts.client(HOST).is_some());
+    remote.lock().chats.remove("retained");
+    // A client held by an accepted operation retains the event sink. Timeout
+    // must refuse replacement, never abort that operation or its receiver.
+    let held = remote.client(HOST).unwrap();
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("receivers"));
+    assert!(remote.prevents_replacement());
+    assert!(remote.states().is_empty());
+    drop(held);
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!remote.prevents_replacement());
+    remote.connect("offline", crate::testing::Nowhere, identity("offline"));
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!remote.prevents_replacement());
+}
+
+#[tokio::test]
+async fn dequeued_results_waiting_on_a_pause_still_block_retirement() {
+    let app = App::new();
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    let pause = remote.pause_results().await;
+    let (reply, result) = oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(remote.jobs.has_pending());
+    assert!(remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap_err()
+        .contains("imports"));
+    assert!(
+        remote.hosts.client(HOST).is_some(),
+        "refusal must not disconnect a host with work"
+    );
+    drop(pause);
+    assert!(result.await.unwrap().is_err());
+    until(|| !remote.jobs.has_pending()).await;
+    let _pause = remote.pause_results().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn work_arriving_while_receivers_drain_is_retained_for_a_retry() {
+    let app = App::new();
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    let pause = remote.pause_results().await;
+    let held = remote.client(HOST).unwrap();
+    let draining = remote.clone();
+    let drain =
+        tokio::spawn(async move { draining.drain_for_upgrade(Duration::from_secs(5)).await });
+    until(|| remote.states().is_empty()).await;
+    assert!(remote.states().is_empty());
+    let (reply, result) = oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    drop(held);
+    assert!(drain.await.unwrap().unwrap_err().contains("new work"));
+    assert!(remote.jobs.has_pending());
+    drop(pause);
+    assert!(
+        result.await.unwrap().is_err(),
+        "the queued request still gets its normal result"
+    );
+    until(|| !remote.jobs.has_pending()).await;
+    let _pause = remote.pause_results().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn detached_event_work_blocks_retirement_even_before_its_first_poll() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let _pause = remote.pause_results().await;
+    let task = remote.spawn(std::future::pending());
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("event work"));
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn a_closed_result_queue_releases_its_pending_registration() {
+    let (jobs, receiver) = results::channel();
+    drop(receiver);
+    assert!(jobs.send(Job::Opened).is_err());
+    assert!(!jobs.has_pending());
+}

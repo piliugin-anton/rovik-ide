@@ -39,6 +39,9 @@ existing protocol and routing. Native window actions stay in Tauri.
 11. **Completed**: Drain idle top-level Linux chat views with checked persistence,
     preserving changes across replacement and retaining busy or unsaved views.
 
+12. **Completed**: Drain idle remote connections during Unix upgrades, joining
+    event receivers and retaining queued imports and detached event work.
+
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
 pretend they are ready for IPC. Windows remains embedded until its transport is ready.
@@ -537,5 +540,31 @@ The mandatory Linux mounted test covers busy chat handles, a failed manifest
 write, continued access after refusal, partial draining, clean retirement, and a
 new backend reading both chats' saved edits while the project stays unchanged.
 A unit test verifies persistence errors retain edits and allow a later successful
-save and reopen. Remote draining, child dependency handling, macOS draining, and
+save and reopen. Retained remote-work draining, child dependency handling, macOS draining, and
 Windows transport remain separate.
+
+## Draining idle remote connections
+
+Unix backend replacement disconnects idle hosts, including offline connections,
+without changing saved settings or stopping remote execution. Before disconnecting,
+it refuses mirrored chats, transfers, queued results, forwarded ports, and detached
+event work such as MCP relays and memory synchronization.
+
+Result jobs remain counted from enqueue through completion, including when the
+worker has already dequeued a job and is waiting on the upgrade pause. Detached
+event futures register before scheduling, so an unpolled task also blocks
+replacement. Both registrations release on completion or cancellation.
+
+After disconnecting, the backend waits up to one second for event receivers to
+finish their buffered events. A timeout refuses retirement without aborting them.
+A second retained-work check catches jobs or tasks created while receivers drain.
+Admission stays closed and maintenance and result imports remain paused throughout.
+On refusal, producers resume, queued work remains available, and the next
+maintenance refresh reconstructs removed saved connections even when their
+settings have not changed.
+
+Regression tests cover idle and offline hosts, retained mirrors, receiver timeout,
+imports waiting on the pause, work arriving during draining, detached tasks, and
+reconnection without a settings change. Retained remote chats and transfers still
+need a separate drain protocol; child-overlay dependency handling, macOS mount
+draining, and Windows transport also remain.

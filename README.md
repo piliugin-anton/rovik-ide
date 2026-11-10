@@ -2318,7 +2318,7 @@ completion is uncertain: check their result before retrying them.
 
 Newer Unix apps automatically replace an idle backend once all windows are closed
 and its work and retained resources are released. Mounted virtual filesystems,
-open chat filesystem views, virtual files in memory, remote hosts/chats, and
+open chat filesystem views, virtual files in memory, retained remote chats/transfers, and
 unfinished background work defer replacement. Compatible apps keep using that
 backend; incompatible apps explain why the upgrade must wait. The old process
 keeps its ownership lock through shutdown, so replacement cannot create a second
@@ -2334,10 +2334,17 @@ See [the mounted test commands](docs/design/desktop-command-migration.md#require
 An upgrade can release an empty, unused virtual-files mount on Linux. A program
 holding a file or directory open keeps that mount busy and defers replacement;
 virtual files with retained contents also defer it. Close programs using the
-volume and release its files before retrying. Child chat views and remote resources
-still require separate cleanup.
+volume and release its files before retrying. Child chat views and retained remote
+work still require separate cleanup.
 
 On Linux, idle top-level chat views can also drain for an upgrade without landing
 or discarding their edits. The replacement reads their saved changes. Busy views
 or failed persistence defer retirement and keep the old backend; child views and
-remote resources still require separate cleanup.
+retained remote work still require separate cleanup.
+
+Idle remote connections, including offline hosts, can drain during a Unix backend
+upgrade. Queued result imports, mirrored chats, transfers, forwarded ports, and
+unfinished event tasks still defer replacement. The backend waits for buffered
+events to finish and checks for newly retained work before retiring. If draining
+times out or another resource blocks replacement, saved hosts reconnect on the
+next maintenance refresh without changing their settings.

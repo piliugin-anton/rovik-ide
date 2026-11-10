@@ -86,6 +86,12 @@ pub(super) struct Pages {
 }
 
 impl Pages {
+    /// Forwarded ports retain remote resources until explicitly closed.
+    #[cfg(any(unix, test))]
+    pub(super) fn retains_forwarding(&self) -> bool {
+        !self.forwards().is_empty()
+    }
+
     fn forwards(&self) -> MutexGuard<'_, HashMap<(String, u16), Forward>> {
         self.forwards.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -179,7 +185,9 @@ impl Remote {
     ) {
         let Some(me) = self.me.upgrade() else { return };
         let host = host.to_string();
-        tokio::spawn(async move { me.open_page(&host, &dialog_id, id, &url, port).await });
+        tokio::spawn(
+            self.track(async move { me.open_page(&host, &dialog_id, id, &url, port).await }),
+        );
     }
 
     /// Forwards a port here to `port` on `host` for `dialog_id`'s page at

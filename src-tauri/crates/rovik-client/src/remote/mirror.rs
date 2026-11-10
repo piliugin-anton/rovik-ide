@@ -63,7 +63,7 @@ impl Remote {
             pulls.coming = true;
         }
         let (me, host, chat) = (self.me.clone(), host.to_string(), chat.to_string());
-        rovik_core::rt::spawn(async move {
+        self.spawn(async move {
             tokio::time::sleep(wait).await;
             let Some(remote) = me.upgrade() else { return };
             // Another window's project: that window pulls it (into the
@@ -101,7 +101,7 @@ impl Remote {
     /// failed or `host` went away meanwhile: then the next connection tells.
     fn tell_when_caught_up(&self, host: &str, chats: Vec<String>) {
         let (me, host) = (self.me.clone(), host.to_string());
-        rovik_core::rt::spawn(async move {
+        self.spawn(async move {
             loop {
                 let Some(remote) = me.upgrade() else { return };
                 let (busy, failed) = {
@@ -149,7 +149,7 @@ impl Remote {
         let pulled = self.pull(host, chat).await;
         if self.pull_again(chat) {
             let (me, host, chat) = (self.me.clone(), host.to_string(), chat.to_string());
-            rovik_core::rt::spawn(async move {
+            self.spawn(async move {
                 if let Some(remote) = me.upgrade() {
                     remote.keep_pulling(&host, &chat).await;
                 }
@@ -390,7 +390,7 @@ impl Remote {
         let replaced = self.replace(&host, &chat).await;
         if self.pull_again(&chat) {
             let (me, host, chat) = (self.me.clone(), host.clone(), chat.clone());
-            rovik_core::rt::spawn(async move {
+            self.spawn(async move {
                 if let Some(remote) = me.upgrade() {
                     remote.keep_pulling(&host, &chat).await;
                 }

@@ -378,6 +378,20 @@ impl HostsPage {
         }
     }
 
+    /// Reconstruct drained connections on the next refresh if retirement is
+    /// refused. Their settings and credentials have not changed.
+    #[cfg(any(unix, test))]
+    pub(crate) fn retry_drained(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut followed = self.followed();
+        followed.connections = None;
+        for id in ids {
+            followed.connected.remove(id);
+        }
+    }
+
     /// This window's connections as the settings file has the hosts, when
     /// it changed since: another window may have added, deployed, changed
     /// or removed one. A host whose connection was made of other settings
@@ -1942,6 +1956,39 @@ mod tests {
         );
         other.follow_policies();
         assert_eq!(theirs.policy(&saved.id), ApprovalPolicy::AiReviewerThenMe);
+    }
+
+    #[tokio::test]
+    async fn drained_connections_are_recreated_without_a_settings_change() {
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        setup
+            .page
+            .secrets
+            .set(
+                &SecretName::Token {
+                    host: saved.id.clone(),
+                },
+                &Secret("test-token".into()),
+            )
+            .unwrap();
+        setup
+            .page
+            .change_host(&saved.id, |host| {
+                host.deploy = DeployState::Deployed {
+                    version: "0.2.0".into(),
+                    sha256: None,
+                }
+            })
+            .unwrap();
+        setup.page.connect_all();
+        let before = setup.page.modified();
+        assert!(setup.remote.states().iter().any(|(id, _)| id == &saved.id));
+        setup.remote.disconnect(&saved.id);
+        setup.page.retry_drained(std::slice::from_ref(&saved.id));
+        setup.page.follow();
+        assert_eq!(setup.page.modified(), before);
+        assert!(setup.remote.states().iter().any(|(id, _)| id == &saved.id));
     }
 
     /// The hosts another window deployed, deployed again (a new token) or

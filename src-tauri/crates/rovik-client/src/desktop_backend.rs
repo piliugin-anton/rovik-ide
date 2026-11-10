@@ -231,6 +231,19 @@ impl DesktopBackend {
         if let Some(reason) = self.service_replacement_blocker() {
             return Err(reason.into());
         }
+        let before = self.remote.states();
+        let drained = self
+            .remote
+            .drain_for_upgrade(std::time::Duration::from_secs(1))
+            .await;
+        let after = self.remote.states();
+        let removed: Vec<String> = before
+            .into_iter()
+            .filter(|(id, _)| !after.iter().any(|(current, _)| current == id))
+            .map(|(id, _)| id)
+            .collect();
+        self.hosts.retry_drained(&removed);
+        drained?;
         #[cfg(target_os = "linux")]
         {
             let core = self.core.clone();
@@ -251,9 +264,6 @@ impl DesktopBackend {
     fn service_replacement_blocker(&self) -> Option<&'static str> {
         if crate::desktop_task::active() {
             return Some("Client operations are still finishing");
-        }
-        if self.remote.prevents_replacement() {
-            return Some("Remote hosts or mirrored chats are still registered");
         }
         if self.browser_install.active() {
             return Some("Browser installation is still running");

@@ -60,9 +60,60 @@ pub(super) enum Job {
     },
 }
 
+/// Counts work until it completes, including a dequeued job waiting on a pause.
+pub(super) struct Jobs {
+    sender: mpsc::UnboundedSender<Queued>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+/// One accepted job and the lifetime of its pending-work registration.
+pub(super) struct Queued {
+    job: Job,
+    pending: Pending,
+}
+struct Pending(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// Creates a result queue whose accepted work remains visible during pauses.
+pub(super) fn channel() -> (Jobs, mpsc::UnboundedReceiver<Queued>) {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    (
+        Jobs {
+            sender,
+            pending: Default::default(),
+        },
+        receiver,
+    )
+}
+impl Jobs {
+    /// Keeps accepted work registered until its handler finishes.
+    pub(super) fn send(&self, job: Job) -> Result<(), mpsc::error::SendError<()>> {
+        self.pending
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.sender
+            .send(Queued {
+                job,
+                pending: Pending(self.pending.clone()),
+            })
+            .map_err(|_| mpsc::error::SendError(()))
+    }
+
+    /// Includes jobs already dequeued by a paused worker.
+    #[cfg(any(unix, test))]
+    pub(super) fn has_pending(&self) -> bool {
+        self.pending.load(std::sync::atomic::Ordering::SeqCst) != 0
+    }
+}
+
 /// The queue's task, until the app's `Remote` goes.
-pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedReceiver<Job>) {
-    while let Some(job) = jobs.recv().await {
+pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedReceiver<Queued>) {
+    while let Some(Queued {
+        job,
+        pending: _pending,
+    }) = jobs.recv().await
+    {
         let Some(remote) = me.upgrade() else { break };
         let _turn = remote.result_turn.lock().await;
         if remote

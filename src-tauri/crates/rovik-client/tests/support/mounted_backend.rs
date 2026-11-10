@@ -99,7 +99,7 @@ async fn refusal(endpoint: &Path, reason: &str) {
         let reply = upgrade(endpoint).await;
         let message = reply["Busy"].as_str().unwrap_or_else(|| panic!("{reply}"));
         if message.contains("connected")
-            || message.contains("Blocking")
+            || message.contains("finishing")
             || message.contains("retry after its users finish")
         {
             return false;
@@ -674,7 +674,7 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
             reply["Busy"]
                 .as_str()
                 .is_some_and(|message| message.contains("connected")
-                    || message.contains("Blocking")
+                    || message.contains("finishing")
                     || message.contains("retry after its users finish")),
             "{reply}"
         );

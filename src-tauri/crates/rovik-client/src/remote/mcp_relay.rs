@@ -50,7 +50,7 @@ impl Remote {
     pub(super) fn mcp_relay_wanted(&self, host: &str, id: String) {
         let Some(me) = self.me.upgrade() else { return };
         let host = host.to_string();
-        tokio::spawn(async move { me.relay(&host, id).await });
+        tokio::spawn(self.track(async move { me.relay(&host, id).await }));
     }
 
     /// `transport`'s URL is under Test on a host until the guard goes.
