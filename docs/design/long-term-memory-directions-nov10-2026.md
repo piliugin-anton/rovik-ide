@@ -234,3 +234,27 @@ coding- or instruction-oriented reranker, instead of repeating thresholds or
 title projections on this MS MARCO model. Keep the same pools, frozen queries,
 strong negative examples and conservative positive-extra audit. Actual captured
 problem/remedy accuracy and paired agent usefulness still need separate evidence.
+
+## Instruction-aware model study completed
+
+The [Qwen instruction-reranker study](long-term-memory-instruction-reranker-nov10-2026.md)
+finds one development-only gain passing the complete 5,796-view comparison,
+including exact preservation of 2,020 negative views. Pagination improves
+original development 65/70 → 66/70. Heldout scores remain unchanged. A lower-cutoff
+candidate gains three answers on the smaller development suites but fails 11
+historical negative controls and is rejected before heldout scoring. This
+reinforces the need for the full historical gate and the positive-extra audit.
+
+Instruction-aware joint relevance is a promising signal on an exposed missed
+question, but this study does not isolate instruction from model size, training
+or architecture. It supplies no new heldout gain, precision estimate or agent-task
+result. The community Q4 export needs a different application backend, nearly
+1 GB of weights and about 2.43 GB initial resident memory in the tested evaluator.
+Production remains on MiniLM; this result does not justify shipping that fallback.
+
+Prefer a smaller native-compatible instruction-conditioned model for the next
+comparison, with its correct preprocessing/pooling and the same record/negative
+and positive-extra gates. Preserve these results as regression controls. Freeze
+fresh reserved queries before selecting another policy: Qwen's heldout outcomes
+are now exposed. Native backend/resource feasibility and actual captured-memory
+or paired-agent usefulness remain separate acceptance requirements.

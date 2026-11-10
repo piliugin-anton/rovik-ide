@@ -41,6 +41,23 @@ inputs and a single raw classification output. Models are provisioned externally
 unit tests never download or load weights. The report supplies pinned artifacts,
 reference checks, score grids and reproduction commands.
 
+For Qwen-style instruction-reranker experiments, `score_memory_pairs` also accepts
+`--tokenize-instruction-pairs <tokenizer-directory> <pairs.json> <instruction.txt>`.
+It emits the official prompt's token IDs and distinct yes/no label IDs, and
+rejects prompts above the 512-token research bound instead of clipping them.
+`--tokenize-bounded-instruction-pairs` emits an explicit unsupported row for an
+overlong pair; a pool experiment must retain the whole legacy query result when
+any selected candidate is unsupported. `case_ids` in native evaluation selects
+query rows while retaining the full fixture corpus and sibling distractors;
+unknown, duplicate or out-of-split IDs fail.
+`memory-instruction-scoring.mjs` builds CPU ONNX Runtime prefill/cache inputs and
+reads final-position binary logits; its runtime is supplied by the experiment.
+The application and repository dependencies do not include that runtime or model.
+Its unit tests use local tensor stubs and run through `npm run test:eval`. The
+[instruction-reranker study](../../docs/design/long-term-memory-instruction-reranker-nov10-2026.md)
+records one development-only gain, unchanged heldout results, rejected historical
+regressions and the application backend/resource constraints.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

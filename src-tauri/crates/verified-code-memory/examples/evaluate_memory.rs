@@ -198,6 +198,33 @@ fn fixture_strings(value: &Value) -> Result<Vec<&str>, Box<dyn std::error::Error
         .collect()
 }
 
+fn case_selection(
+    config: &Value,
+    cases: &[Value],
+) -> Result<Option<std::collections::BTreeSet<String>>, Box<dyn std::error::Error>> {
+    let Some(value) = config.get("case_ids") else {
+        return Ok(None);
+    };
+    let requested = fixture_strings(value)?;
+    if requested.is_empty() {
+        return Err("case_ids must select at least one case".into());
+    }
+    let mut selected = std::collections::BTreeSet::new();
+    for id in requested {
+        if !selected.insert(id.to_owned()) {
+            return Err(format!("duplicate case_ids entry: {id}").into());
+        }
+        if !cases.iter().any(|case| {
+            case["id"] == id && (config["split"].is_null() || case["split"] == config["split"])
+        }) {
+            return Err(
+                format!("case_ids entry is unknown or outside the requested split: {id}").into(),
+            );
+        }
+    }
+    Ok(Some(selected))
+}
+
 fn fixture_query(
     case: &Value,
     config: &Value,
@@ -510,9 +537,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cases.push(case);
         }
     }
+    let selected_cases = case_selection(&config, &cases)?;
     let mut rows = Vec::new();
     for case in &cases {
         if split.is_some_and(|split| case["split"] != split) {
+            continue;
+        }
+        if selected_cases
+            .as_ref()
+            .is_some_and(|ids| !case["id"].as_str().is_some_and(|id| ids.contains(id)))
+        {
             continue;
         }
         let text = |key: &str| case[key].as_str().ok_or("missing text");
@@ -770,6 +804,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selecting_rows_keeps_the_full_fixture_available_and_rejects_missing_or_duplicate_ids() {
+        let cases = vec![
+            json!({"id":"a","split":"development"}),
+            json!({"id":"b","split":"development"}),
+            json!({"id":"c","split":"heldout"}),
+        ];
+        let before = cases.clone();
+        assert!(case_selection(&json!({}), &cases).unwrap().is_none());
+        let selected = case_selection(&json!({"case_ids":["b"],"split":"development"}), &cases)
+            .unwrap()
+            .unwrap();
+        assert!(selected.contains("b"));
+        assert!(!selected.contains("a"));
+        assert_eq!(cases, before);
+        for ids in [
+            json!([]),
+            json!(["missing"]),
+            json!(["b", "b"]),
+            json!(["c"]),
+            json!("b"),
+            Value::Null,
+        ] {
+            assert!(
+                case_selection(&json!({"case_ids":ids,"split":"development"}), &cases).is_err()
+            );
+        }
+    }
 
     #[test]
     fn memoized_embeddings_share_only_identical_effective_character_inputs() {
