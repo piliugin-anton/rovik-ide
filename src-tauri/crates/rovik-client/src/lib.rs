@@ -85,3 +85,6 @@ pub mod git_sync;
 
 /// Backend-owned language servers and rust-analyzer management.
 pub mod lsp;
+
+/// Backend-owned Chrome installation and client progress observers.
+pub mod browser_install;

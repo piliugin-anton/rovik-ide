@@ -6,6 +6,7 @@ use crate::desktop_backend::DesktopBackend;
 use serde::{Deserialize, Serialize};
 
 pub mod agent;
+pub mod browser;
 pub mod chat;
 pub mod clm;
 pub mod filesystem;
@@ -28,6 +29,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Headless browser tools and shared Chrome installation.
+    Browser(Box<browser::BrowserRequest>),
     /// Client-owned language servers and their installation.
     Lsp(Box<lsp::LspRequest>),
     /// Backend-owned Git operations.
@@ -84,6 +87,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Browser(request) => request.dispatch(backend, session).await,
                 Self::Lsp(request) => request.dispatch(backend, session).await,
                 Self::Git(request) => request.dispatch(session).await,
                 Self::EventStatus { scope } => {

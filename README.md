@@ -2270,3 +2270,9 @@ or losing a callback ends only its servers and their child processes. Stdin writ
 run independently so Stop works even when a server is not reading. The backend
 waits for language-server cleanup before shutting down. Managed rust-analyzer
 installs are serialized and preserve older binaries still used by other windows.
+
+Headless browser search, page reads, screenshots, and pinned Chrome setup now use
+desktop RPC. They use the backend's serialized browser state and attachment store.
+Concurrent Chrome installation requests observe one backend-owned job through
+private progress callbacks. Losing a window stops its observer; an accepted
+installation finishes publication, and backend shutdown waits for it.

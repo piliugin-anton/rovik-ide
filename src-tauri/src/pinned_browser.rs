@@ -1,56 +1,26 @@
-//! The browser for the web tools (D19): the app's own copy of the Chrome
-//! for Testing Rovik pins, downloaded in the background when the app starts
-//! and it isn't there. `src/lib/browserStartup.ts` asks for it and shows
-//! the download's progress; `rovik_core::pinned_browser` does the work.
+//! Native adapters observe the backend's shared Chrome installation.
+use rovik_client::{desktop_api::browser::BrowserRequest, desktop_connection::DesktopConnection};
+use serde_json::Value;
+use tauri::{ipc::Channel, State};
 
-use rovik_core::pinned_browser::{self, Build, NAME, VERSION};
-use serde::Serialize;
-use tauri::ipc::Channel;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserStatus {
-    pub name: &'static str,
-    pub version: &'static str,
-    /// Where it's installed, if it is: this machine's server install or the
-    /// app's own copy.
-    pub path: Option<String>,
-    /// The download's size in bytes, when Google builds it for this system.
-    pub size: Option<u64>,
-}
-
-/// Whether the pinned browser is installed, and how big its download is.
+/// Whether the backend's pinned browser is installed, and its download size.
 #[tauri::command]
-pub async fn browser_status() -> BrowserStatus {
-    BrowserStatus {
-        name: NAME,
-        version: VERSION,
-        path: pinned_browser::installed().map(|path| path.to_string_lossy().into_owned()),
-        size: Build::here().map(|build| build.size),
-    }
+pub async fn browser_status(backend: State<'_, DesktopConnection>) -> Result<Value, String> {
+    backend.desktop(BrowserRequest::Status.into()).await
 }
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserProgress {
-    pub downloaded: u64,
-    pub total: u64,
-}
-
-/// Downloads the pinned browser into the app's data folder, telling
-/// `on_progress` how far it's got every 256 KiB and at the end. Its
-/// executable's path.
+/// Observes installation progress in this window without owning the download.
 #[tauri::command]
-pub async fn browser_install(on_progress: Channel<BrowserProgress>) -> Result<String, String> {
-    let mut told = 0u64;
-    let path = pinned_browser::install_for_app(|downloaded, total| {
-        if downloaded - told >= 256 * 1024 || downloaded == total {
-            told = downloaded;
-            let _ = on_progress.send(BrowserProgress { downloaded, total });
-        }
-    })
-    .await?;
-    Ok(path.to_string_lossy().into_owned())
+pub async fn browser_install(
+    backend: State<'_, DesktopConnection>,
+    on_progress: Channel<Value>,
+) -> Result<Value, Value> {
+    backend
+        .desktop_task(
+            |sink| BrowserRequest::Install { sink }.into(),
+            move |progress| on_progress.send(progress).map_err(|e| e.to_string()),
+        )
+        .await
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Shared Chrome installation, independent of its observing windows.
+    pub browser_install: Arc<crate::browser_install::BrowserInstaller>,
     /// Replay history for all UI clients.
     pub journal: Arc<crate::desktop_journal::Journal>,
     /// Serializes ownership checks with project opens and destructive changes.
@@ -127,6 +129,7 @@ impl DesktopBackend {
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
             journal,
+            browser_install: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             lsp: Default::default(),
@@ -196,6 +199,7 @@ impl DesktopBackend {
         if let Err(error) = rovik_core::rt::spawn_blocking(move || lsp.shutdown()).await {
             log::error!("Could not wait for language-server cleanup: {error}");
         }
+        self.browser_install.shutdown().await;
         self.core.shutdown().await;
         let terminals = self.terminals.clone();
         if let Err(error) = rovik_core::rt::spawn_blocking(move || terminals.wait_ended()).await {
@@ -242,6 +246,7 @@ mod routing_tests {
         ));
         DesktopBackend {
             journal: Default::default(),
+            browser_install: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             lsp: Default::default(),

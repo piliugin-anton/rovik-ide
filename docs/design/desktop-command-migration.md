@@ -165,3 +165,27 @@ in the backend process, cross-client controls, disconnect/callback cleanup,
 child-process termination, natural exit ordering, and Stop under stdin
 backpressure. Browser integration and other native services remain before
 automatic daemon attachment; the app still selects embedded mode.
+
+## Headless browser commands and Chrome installation
+
+Web search, page reads, screenshots, browser status, and installation now use
+typed desktop RPC. The native adapters only forward arguments, results, and
+private progress. Browser work runs as finite tasks, so a browser call does not
+hold the command connection. Existing URL/network checks, the serialized shared
+headless browser, and screenshot attachment storage remain in the core service.
+
+Concurrent installation requests share one backend-owned job. Progress is
+coalesced for each observer; late observers receive the current progress.
+Disconnect or callback loss removes that observer without dropping an archive or
+installation lock during blocking unpack. Completion (including panic/failure)
+is reported explicitly, subsequent requests can retry/recheck the executable,
+and shutdown waits for accepted publication before ending the core services.
+
+Unit fixtures cover observer loss, shared work, retry, and shutdown. Embedded and
+real-daemon checks cover status, forbidden URL schemes/private destinations,
+empty searches, and connection reuse after errors. They need no external browser
+download. Live Chrome navigation/download is not exercised by these fixtures.
+
+Remote forwarded-page opening still uses a native callback and needs client
+routing. Workload/formatter and the remaining native startup hooks also remain
+before automatic daemon attachment. The app continues to select embedded mode.
