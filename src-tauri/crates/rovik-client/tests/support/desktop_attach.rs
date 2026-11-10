@@ -2,7 +2,7 @@
 use rovik_client::local_backend::{connect, directory};
 use std::{path::Path, process::Command, time::Duration};
 #[path = "desktop_host.rs"]
-mod desktop_host;
+pub(super) mod desktop_host;
 use desktop_host::Host;
 
 /// Two launchers share one host, which remains after all client sessions close.

@@ -10,6 +10,7 @@ impl Host {
         Self(stream.peer_cred().unwrap().pid().unwrap())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn crash(self) {
         assert_eq!(unsafe { libc::kill(self.0, libc::SIGKILL) }, 0);
         std::mem::forget(self);

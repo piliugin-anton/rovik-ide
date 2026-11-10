@@ -14,7 +14,7 @@ pub(super) const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize)]
 /// Management readiness for a single running host.
-pub(super) struct Hello {
+pub struct Hello {
     control: u32,
     /// Same identity as the command endpoint.
     pub boot: String,
@@ -25,7 +25,7 @@ pub(super) struct Hello {
 }
 impl Hello {
     /// Describes this executable without admitting a command session.
-    pub fn new(boot: &str) -> Self {
+    pub(super) fn new(boot: &str) -> Self {
         Self {
             control: CONTROL,
             boot: boot.into(),
@@ -65,7 +65,7 @@ impl Candidate {
 
 #[derive(Debug, Serialize, Deserialize)]
 /// Replacement decision; refusal never transfers ownership.
-pub(super) enum Reply {
+pub enum Reply {
     /// No monotonic upgrade was requested.
     Current,
     /// The existing owner must retain its work or resources.
@@ -122,8 +122,15 @@ pub(super) async fn write<T: Serialize>(
     stream.write_all(&bytes).await
 }
 
-/// Missing endpoints belong to old hosts or hosts not yet ready. Never kill them.
-pub(super) async fn negotiate(directory: &Path) -> io::Result<Option<(Hello, Reply)>> {
+/// Requests a monotonic upgrade to the supplied executable version and protocol.
+/// Missing endpoints return `None`; they never authorize killing an existing host.
+/// `Retiring` acknowledges cleanup, not ownership transfer: callers must wait for
+/// the lifetime lease to become available before starting a replacement.
+pub async fn negotiate(
+    directory: &Path,
+    version: &str,
+    protocol: u32,
+) -> io::Result<Option<(Hello, Reply)>> {
     tokio::time::timeout(TIMEOUT, async {
         let mut stream = match connect_endpoint(directory, "control").await {
             Ok(stream) => stream,
@@ -147,8 +154,8 @@ pub(super) async fn negotiate(directory: &Path) -> io::Result<Option<(Hello, Rep
         let candidate = Candidate {
             control: CONTROL,
             boot: host.boot.clone(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol: PROTOCOL,
+            version: version.into(),
+            protocol,
         };
         write(&mut stream, &candidate).await?;
         let reply = read(&mut stream).await?;

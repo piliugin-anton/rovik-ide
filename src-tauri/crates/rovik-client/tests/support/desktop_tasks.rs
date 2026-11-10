@@ -6,22 +6,11 @@ use rovik_client::desktop_api::{
 };
 use rovik_client::desktop_connection::DesktopConnection;
 use serde_json::{json, Value};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-pub fn seed_secrets(config: &Path) {
-    use rovik_client::secrets::{Kdf, SecretStore};
-    std::fs::create_dir_all(config).unwrap();
-    SecretStore::file(
-        config.join("secrets.json"),
-        Kdf {
-            memory_kib: 8,
-            iterations: 1,
-            parallelism: 1,
-        },
-    )
-    .unlock(&rovik_protocol::Secret("test-only".into()))
-    .unwrap();
-}
+#[path = "desktop_secrets.rs"]
+pub(super) mod desktop_secrets;
+pub use desktop_secrets::seed_secrets;
 
 pub async fn check(a: &DesktopConnection, b: &DesktopConnection) {
     tokio::time::timeout(Duration::from_secs(30), async {

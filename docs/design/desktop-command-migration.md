@@ -835,3 +835,23 @@ process through a reused PID.
 This is recovery validation for the standalone host. Guarded-upgrade integration,
 installer handoff, packaged Windows UI activation, and WSL execution validation
 remain; the ordinary Windows UI still uses its embedded host.
+
+The phase 19 recovery contract passed the native Windows workspace tests in
+[CI on `13c28bf`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42915491546).
+
+### Phase 20: Windows guarded-upgrade contract
+
+Unix and Windows now run the same standalone process upgrade contract through
+an authenticated, bounded control API. Launchers supply the candidate executable
+version and command protocol; the server still binds the request to its boot
+identity and permits only monotonic upgrades. A retirement reply acknowledges
+cleanup, not ownership transfer. Callers must wait for the lifetime lease.
+
+The contract verifies that connected windows refuse replacement, retain their
+sessions and saved chat data, and keep the same backend boot. After clients
+close, the host accepts retirement, exits successfully, releases ownership, and
+leaves the database's clean shutdown marker. A replacement starts with a new boot
+and reads the saved chat unchanged. Unix endpoint cleanup assertions remain.
+
+Installer handoff, packaged Windows UI activation, and WSL execution validation
+remain. This phase does not enable shared startup in the ordinary Windows UI.

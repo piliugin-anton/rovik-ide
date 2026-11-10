@@ -96,3 +96,11 @@ async fn windows_recover_after_a_crash_with_stale_siblings_and_persisted_state()
     )
     .await;
 }
+
+#[path = "support/desktop_upgrade.rs"]
+mod desktop_upgrade;
+
+#[tokio::test]
+async fn windows_upgrade_preserves_a_busy_owner_and_waits_for_clean_shutdown() {
+    desktop_upgrade::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
+}

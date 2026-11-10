@@ -9,7 +9,7 @@ use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[cfg(any(unix, windows))]
-mod control;
+pub mod control;
 #[cfg(any(unix, windows))]
 mod handshake;
 #[cfg(any(unix, windows))]

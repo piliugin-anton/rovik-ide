@@ -38,7 +38,9 @@ pub async fn ensure_command(
             "Another backend launcher is still starting or upgrading",
         )
     })??;
-    if let Some((host, reply)) = super::control::negotiate(&directory).await? {
+    if let Some((host, reply)) =
+        super::control::negotiate(&directory, env!("CARGO_PKG_VERSION"), super::PROTOCOL).await?
+    {
         match reply {
             super::control::Reply::Retiring => {
                 // The retiring host retains ownership through all cleanup. A
