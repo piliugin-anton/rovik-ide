@@ -130,7 +130,7 @@ fuser = "0.18"
 # macOS: macFUSE, mounted through its helper (src/vfs/macfuse.rs) instead of
 # linking libfuse, so the app starts on Macs without macFUSE installed.
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.18", features = ["macos-no-mount", "macfuse-4-compat"] }
+fuser = { version = "0.18", features = ["macos-no-mount", "macfuse-4-compat", "custom-transport"] }
 
 # Windows has no virtual files of its own: the agent works in WSL, whose
 # daemon serves them (FUSE).

@@ -1,13 +1,8 @@
 //! Mounting through macFUSE.
 //!
-//! macFUSE's own library (`libfuse.2.dylib`) does the mounting: since
-//! macFUSE 5.3 its internal mount protocol changed, and the FSKit backend
-//! mounts through a framework, so imitating `mount_macfuse` directly no
-//! longer works. Its public `fuse_mount` / `fuse_chan_fd` / `fuse_unmount`
-//! do, with either backend; fuser then serves the descriptor
-//! `fuse_chan_fd` returns (as fuser itself does for macFUSE 5.3.3+, see
-//! cberner/fuser#752). The library is loaded at run time (`dlopen`), not
-//! linked: the app has to start on a Mac without macFUSE, to install it.
+//! Kernel mounts use libfuse's public device descriptor. FSKit uses MFMount's
+//! message API through fuser's custom transport. Both libraries are loaded at
+//! runtime so the app can start without macFUSE and offer installation.
 //!
 //! Backends (see `problem.rs`):
 //! - FSKit (macOS 15.4+, macFUSE 5.1+): no kernel extension; macFUSE's file
@@ -15,6 +10,8 @@
 //!   only under /Volumes.
 //! - Kernel extension otherwise: must be allowed in Privacy & Security (and
 //!   on Apple silicon, enabled in Recovery first).
+
+mod messages;
 
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::io::Read;
@@ -299,9 +296,14 @@ fn capturing_stderr<T: Send + 'static>(
     (result, captured)
 }
 
+enum MountChannel {
+    Device(Channel),
+    Messages(Arc<messages::MessageChannel>),
+}
+
 /// A mounted macFUSE volume's handle, for unmounting.
 pub struct MacMount {
-    channel: Channel,
+    channel: MountChannel,
     mountpoint: CString,
 }
 
@@ -309,7 +311,6 @@ impl MacMount {
     /// Refuses busy volumes before releasing the channel. Unlike normal close,
     /// upgrade must never force a mount off programs still using it.
     pub(super) fn unmount_if_unused(&self) -> Result<(), String> {
-        let lib = library()?;
         // SAFETY: the mountpoint is NUL-terminated and flags=0 requests an
         // ordinary unmount. On refusal neither channel nor session is touched.
         if unsafe { libc::unmount(self.mountpoint.as_ptr(), 0) } != 0 {
@@ -320,13 +321,21 @@ impl MacMount {
         }
         // Only after the OS detached the volume may libfuse release its channel.
         // Do not use our normal close's force/diskutil fallback here.
-        unsafe { (lib.unmount)(self.mountpoint.as_ptr(), self.channel.0) };
+        match &self.channel {
+            MountChannel::Device(channel) => {
+                let lib = library()?;
+                unsafe { (lib.unmount)(self.mountpoint.as_ptr(), channel.0) };
+            }
+            MountChannel::Messages(channel) => channel.close(),
+        }
         Ok(())
     }
 
     pub fn unmount(self, path: &Path) -> Result<(), String> {
-        if let Ok(lib) = library() {
-            unsafe { (lib.unmount)(self.mountpoint.as_ptr(), self.channel.0) };
+        if let MountChannel::Device(channel) = &self.channel {
+            if let Ok(lib) = library() {
+                unsafe { (lib.unmount)(self.mountpoint.as_ptr(), channel.0) };
+            }
         }
         // Whatever fuse_unmount left mounted.
         if unsafe { libc::unmount(self.mountpoint.as_ptr(), libc::MNT_FORCE) } != 0 {
@@ -334,6 +343,9 @@ impl MacMount {
                 .args(["unmount", "force"])
                 .arg(path)
                 .output();
+        }
+        if let MountChannel::Messages(channel) = &self.channel {
+            channel.close();
         }
         Ok(())
     }
@@ -367,17 +379,27 @@ pub fn mount(
             if fskit_module_enabled() == Some(false) {
                 return Err(problem::enable_extension(None));
             }
-            options.push("backend=fskit".into());
         }
         Backend::Kext => {
             std::fs::create_dir_all(&mountpoint)
                 .map_err(|e| MountProblem::failed(format!("{}: {e}", mountpoint.display())))?;
         }
     }
-    let lib = library().map_err(MountProblem::failed)?;
     let c_mountpoint = CString::new(mountpoint.as_os_str().as_bytes())
         .map_err(|_| MountProblem::failed("mount point contains a NUL"))?;
 
+    if backend == Backend::FsKit {
+        let (session, channel) = messages::mount(fs, c_mountpoint.clone(), &options, config)?;
+        return Ok((
+            session,
+            MacMount {
+                channel: MountChannel::Messages(channel),
+                mountpoint: c_mountpoint,
+            },
+            mountpoint,
+        ));
+    }
+    let lib = library().map_err(MountProblem::failed)?;
     let mount_path = c_mountpoint.clone();
     let opts = options.join(",");
     let (channel, stderr) = capturing_stderr(MOUNT_TIMEOUT, move || {
@@ -458,7 +480,7 @@ pub fn mount(
         Ok(Ok(session)) => Ok((
             session,
             MacMount {
-                channel,
+                channel: MountChannel::Device(channel),
                 mountpoint: c_mountpoint.clone(),
             },
             mountpoint,

@@ -35,6 +35,12 @@ jobs:
           brew install --cask macfuse
           /usr/bin/pluginkit -e use -i io.macfuse.app.fsmodule.macfuse
           /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule
+      - name: Check message transport and channel lifetime
+        run: |
+          cargo test --manifest-path src-tauri/crates/fuser/Cargo.toml --lib \
+            --features custom-transport,macos-no-mount,macfuse-4-compat
+          cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
+            vfs::macfuse::messages::tests
       - name: Refuse busy mounts and recover saved edits
         env:
           ROVIK_MOUNTED_BACKEND: '1'

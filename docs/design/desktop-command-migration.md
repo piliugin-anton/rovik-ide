@@ -713,10 +713,18 @@ extensions inside the hosted runner's virtual machine.
 The [hosted FSKit run](https://github.com/piliugin-anton/rovik-ide/actions/runs/42858428090)
 installed macFUSE 5.5 and enabled its FSKit module, but the test failed while
 opening its first view: `fuse_chan_fd` did not supply a device descriptor.
-No busy-unmount or saved-edit assertions ran. The current adapter feeds a device
-descriptor to fuser; macFUSE's message-channel API can also represent channels
-without one. Supporting that transport is separate remaining implementation work.
-The regression remains failing, not skipped, until a view can actually be served.
+No busy-unmount or saved-edit assertions ran in that run. The FSKit adapter now
+uses MFMount's public message-channel API and a small optional custom transport
+in the vendored fuser 0.18 crate (`src-tauri/crates/fuser/FORK.md`). Kernel mounts
+still use device descriptors. INIT is served concurrently with mounting, split
+request bodies are copied into fuser's request buffer, and scatter/gather replies
+and notifications retain their message boundaries. A timed-out mount is cancelled
+and cleaned up when its mount operation completes. Ordinary upgrade refusal
+leaves the channel open; only successful unmount releases it.
+
+The native workflow tests the transport and adapter before running the mounted
+regression. This implementation still needs a successful native mounted run;
+unit tests and Linux mounts do not establish FSKit busy-unmount behavior.
 
 The native GUI run exposed idle RPC disconnections and unordered terminal input.
 Frame deadlines now begin with the first received byte rather than socket
