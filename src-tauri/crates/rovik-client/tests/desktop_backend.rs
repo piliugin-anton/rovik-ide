@@ -52,6 +52,8 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
         .unwrap();
     let journal_projects = desktop_journal::seed(&backend.core.db).await;
     let backend = Arc::new(backend);
+    backend.start_services().unwrap();
+    backend.start_services().unwrap();
     let connection = DesktopConnection::embedded(backend.clone());
     desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
     desktop_operations::check_settings_and_chat_contract(&connection).await;
@@ -165,6 +167,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     });
     assert_eq!(*events.0.lock().unwrap(), vec!["ready"]);
     backend.shutdown().await;
+    assert!(backend.start_services().is_err());
     drop(connection);
     drop(backend);
 

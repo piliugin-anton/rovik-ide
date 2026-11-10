@@ -263,3 +263,31 @@ client disconnects.
 Remaining work: native startup hooks, automatic daemon attachment and session
 reconstruction, Windows transport, and mounted multi-window FUSE validation.
 The app still selects embedded mode.
+
+## Backend host startup and maintenance
+
+Host connection startup, developer socket/chat configuration, and periodic host
+refresh now share one backend-owned worker in both embedded and daemon hosts.
+The host calls `start_services` after installing any ownership callbacks; repeated
+calls do not start another worker. Credential and filesystem work stays off the
+UI and RPC threads. Refreshes never overlap, and shutdown stops scheduling before
+joining any accepted blocking startup or refresh work. A stopped backend cannot
+restart maintenance. Worker failures are reported on stderr, including when the
+daemon has no application logger.
+
+The daemon now honors `ROVIK_REMOTE_CHATS`, `ROVIK_COMPUTER`, and
+`ROVIK_REMOTE_TOKEN`, as embedded startup already did. Those values belong to the
+backend process environment; attaching another window does not reapply them.
+The UI no longer registers unused Core, Remote, host, key, or credential service
+aliases as Tauri state.
+
+Tests cover startup-once behavior, shutdown during startup and refresh, restart
+rejection, and the developer environment configuration in a real daemon, including
+persisted chat placement after graceful termination. Existing embedded and daemon
+RPC fixtures run alongside these checks.
+
+Project-window focus/claims and the retained-project UI loop remain native. The
+embedded cross-process ownership callback must be replaced when shared daemon
+attachment becomes the default; window exit must then release its client lease
+rather than stop the shared backend. Automatic attachment/session reconstruction,
+Windows transport, and mounted multi-window FUSE validation remain outstanding.

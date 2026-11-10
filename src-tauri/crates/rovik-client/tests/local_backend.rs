@@ -309,3 +309,100 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         assert_eq!(chat.title, title, "each request changed only its own chat");
     }
 }
+
+/// Developer socket connections are initialized by the daemon without a UI.
+#[tokio::test]
+async fn daemon_startup_applies_remote_chat_environment_and_shuts_down_cleanly() {
+    use rovik_client::{desktop_api::hosts::HostsRequest, desktop_connection::DesktopConnection};
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let config = root.path().join("config");
+    desktop_tasks::seed_secrets(&config);
+    let db = rovik_core::chat_db::DbState::open(&data).unwrap();
+    rovik_core::chat_db::api::chat_create_dialog(
+        &db,
+        rovik_core::chat_db::store::NewDialog {
+            id: "startup-chat".into(),
+            title: "startup".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    drop(db);
+    let socket = root.path().join("developer.sock");
+    let mut daemon = Daemon(
+        Command::new(env!("CARGO_BIN_EXE_rovik-desktopd"))
+            .arg("--data")
+            .arg(&data)
+            .arg("--config")
+            .arg(&config)
+            .env(
+                "ROVIK_REMOTE_CHATS",
+                format!("startup-chat={}", socket.display()),
+            )
+            .env("ROVIK_COMPUTER", "startup-test")
+            .env_remove("ROVIK_REMOTE_TOKEN")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let endpoint = directory(&data);
+    let client = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(client) = DesktopConnection::connect(&endpoint).await {
+                break client;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let summaries = client
+                .desktop(HostsRequest::Summaries.into())
+                .await
+                .unwrap();
+            if summaries
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|host| host["id"] == socket.to_string_lossy().as_ref())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // No daemon is listening on the developer socket: this fixture uses no
+    // network service, credentials, or execution on another host.
+    assert_eq!(
+        unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+        0
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(status) = daemon.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let db = rovik_core::chat_db::DbState::open(&data).unwrap();
+    let host = db
+        .read(|connection| rovik_core::chat_db::location::of_chat(connection, "startup-chat"))
+        .await
+        .unwrap();
+    assert_eq!(
+        host,
+        rovik_core::chat_db::location::Location::Host(socket.to_string_lossy().into_owned())
+    );
+}

@@ -7,12 +7,12 @@
 //! file name (`HostsPage::summaries`), so its chats show its connection,
 //! and others can move there.
 
-use rovik_client::{Identity, Remote};
+use crate::{Identity, Remote};
 use rovik_protocol::Secret;
 use std::collections::BTreeSet;
 
 /// The chats the developer setting names, on their daemons.
-pub fn from_env(remote: &Remote) {
+pub(super) fn from_env(remote: &Remote) {
     let Ok(setting) = std::env::var("ROVIK_REMOTE_CHATS") else {
         return;
     };
@@ -36,7 +36,7 @@ pub fn from_env(remote: &Remote) {
 
 #[cfg(unix)]
 fn connect(remote: &Remote, socket: &str, identity: Identity) {
-    let connector = rovik_client::UnixConnector(socket.into());
+    let connector = crate::UnixConnector(socket.into());
     remote.connect(socket, connector, identity);
 }
 

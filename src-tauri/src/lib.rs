@@ -19,7 +19,6 @@ mod lsp;
 mod open_url;
 mod pinned_browser;
 mod project_files;
-mod remote_chats;
 mod shared_state;
 mod terminal;
 mod typings;
@@ -93,15 +92,8 @@ pub fn run() {
                 }
             });
             app.manage(connection);
-            let core = backend.core.clone();
             let remote = backend.remote.clone();
-            let hosts = backend.hosts.clone();
-            app.manage(backend.secrets.clone());
-            app.manage(backend.keys.clone());
-            app.manage(hosts.clone());
-            app.manage(core.clone());
-            app.manage(remote.clone());
-            app.manage(backend);
+            app.manage(backend.clone());
             // A project is open in one window (instances.rs): its remote
             // chats' results, rows and events are that window's.
             let windows = app.handle().clone();
@@ -113,14 +105,9 @@ pub fn run() {
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();
-            let following = hosts.clone();
             rt::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    // The hosts another window added, deployed, changed or
-                    // removed: this window's connections follow.
-                    let hosts = following.clone();
-                    let _ = rt::spawn_blocking(move || hosts.follow()).await;
                     let instances = handle.state::<Instances>();
                     let mut still = Vec::new();
                     for project in instances.left_at_work() {
@@ -131,13 +118,9 @@ pub fn run() {
                     instances.let_go_done(|p| still.contains(p));
                 }
             });
-            // Off the main thread: connecting reads the hosts' tokens from
-            // the keychain, which may take a moment or ask the user, and
-            // the window comes first.
-            rt::spawn_blocking(move || {
-                remote_chats::from_env(&remote);
-                hosts.connect_all();
-            });
+            // Connections and credential reads belong to the backend; start
+            // only after its cross-process ownership callback is installed.
+            backend.start_services()?;
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
             // which a config can't. Pasting an image into the chat input

@@ -64,12 +64,11 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(std::io::Error::other)?,
     );
     let result = async {
+        backend.start_services().map_err(std::io::Error::other)?;
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut clients = tokio::task::JoinSet::new();
-        let mut refresh = tokio::task::JoinSet::new();
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             tokio::select! {
                 result = listener.accept_pending(), if clients.len() < 64 => {
@@ -95,20 +94,10 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("Local backend client task: {error}");
                     }
                 },
-                _ = tick.tick(), if refresh.is_empty() => {
-                    let hosts = backend.hosts.clone();
-                    refresh.spawn_blocking(move || hosts.follow());
-                },
-                result = refresh.join_next(), if !refresh.is_empty() => {
-                    if let Some(Err(error)) = result {
-                        eprintln!("Local backend host refresh: {error}");
-                    }
-                },
                 _ = terminate.recv() => break,
                 result = tokio::signal::ctrl_c() => { result?; break; },
             }
         }
-        while refresh.join_next().await.is_some() {}
         clients.abort_all();
         while clients.join_next().await.is_some() {}
         Ok::<_, std::io::Error>(())

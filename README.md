@@ -2294,3 +2294,9 @@ Each window retains its visible-chat selection; the most recently selected chat
 gets priority, and returning to a window promotes its chat again. Hiding a chat
 or disconnecting a window releases only its selection. Cloud priority updates
 are ordered, and reconnecting hosts receive the current selection.
+
+Host startup and periodic refresh now run in one backend-owned worker, shared by
+embedded and daemon modes. Shutdown joins any active startup or refresh operation
+before stopping execution services. Developer remote-chat environment settings
+are also honored by the standalone backend. The UI still selects embedded mode
+while native ownership and exit handling are migrated.

@@ -14,6 +14,7 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    maintenance: crate::maintenance::Maintenance,
     /// Shared workload settings and session-owned focus selections.
     pub workload: Arc<crate::workload::WorkloadState>,
     /// Cancellable editor formatter workers.
@@ -138,6 +139,7 @@ impl DesktopBackend {
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         let workload = crate::workload::WorkloadState::new(remote.clone());
         Ok(Self {
+            maintenance: Default::default(),
             workload,
             formatters: Default::default(),
             pages,
@@ -202,10 +204,18 @@ impl DesktopBackend {
         }
     }
 
+    /// Starts host connections after the host has installed ownership callbacks.
+    /// Repeated calls share one worker; shutdown permanently prevents restart.
+    pub fn start_services(&self) -> Result<(), String> {
+        self.maintenance
+            .start(self.remote.clone(), self.hosts.clone())
+    }
+
     /// Stops local execution and flushes its persisted state before the
     /// hosting process exits. Window disconnection must not call this
     /// once the service moves into a shared process.
     pub async fn shutdown(&self) {
+        self.maintenance.stop().await;
         self.sessions.close_all();
         self.workload.shutdown().await;
         self.terminals.end_all();
@@ -267,6 +277,7 @@ mod routing_tests {
         ));
         let workload = crate::workload::WorkloadState::new(remote.clone());
         DesktopBackend {
+            maintenance: Default::default(),
             workload,
             formatters: Default::default(),
             pages,
