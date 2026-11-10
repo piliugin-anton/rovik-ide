@@ -471,3 +471,17 @@ async fn daemon_startup_applies_remote_chat_environment_and_shuts_down_cleanly()
         rovik_core::chat_db::location::Location::Host(socket.to_string_lossy().into_owned())
     );
 }
+
+#[cfg(target_os = "linux")]
+#[path = "support/desktop_attach.rs"]
+mod desktop_attach;
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn automatic_attachment_shares_a_host_and_does_not_relaunch_when_windows_reopen() {
+    desktop_attach::check(
+        std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd")),
+        None,
+    )
+    .await;
+}

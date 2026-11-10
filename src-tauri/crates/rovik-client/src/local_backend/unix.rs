@@ -188,6 +188,17 @@ pub async fn ensure_backend(
     data: &Path,
     config: &Path,
 ) -> io::Result<(UnixStream, Ready)> {
+    let command = rovik_core::process::command(executable);
+    ensure_command(command, data, config).await
+}
+
+/// Attaches first, or launches a caller-prepared packaged command. AppImages
+/// use their original launcher; no second private Core is ever a fallback.
+pub async fn ensure_command(
+    mut command: std::process::Command,
+    data: &Path,
+    config: &Path,
+) -> io::Result<(UnixStream, Ready)> {
     let directory = super::directory(data);
     match connect(&directory).await {
         Ok(connected) => return Ok(connected),
@@ -198,17 +209,24 @@ pub async fn ensure_backend(
             ) => {}
         Err(e) => return Err(e),
     }
-    let mut command = rovik_core::process::command(executable);
     command.arg("--data").arg(data).arg("--config").arg(config);
     command.stdin(std::process::Stdio::null());
     rovik_core::process::own_session(&mut command);
     rovik_core::process::close_inherited(&mut command);
     let mut child = command.spawn()?;
+    let (exited, mut exit) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        if let Err(e) = child.wait() {
-            log::warn!("Couldn't reap the local backend launcher: {e}");
+        let result = child.wait();
+        match &result {
+            Ok(status) if !status.success() => {
+                log::warn!("Local backend launcher exited with {status}")
+            }
+            Err(error) => log::warn!("Couldn't reap the local backend launcher: {error}"),
+            _ => {}
         }
+        let _ = exited.send(result);
     });
+    let mut launcher_done = false;
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match connect(&directory).await {
@@ -220,7 +238,18 @@ pub async fn ensure_backend(
                     ) => {}
                 Err(e) => return Err(e),
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::select! {
+                result = &mut exit, if !launcher_done => {
+                    launcher_done = true;
+                    match result {
+                        Ok(Ok(status)) if status.success() => {}, // A competing launcher won.
+                        Ok(Ok(status)) => return Err(io::Error::other(format!("Local backend launcher exited with {status}"))),
+                        Ok(Err(error)) => return Err(error),
+                        Err(error) => return Err(io::Error::other(error)),
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {},
+            }
         }
     })
     .await

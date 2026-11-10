@@ -1,7 +1,7 @@
 //! Desktop execution services, independent of the native window host.
 //!
-//! During migration the desktop hosts this service in-process. A local
-//! daemon can construct the same service with its own event publishers.
+//! Unix desktops use a local daemon. Platforms awaiting IPC transport host
+//! the same service in-process with identical event publishers.
 
 use crate::hosts_page::HostsPage;
 use crate::provider_keys::ProviderKeys;

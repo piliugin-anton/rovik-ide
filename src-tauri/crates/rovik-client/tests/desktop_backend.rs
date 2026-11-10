@@ -55,6 +55,43 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     backend.start_services().unwrap();
     backend.start_services().unwrap();
     let connection = DesktopConnection::embedded(backend.clone());
+    // Editor reports must reach the agent's process, rather than a UI-local cache.
+    let editor_root = dir.path().join("editor");
+    std::fs::create_dir(&editor_root).unwrap();
+    std::fs::write(editor_root.join("a.ts"), "const value = 1;").unwrap();
+    let editor_root = editor_root.to_string_lossy().into_owned();
+    let reporter = DesktopConnection::embedded(backend.clone());
+    reporter
+        .desktop(
+            rovik_client::desktop_api::filesystem::FilesystemRequest::ReportEditorDiagnostics {
+                root: editor_root.clone(),
+                path: "a.ts".into(),
+                markers: vec![rovik_core::agent_tools::EditorMarker {
+                    start_line: 1,
+                    start_col: 1,
+                    end_line: 1,
+                    end_col: 2,
+                    severity: "error".into(),
+                    message: "marker from UI client".into(),
+                    source: None,
+                    code: None,
+                }],
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        rovik_core::agent_tools::tool_diagnostics(editor_root.clone(), Some("a.ts".into()))
+            .unwrap()
+            .contains("marker from UI client")
+    );
+    reporter.close().await.unwrap();
+    assert!(
+        !rovik_core::agent_tools::tool_diagnostics(editor_root, Some("a.ts".into()))
+            .unwrap()
+            .contains("marker from UI client")
+    );
     desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
     desktop_operations::check_settings_and_chat_contract(&connection).await;
     desktop_operations::check_disk_contract(

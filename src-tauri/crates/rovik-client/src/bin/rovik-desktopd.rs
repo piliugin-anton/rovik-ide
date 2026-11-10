@@ -1,11 +1,14 @@
-//! The local desktop backend host, serving authenticated typed RPC.
-//! Window attachment and event subscription are separate migration steps.
-
+//! Standalone entry point for the same host used by the desktop executable.
 #[cfg(unix)]
 fn main() {
     rovik_core::process::adopt_login_shell_path();
     rovik_core::overlay::confine::require();
-    if let Err(error) = rovik_core::rt::block_on(serve()) {
+    let result = rovik_client::local_backend::host::paths(std::env::args_os().skip(1))
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+        .and_then(|paths| {
+            rovik_core::rt::block_on(rovik_client::local_backend::host::serve(paths))
+        });
+    if let Err(error) = result {
         eprintln!("Local backend: {error}");
         std::process::exit(1);
     }
@@ -17,93 +20,4 @@ fn main() {
         "Local backend hosting needs the Windows named-pipe transport, which is not available yet."
     );
     std::process::exit(1);
-}
-
-#[cfg(unix)]
-async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    use rovik_client::{desktop_backend::DesktopBackend, local_backend};
-    use rovik_core::{agent_run::events::AgentEvent, EventSink, Paths};
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
-    struct Events;
-    impl EventSink for Events {
-        fn agent(&self, _: &AgentEvent) {}
-    }
-
-    let mut args = std::env::args_os().skip(1);
-    let mut data = None;
-    let mut config = None;
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--data") if data.is_none() => data = args.next().map(PathBuf::from),
-            Some("--config") if config.is_none() => config = args.next().map(PathBuf::from),
-            _ => {
-                return Err("Usage: rovik-desktopd --data <directory> --config <directory>".into())
-            }
-        }
-    }
-    let (data, config) = match (data, config) {
-        (Some(data), Some(config)) => (data, config),
-        _ => return Err("Both --data and --config are required".into()),
-    };
-    std::fs::create_dir_all(&data)?;
-    let directory = local_backend::directory(&data);
-    let Some(lease) = local_backend::Lease::acquire(&directory)? else {
-        // Another launcher won. It alone initializes the database and mounts.
-        return Ok(());
-    };
-    let backend = Arc::new(
-        DesktopBackend::open(
-            Paths::new(data, config),
-            Arc::new(Events),
-            Arc::new(|_| {}),
-            env!("CARGO_PKG_VERSION"),
-        )
-        .await
-        .map_err(std::io::Error::other)?,
-    );
-    let result = async {
-        backend.start_services().map_err(std::io::Error::other)?;
-        let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        let mut clients = tokio::task::JoinSet::new();
-        loop {
-            tokio::select! {
-                result = listener.accept_pending(), if clients.len() < 64 => {
-                    match result {
-                        Ok(pending) => {
-                            let backend = backend.clone();
-                            clients.spawn(async move {
-                                let result = async {
-                                    let session = pending.session().to_string();
-                                    let stream = pending.finish().await?;
-                                    local_backend::rpc::serve(stream, backend, session).await
-                                }.await;
-                                if let Err(error) = result {
-                                    eprintln!("Local backend RPC: {error}");
-                                }
-                            });
-                        },
-                        Err(error) => eprintln!("Local backend connection: {error}"),
-                    }
-                },
-                result = clients.join_next(), if !clients.is_empty() => {
-                    if let Some(Err(error)) = result {
-                        eprintln!("Local backend client task: {error}");
-                    }
-                },
-                _ = terminate.recv() => break,
-                result = tokio::signal::ctrl_c() => { result?; break; },
-            }
-        }
-        clients.abort_all();
-        while clients.join_next().await.is_some() {}
-        Ok::<_, std::io::Error>(())
-    }
-    .await;
-    backend.shutdown().await;
-    result?;
-    Ok(())
 }

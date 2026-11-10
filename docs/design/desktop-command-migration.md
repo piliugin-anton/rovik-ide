@@ -1,9 +1,9 @@
 # Desktop command migration
 
-The shared daemon and authenticated typed cloud RPC exist. The app still
-explicitly selects an embedded backend until every service and its event
-transport can attach safely. Never fall back to an embedded backend after an
-IPC failure.
+Unix desktop windows now attach automatically to the shared daemon. Windows
+retains an embedded host pending named-pipe transport. Every migrated service
+and its event transport can attach through authenticated local RPC. Never fall
+back to an embedded backend after an IPC failure.
 
 Desktop-only operations use a separate, versioned local request enum in
 `rovik-client::desktop_api`. The backend serializes its existing result types;
@@ -25,16 +25,19 @@ existing protocol and routing. Native window actions stay in Tauri.
    terminal output, filesystem watches, VFS subscriptions, streamed model
    replies, host setup progress, and native callbacks. Scope subscriptions to
    clients and clean them up on disconnect without stopping shared work.
+5. **Completed (`af41d6a`)**: Backend project guards and explicit client detachment.
+6. **Completed**: Automatic Unix attachment through the packaged executable,
+   shared host startup, native focus separation, and updater network configuration.
 
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
-pretend they are ready for IPC. The UI remains embedded until these are complete.
+pretend they are ready for IPC. Windows remains embedded until its transport is ready.
 
 ## Following this migration
 
-Automatic daemon packaging/start/attach; command-session reconstruction after
-failure; lifecycle, crash, and upgrade behavior; Windows named pipes; real
-multi-window FUSE and execution isolation tests.
+Command-session reconstruction after failure; safe backend replacement during
+upgrades; Windows named pipes; real multi-window FUSE and execution isolation
+tests. Unix packaging/start/attach is implemented below.
 
 ## Private event transport prerequisite
 
@@ -326,3 +329,51 @@ Next: automatic daemon attachment and client session reconstruction, then Window
 transport and mounted multi-window FUSE validation. Native focus/position handling
 stays in the UI; the retained-project UI loop needs adjustment when attachment is
 enabled. This phase does not claim mounted FUSE or native multi-window validation.
+
+## Automatic desktop attachment on Unix
+
+Linux and macOS windows now discover and attach to the shared backend by default.
+When discovery is absent, they launch the packaged Rovik executable with
+`--desktop-backend --data <absolute-directory> --config <absolute-directory>`.
+This entry point runs before Tauri or webview initialization and shares the host
+implementation with `rovik-desktopd`. No separately bundled sidecar is needed.
+AppImages launch the original image, keeping its libraries mounted independently
+of the window that started it. Launchers use independent process sessions and
+close inherited descriptors; their children are reaped without tying host lifetime
+to a window.
+
+The lifetime lock still arbitrates simultaneous startup before Core, databases,
+or mounts are initialized. Authentication and incompatible-protocol errors never
+cause an embedded fallback. A failed launcher is reported immediately; successful
+losing launchers wait for the winner's readiness. The initial authenticated
+connection becomes the window's command session after a dispatcher acknowledgement.
+
+Native window slots are separate from execution slots. Focus claims follow only
+the visible project; changing projects no longer retains a native claim just
+because a backend chat is running. Closing the last window detaches its session
+without stopping execution or mounts. The next window attaches to the same host.
+Windows retains its explicit embedded host until named-pipe transport is ready.
+
+The native updater obtains a resolved HTTP configuration through authenticated
+RPC, preserving configured proxy authentication, local bypass, and timeout behavior
+without initializing a second credential store in the UI. Credentials remain in
+native memory and are redacted from Debug output. Restarting a Unix UI for an update
+no longer warns that it will stop backend chats.
+
+Editor marker reports and preview edit/write commands also cross RPC, so the
+agent sees diagnostics in its own process and mutations share its file guards.
+Disconnect removes that client's diagnostic reports while preserving newer reports
+from another client. Late reports from a closed session are rejected.
+Read-only editor helpers (typings, source outlines, project-file enumeration, and
+preview reads/search) remain UI-local and do not own execution services.
+
+Local protocol 18 adds these requests and the native HTTP configuration. An incompatible already-running
+host must be stopped explicitly after its work finishes before opening the new
+app; a window restart alone does not replace it. Automatic safe host replacement
+and client session reconstruction remain the next lifecycle work. Commands are
+never automatically replayed after a disconnect.
+
+Validation covers launcher failures, existing-host attachment, incompatible-host
+refusal, concurrent automatic attachment, reuse after all clients close, native
+proxy snapshot behavior, and the existing embedded/daemon command contracts.
+Windows transport and mounted multi-window FUSE validation remain outstanding.

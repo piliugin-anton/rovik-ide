@@ -3,6 +3,71 @@ use rovik_client::desktop_connection::DesktopConnection;
 
 /// The same contract is exercised against embedded services and a real daemon.
 pub async fn check_filesystem_and_overlay_contract(connection: &DesktopConnection) {
+    let settings = connection
+        .desktop(rovik_client::desktop_api::network::NetworkRequest::ClientSettings.into())
+        .await
+        .unwrap();
+    let settings: rovik_core::net::ClientSettings = serde_json::from_value(settings).unwrap();
+    settings
+        .configure(reqwest::Client::builder())
+        .build()
+        .unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().to_string_lossy().into_owned();
+    use rovik_client::desktop_api::filesystem::FilesystemRequest;
+    connection
+        .desktop(
+            FilesystemRequest::ToolWriteFile {
+                root: root.clone(),
+                path: "a.ts".into(),
+                content: "const value = 1;".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let edit = |dry_run| FilesystemRequest::ToolEditFile {
+        root: root.clone(),
+        path: "a.ts".into(),
+        old_text: "1".into(),
+        new_text: "2".into(),
+        start_line: None,
+        end_line: None,
+        dry_run: Some(dry_run),
+    };
+    let preview = connection.desktop(edit(true).into()).await.unwrap();
+    assert_eq!(preview["content"], "const value = 2;");
+    assert_eq!(
+        std::fs::read_to_string(files.path().join("a.ts")).unwrap(),
+        "const value = 1;"
+    );
+    connection.desktop(edit(false).into()).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(files.path().join("a.ts")).unwrap(),
+        "const value = 2;"
+    );
+    assert!(connection
+        .desktop(
+            FilesystemRequest::ToolWriteFile {
+                root: root.clone(),
+                path: "../escape".into(),
+                content: "no".into()
+            }
+            .into()
+        )
+        .await
+        .is_err());
+    connection
+        .desktop(
+            FilesystemRequest::ReportEditorDiagnostics {
+                root,
+                path: "a.ts".into(),
+                markers: vec![],
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
     let status = connection
         .desktop(DesktopRequest::from(OverlayRequest::Status {
             dialog_id: "no-overlay".into(),

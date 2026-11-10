@@ -426,6 +426,7 @@ pub struct EditorMarker {
 }
 
 struct DiagReport {
+    owner: Option<String>,
     markers: Vec<EditorMarker>,
     reported_at: SystemTime,
 }
@@ -442,6 +443,33 @@ const DIAG_MAX_MARKERS: usize = 100;
 /// frontend's marker listener). Never fails the caller: bad input is an
 /// error string, never a panic.
 pub fn report_editor_diagnostics(
+    root: String,
+    path: String,
+    markers: Vec<EditorMarker>,
+) -> Result<(), String> {
+    report_diagnostics(None, root, path, markers)
+}
+
+/// Records the latest editor report with its desktop session owner.
+pub fn report_client_diagnostics(
+    client: &str,
+    root: String,
+    path: String,
+    markers: Vec<EditorMarker>,
+) -> Result<(), String> {
+    report_diagnostics(Some(client.to_string()), root, path, markers)
+}
+
+/// Removes a departed client's reports, preserving reports replaced by other clients.
+pub fn forget_client_diagnostics(client: &str) {
+    EDITOR_DIAGS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .retain(|_, report| report.owner.as_deref() != Some(client));
+}
+
+fn report_diagnostics(
+    owner: Option<String>,
     root: String,
     path: String,
     markers: Vec<EditorMarker>,
@@ -506,6 +534,7 @@ pub fn report_editor_diagnostics(
     diags.insert(
         (root_canon, rel),
         DiagReport {
+            owner,
             markers,
             reported_at: SystemTime::now(),
         },
@@ -1246,6 +1275,44 @@ mod tests {
             source: None,
             code: None,
         }
+    }
+
+    #[test]
+    fn disconnect_removes_only_reports_still_owned_by_that_client() {
+        let (base, _, root) = outline_project(
+            "diagowners",
+            &[("a.ts", "const x = 1;"), ("b.ts", "const y = 2;")],
+        );
+        let first = format!("{root}:first");
+        let second = format!("{root}:second");
+        for path in ["a.ts", "b.ts"] {
+            report_client_diagnostics(
+                &first,
+                root.clone(),
+                path.into(),
+                vec![marker("error", "first report".into())],
+            )
+            .unwrap();
+        }
+        report_client_diagnostics(
+            &second,
+            root.clone(),
+            "a.ts".into(),
+            vec![marker("error", "newer report".into())],
+        )
+        .unwrap();
+        forget_client_diagnostics(&first);
+        assert!(tool_diagnostics(root.clone(), Some("a.ts".into()))
+            .unwrap()
+            .contains("newer report"));
+        assert!(!tool_diagnostics(root.clone(), Some("b.ts".into()))
+            .unwrap()
+            .contains("first report"));
+        forget_client_diagnostics(&second);
+        assert!(!tool_diagnostics(root, Some("a.ts".into()))
+            .unwrap()
+            .contains("newer report"));
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

@@ -274,7 +274,7 @@ impl DesktopConnection {
         }
     }
 
-    /// Uses the application's existing backend during command migration.
+    /// Uses a private host on platforms awaiting IPC, or in embedded tests.
     pub fn embedded(backend: Arc<DesktopBackend>) -> Self {
         let lease = backend.sessions.create();
         Self {
@@ -286,18 +286,37 @@ impl DesktopConnection {
         }
     }
 
+    /// Attaches to the single local host, launching the packaged command only
+    /// when discovery is absent. Authentication or compatibility errors fail closed.
+    #[cfg(unix)]
+    pub async fn attach(
+        command: std::process::Command,
+        data: &std::path::Path,
+        config: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        let (stream, ready) = crate::local_backend::ensure_command(command, data, config).await?;
+        let directory = crate::local_backend::directory(data);
+        let client =
+            crate::local_backend::rpc::Client::from_connected(&directory, stream, ready).await?;
+        Ok(Self::local(client))
+    }
+
     /// Attaches to an existing local backend. Failure is returned to the
     /// window; a second private backend is never initialized here.
     #[cfg(unix)]
     pub async fn connect(directory: &std::path::Path) -> std::io::Result<Self> {
         let client = crate::local_backend::rpc::Client::connect(directory).await?;
-        Ok(Self {
+        Ok(Self::local(client))
+    }
+
+    #[cfg(unix)]
+    fn local(client: crate::local_backend::rpc::Client) -> Self {
+        Self {
             backend: Backend::Local(client),
             events: Default::default(),
             closing: tokio::sync::watch::channel(false).0,
-            #[cfg(unix)]
             journal_reader: Default::default(),
-        })
+        }
     }
 
     /// Runs a typed operation using the backend's authoritative routing.

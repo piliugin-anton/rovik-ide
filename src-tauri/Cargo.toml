@@ -120,6 +120,7 @@ tauri-plugin-updater = { version = "~2.14", default-features = false, features =
 # The core's test support, and its short waits (a closed terminal's end,
 # rovik_core::process::SessionTree), as the other crates' tests have them.
 [dev-dependencies]
+tempfile = "3.27.0"
 rovik-core = { workspace = true, features = ["testing"] }
 
 # Dependencies optimized in dev builds (the tests', `tauri dev`): the tests

@@ -14,6 +14,8 @@ use std::sync::Arc;
 pub enum NetworkRequest {
     /// network_settings on the backend.
     Settings,
+    /// Resolved HTTP settings for the native updater, with memory-only credentials.
+    ClientSettings,
     /// network_save on the backend.
     Save {
         settings: NetworkSettings,
@@ -24,6 +26,9 @@ pub enum NetworkRequest {
 impl NetworkRequest {
     pub(super) async fn dispatch(self, backend: &DesktopBackend) -> super::DesktopResult {
         match self {
+            Self::ClientSettings => {
+                super::encode_result(Ok::<_, String>(net::client_settings().await))
+            }
             Self::Settings => super::encode_result(network_settings(backend).await),
             Self::Save {
                 settings,

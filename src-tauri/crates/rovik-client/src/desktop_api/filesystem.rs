@@ -13,6 +13,28 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
 pub enum FilesystemRequest {
+    /// Publishes editor markers in the process where agents query diagnostics.
+    ReportEditorDiagnostics {
+        root: String,
+        path: String,
+        markers: Vec<rovik_core::agent_tools::EditorMarker>,
+    },
+    /// Applies an editor tool edit under the backend's shared file guards.
+    ToolEditFile {
+        root: String,
+        path: String,
+        old_text: String,
+        new_text: String,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+        dry_run: Option<bool>,
+    },
+    /// Writes through the same guards as agent and filesystem mutations.
+    ToolWriteFile {
+        root: String,
+        path: String,
+        content: String,
+    },
     /// read_dir_entries runs in the backend.
     ReadDirEntries { root_path: String, path: String },
     /// read_file_content runs in the backend.
@@ -76,6 +98,40 @@ impl FilesystemRequest {
         let state = owner.filesystem.clone();
         let data = backend.core.db.data_dir().to_path_buf();
         match self {
+            Self::ReportEditorDiagnostics {
+                root,
+                path,
+                markers,
+            } => {
+                let owner = owner.clone();
+                encode(
+                    blocking(move || owner.report_editor_diagnostics(root, path, markers)).await?,
+                )
+            }
+            Self::ToolEditFile {
+                root,
+                path,
+                old_text,
+                new_text,
+                start_line,
+                end_line,
+                dry_run,
+            } => encode(
+                blocking(move || {
+                    rovik_core::agent_tools::tool_edit_file(
+                        root, path, old_text, new_text, start_line, end_line, dry_run,
+                    )
+                })
+                .await?,
+            ),
+            Self::ToolWriteFile {
+                root,
+                path,
+                content,
+            } => encode(
+                blocking(move || rovik_core::agent_tools::tool_write_file(root, path, content))
+                    .await?,
+            ),
             Self::ReadDirEntries { root_path, path } => {
                 encode(fs::read_dir_entries(state, root_path, path).await?)
             }

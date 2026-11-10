@@ -52,6 +52,7 @@ pub struct Session {
     pub(crate) chat_requests: Arc<rovik_core::chat_request::ChatRequests>,
     pub(crate) filesystem: Arc<crate::filesystem::WatcherState>,
     pub(crate) git_history: Arc<std::sync::atomic::AtomicU64>,
+    editor_diagnostics: Mutex<()>,
     project_cleanup: Mutex<Option<Cleanup>>,
     workload_cleanup: Mutex<Option<Cleanup>>,
     closed: AtomicBool,
@@ -72,6 +73,7 @@ impl Session {
             filesystem: Default::default(),
             chat_requests: Default::default(),
             git_history: Default::default(),
+            editor_diagnostics: Default::default(),
             project_cleanup: Default::default(),
             workload_cleanup: Default::default(),
             closed: AtomicBool::new(false),
@@ -113,6 +115,10 @@ impl Session {
     /// Stops only this client's resources. Safe to call more than once.
     pub fn close(&self, reason: &str) {
         self.fail(reason);
+        {
+            let _guard = lock(&self.editor_diagnostics);
+            rovik_core::agent_tools::forget_client_diagnostics(self.id());
+        }
         if let Some(cleanup) = lock(&self.project_cleanup).take() {
             cleanup();
         }
@@ -124,6 +130,22 @@ impl Session {
         for (_, resource) in resources {
             (resource.cleanup)();
         }
+    }
+
+    /// Records editor markers atomically with disconnect cleanup.
+    pub(crate) fn report_editor_diagnostics(
+        &self,
+        root: String,
+        path: String,
+        markers: Vec<rovik_core::agent_tools::EditorMarker>,
+    ) -> Result<(), String> {
+        let _guard = lock(&self.editor_diagnostics);
+        if self.is_closed() {
+            return Err(
+                "Desktop session ended; reconnect before reporting editor diagnostics".into(),
+            );
+        }
+        rovik_core::agent_tools::report_client_diagnostics(self.id(), root, path, markers)
     }
 
     /// Changes this client's open folder atomically with disconnect cleanup.
@@ -449,6 +471,18 @@ mod tests {
         registry.close(lease.session.id(), "detached");
         registry.close(lease.session.id(), "detached");
         assert_eq!(cleaned.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_closed_session_rejects_late_editor_reports() {
+        let registry = Sessions::default();
+        let lease = registry.create();
+        lease.session.close("detached");
+        let error = lease
+            .session
+            .report_editor_diagnostics("/unused".into(), "a.ts".into(), Vec::new())
+            .unwrap_err();
+        assert!(error.contains("Desktop session ended"), "{error}");
     }
 
     #[test]

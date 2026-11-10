@@ -1648,9 +1648,9 @@ The desktop supplies event publishers and keeps native window callbacks in the
 application layer. Initialization fails if remote chat ownership cannot be
 loaded, rather than treating those chats as local.
 
-This is the service extraction stage: each window still hosts its own backend.
-The `rovik-desktopd` binary now provides Unix singleton ownership and a private
-readiness socket. `local_backend::ensure_backend` connects first or starts that
+Unix windows now attach to a shared backend with singleton ownership and a
+private readiness socket. The packaged app hosts it in `--desktop-backend` mode;
+`rovik-desktopd` provides the same host as a standalone binary. `local_backend::ensure_backend` connects first or starts that
 binary, then waits for initialization. The handshake identifies the protocol,
 backend boot, and client session; the daemon retains ownership through shutdown.
 The Unix endpoint also serves bounded typed request/reply calls through
@@ -1660,34 +1660,33 @@ operations. Status includes connected hosts, and `call_host` explicitly targets
 a host for operations such as connector setup. The handshake requires client
 acknowledgement before accepting operations; a stalled handshake cannot block
 other clients. A lost or cancelled reply invalidates the client connection, and
-mutations are never retried automatically. Windows named pipes, global agent
-event subscriptions, and automatic desktop attachment are not enabled yet. Native
-Tauri commands outside `rovik-protocol::Request` still need protocol adapters
-before their window-side services can be removed. Build the bootstrap host with
+mutations are never retried automatically. Windows named pipes and automatic
+command-session reconstruction remain outstanding. Desktop-only commands and
+events use their own adapters. Build the standalone host with
 `cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
 
 Agent controls, connector operations, chat mutations, and CLM commands now use
 `DesktopConnection`, which supplies the same typed replies in embedded and Unix
-IPC modes. The desktop currently selects embedded mode explicitly while the
-remaining commands and event subscriptions are migrated. IPC connection errors
+IPC modes. Unix desktops select IPC by default; Windows keeps its embedded
+host pending transport support. IPC connection errors
 never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 7 provides private client event connections alongside
+use the adapter. Local protocol 18 provides private client event connections alongside
 explicit desktop requests. VFS subscriptions now use this transport in both
 embedded and IPC modes. Each client owns its subscriptions; disconnecting it
 cleans up only its resources. Bounded queues fail explicitly if a consumer falls
 behind, and native callback loss cancels its producer. See the
-[remaining command migration phases](docs/design/desktop-command-migration.md).
+[desktop backend migration](docs/design/desktop-command-migration.md).
 
 Chat data and drafts, attachments, CLM tools, memory, AI/project/network settings,
 host operations, and non-browser MCP operations now run behind that boundary.
 Structured host-deployment errors retain their fields. Desktop operations keep
 their service-specific deadlines instead of using the framing timeout as a
 whole-operation deadline. Attachments use bounded base64 frames, preserving the
-existing image size limit. Project/window registration, browser sign-in, host
-test progress, and other event-dependent adapters are still being migrated.
+existing image size limit. Project registration, browser sign-in, host-test
+progress, and other event-dependent operations also use desktop RPC.
 
 ### Chat isolation
 
@@ -2250,14 +2249,14 @@ WSL operations also use desktop RPC; native adapters retain browser/window actio
 Project lifecycle commands and attachment reads now use desktop RPC. Open projects
 are registered per client, with guarded merges/deletes and disconnect cleanup;
 remote results and steering use the chat's project. This completes the listed
-command-family migration. Automatic daemon attachment remains follow-up work;
-the app still explicitly uses the embedded backend.
+command-family migration. Unix windows attach automatically to the shared host;
+Windows currently uses an embedded backend.
 
 Agent and cloud events now reach each UI through a project-scoped replay journal.
 The read connection reconnects independently of commands, and a missed-history
 reset refreshes chats, live runs, approvals, hosts, and ports before advancing its
 cursor. Command-session reconstruction after a backend crash remains lifecycle
-work; automatic daemon attachment is still disabled.
+work; reopening the window creates a fresh command session.
 
 Git panel operations now execute in the shared desktop backend, including hooks,
 fetch/push, branches, stashes, merge/rebase, and conflict resolution. Windows keep
@@ -2298,5 +2297,19 @@ are ordered, and reconnecting hosts receive the current selection.
 Host startup and periodic refresh now run in one backend-owned worker, shared by
 embedded and daemon modes. Shutdown joins any active startup or refresh operation
 before stopping execution services. Developer remote-chat environment settings
-are also honored by the standalone backend. The UI still selects embedded mode
-while native ownership and exit handling are migrated.
+are also honored by the standalone backend. Native windows retain focus and
+position handling while execution and host connections belong to the backend.
+
+### Shared desktop backend
+
+On Linux and macOS, Rovik windows share one local backend for chats, execution,
+and virtual filesystem mounts. Closing a window releases its UI resources;
+backend work continues even when the last window closes. Opening Rovik again
+reattaches to that backend. Windows currently uses an embedded backend while its
+shared transport is being implemented.
+
+After a backend crash, reopen the window to create a new command session. Rovik
+does not replay commands whose completion is uncertain. If an update reports an
+incompatible backend, let its work finish and stop the process running with
+`--desktop-backend` (SIGTERM), then reopen Rovik. Automatic backend replacement
+and UI session restoration are still being implemented.

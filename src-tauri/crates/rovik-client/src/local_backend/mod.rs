@@ -9,14 +9,16 @@ use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[cfg(unix)]
+pub mod host;
+#[cfg(unix)]
 pub mod rpc;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{connect, ensure_backend, Lease, Listener, Pending};
+pub use unix::{connect, ensure_backend, ensure_command, Lease, Listener, Pending};
 
 /// Version of the local bootstrap protocol, independent of remote RPC.
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 #[cfg(unix)]
 const MAX_HANDSHAKE: usize = 4096;
 
@@ -37,7 +39,7 @@ pub struct Ready {
 pub fn compatible(ready: Ready) -> io::Result<Ready> {
     if ready.protocol != PROTOCOL {
         return Err(io::Error::new(io::ErrorKind::Unsupported,
-            format!("Local backend protocol {} is incompatible with {PROTOCOL}. Restart Rovik after updating all windows.", ready.protocol)));
+            format!("Local backend protocol {} is incompatible with {PROTOCOL}. Stop the existing desktop backend after its work finishes, then reopen Rovik. Restarting a window alone does not replace the backend.", ready.protocol)));
     }
     Ok(ready)
 }
@@ -80,6 +82,60 @@ pub fn directory(data: &Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn an_incompatible_backend_never_triggers_another_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = directory(root.path());
+        std::fs::create_dir(&dir).unwrap();
+        let listener = tokio::net::UnixListener::bind(dir.join("rpc.sock")).unwrap();
+        let server = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            write_ready(
+                &mut stream,
+                &Ready {
+                    protocol: PROTOCOL + 1,
+                    boot: "new".into(),
+                    version: "new".into(),
+                    session: "s".into(),
+                },
+            )
+            .await
+            .unwrap();
+        };
+        let command = std::process::Command::new("/missing/must-not-spawn");
+        let (_, result) = tokio::join!(server, ensure_command(command, root.path(), root.path()));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn an_existing_backend_is_used_without_spawning_the_command() {
+        let root = tempfile::tempdir().unwrap();
+        let lease = Lease::acquire(&directory(root.path())).unwrap().unwrap();
+        let listener = lease.listen("test").unwrap();
+        let command = std::process::Command::new("/missing/launcher-must-not-run");
+        let (accepted, attached) = tokio::join!(
+            listener.accept(),
+            ensure_command(command, root.path(), root.path())
+        );
+        accepted.unwrap();
+        attached.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_launcher_is_reported_without_waiting_for_startup_timeout() {
+        let root = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "exit 7"]);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ensure_command(command, root.path(), root.path()),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error.to_string().contains("exited with"), "{error}");
+    }
 
     #[tokio::test]
     async fn clients_share_one_boot_and_have_distinct_sessions() {

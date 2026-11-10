@@ -130,6 +130,14 @@ impl Client {
     /// Attaches to an existing backend without constructing a local Core.
     pub async fn connect(directory: &Path) -> io::Result<Self> {
         let (stream, ready) = connect(directory).await?;
+        Self::from_connected(directory, stream, ready).await
+    }
+
+    pub(crate) async fn from_connected(
+        directory: &Path,
+        stream: UnixStream,
+        ready: Ready,
+    ) -> io::Result<Self> {
         let client = Self {
             ready,
             stream: Mutex::new(Some(stream)),
