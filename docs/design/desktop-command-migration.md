@@ -732,11 +732,22 @@ The native GUI run exposed idle RPC disconnections and unordered terminal input.
 Frame deadlines now begin with the first received byte rather than socket
 readiness, and frontend terminal writes are sequenced per terminal. Queued input
 is rejected after an earlier write fails or the backend generation changes.
-The two-window project tests passed. The macOS GUI workflow now installs FSKit
-and requires chat isolation, including a regression for an unlanded edit while
-another window opens and closes. Its native result remains to be validated.
-Native kernel-backend validation remains
-unavailable on GitHub-hosted virtual machines.
+The macOS GUI workflow installs FSKit and requires chat isolation. The
+[native run on `63dee73`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42893168750)
+passed all 42 scenarios, including project-window ownership, terminal commands,
+an unlanded edit remaining private when another UI process opens and exits,
+mounted chat commands, landing and undo, Autopilot delivery, and session restore.
+The harness restores native focus after peer-window tests and configures the
+fixture to keep its existing branch instead of awaiting a branch-choice dialog.
+
+The GUI run also exposed a replay race: recovery could already identify a newer
+run when an older run's completion arrived. That stale completion now leaves the
+current run, steering state and run-ended listeners untouched. A regression test
+reproduces the failure before the fix; the native Autopilot scenario checks that
+stages never briefly appear cut short while the task continues.
+
+Native kernel-backend validation remains unavailable on GitHub-hosted virtual
+machines.
 
 The native run on `596556f` passed 58 fuser tests, three adapter tests and an
 explicit load of the installed MFMount API. Mounting then reached FSKit's
