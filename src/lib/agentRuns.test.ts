@@ -453,3 +453,28 @@ test('journal recovery removes stale runs, steering, approvals and questions', a
   assert.equal(activeRunId('current'), 'new');
   assert.equal(chatStore.isRunning('current'), true);
 });
+
+test('a replayed end of an older run cannot stop the attempt restored from a snapshot', async () => {
+  const { recoverAgentRuns, handleBackendAgent, activeRunId, onRunEnded } =
+    await import('./agentRuns');
+  const chat = 'recovered-task';
+  recoverAgentRuns({
+    runs: [{ dialogId: chat, runId: 'review', steerable: true }],
+    approvals: [],
+    questions: [],
+  });
+  const ended: string[] = [];
+  const remove = onRunEnded((id) => ended.push(id));
+  try {
+    handleBackendAgent({ type: 'runEnded', dialogId: chat, runId: 'plan', outcome: 'done' });
+    assert.equal(activeRunId(chat), 'review');
+    assert.equal(isRunning(chat), true);
+    assert.equal(chatStore.state.steerable[chat], true);
+    assert.deepEqual(ended, []);
+    handleBackendAgent({ type: 'runEnded', dialogId: chat, runId: 'review', outcome: 'done' });
+    assert.equal(isRunning(chat), false);
+    assert.deepEqual(ended, [chat]);
+  } finally {
+    remove();
+  }
+});

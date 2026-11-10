@@ -550,6 +550,9 @@ export function handleBackendAgent(event: AgentEvent) {
       chatStore.setDriving(event.dialogId, event.driving);
       break;
     case 'runEnded':
+      // A recovery snapshot can already name the next attempt while the
+      // journal catches up. Its predecessor must not clear that live run.
+      if (state.runIds[event.dialogId] && state.runIds[event.dialogId] !== event.runId) break;
       if (state.runIds[event.dialogId] === event.runId)
         setState('runIds', event.dialogId, undefined!);
       chatStore.setRunning(event.dialogId, false);
