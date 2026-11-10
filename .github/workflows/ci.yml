@@ -157,6 +157,7 @@ jobs:
           ROVIK_MOUNTED_BACKEND: '1'
           ROVIK_CONFINE_COMMANDS: ${{ matrix.confine }}
         run: |
+          cargo test -p rovik-core --lib mounted_child_views_drain_without_losing_their_dependency_tree -- --ignored
           cargo test -p rovik-client --test mounted_backend -- --ignored
           cargo test -p rovik-ide --test shared_backend -- --ignored
       # Doctests aren't nextest's. They run no commands: not again under

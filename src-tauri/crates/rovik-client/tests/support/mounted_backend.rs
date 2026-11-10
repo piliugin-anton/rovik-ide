@@ -602,8 +602,8 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
     .unwrap();
     c.close().await.unwrap();
     drop(directory_handle);
-    // A saved child marker is enough to defer the whole set, even when its
-    // in-memory parent relationship has not been reconstructed.
+    // Inconsistent saved parent metadata must defer the whole set before
+    // any view is released (B is actually based on the project, not A).
     let parent_marker = data.join("overlays").join(&chat_b).join("parent.txt");
     std::fs::write(&parent_marker, &chat_a).unwrap();
     refusal(&endpoint, "Child chat filesystem views").await;

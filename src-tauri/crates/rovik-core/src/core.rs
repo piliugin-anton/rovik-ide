@@ -108,7 +108,7 @@ impl Core {
         self.replacement_blocker_inner(false)
     }
 
-    /// Drains unused Linux virtual and top-level chat volumes for an upgrade.
+    /// Drains unused Linux virtual and dependent chat volumes for an upgrade.
     /// The host must exclude clients and pause producers throughout this call.
     /// A busy mount or any retained work leaves the existing owner in place.
     #[cfg(target_os = "linux")]

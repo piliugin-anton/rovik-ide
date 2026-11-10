@@ -543,29 +543,42 @@ pub(crate) fn retains_views() -> bool {
     !OPEN.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
 }
 
-/// Drains idle top-level views without landing or discarding their changes.
+/// Drains idle views children first, without landing or discarding changes.
 /// Admission and background producers must stay paused throughout this call.
 #[cfg(target_os = "linux")]
 pub(crate) fn drain_for_upgrade() -> Result<(), String> {
-    let mut ids: Vec<String> = OPEN
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .keys()
-        .cloned()
-        .collect();
-    ids.sort();
-    // A child may read from its parent's mount. Leave the whole set alone
-    // until dependency-aware draining is available.
-    for id in &ids {
-        let store = store_dir(id).ok_or("The overlay data folder is unavailable")?;
-        let saved_child = store
-            .join("parent.txt")
-            .try_exists()
-            .map_err(|error| format!("Could not check chat {id}'s parent: {error}"))?;
-        if parent_of(id).is_some() || saved_child {
-            return Err("Child chat filesystem views still depend on their parents".into());
+    // Snapshot dependency metadata before releasing any view. A malformed or
+    // inconsistent relationship must not let a parent disappear under a child.
+    let dependencies = {
+        let open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dependencies = BTreeMap::new();
+        for (id, overlay) in open.iter() {
+            let saved = match std::fs::read_to_string(overlay.store.join("parent.txt")) {
+                Ok(parent) => Some(parent.trim().to_string()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("Could not check chat {id}'s parent: {error}")),
+            };
+            let live = parent_of(id);
+            if live.is_some() && live != saved {
+                return Err(format!(
+                    "Child chat filesystem views have inconsistent parent metadata: {id}"
+                ));
+            }
+            if let Some(parent) = &saved {
+                let parent_view = open.get(parent).ok_or_else(|| {
+                    format!("Child chat filesystem views require their parent to be open: {id}")
+                })?;
+                if overlay.project != parent_view.view {
+                    return Err(format!(
+                        "Child chat filesystem views have inconsistent parent paths: {id}"
+                    ));
+                }
+            }
+            dependencies.insert(id.clone(), saved);
         }
-    }
+        dependencies
+    };
+    let ids = drain_order(dependencies)?;
     for id in ids {
         let gate = gate(&id);
         let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -581,6 +594,152 @@ pub(crate) fn drain_for_upgrade() -> Result<(), String> {
         OPEN.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     }
     Ok(())
+}
+
+/// Orders leaves before parents without recursing through an untrusted graph.
+#[cfg(target_os = "linux")]
+fn drain_order(mut dependencies: BTreeMap<String, Option<String>>) -> Result<Vec<String>, String> {
+    let mut order = Vec::with_capacity(dependencies.len());
+    while !dependencies.is_empty() {
+        let parents: BTreeSet<&str> = dependencies.values().filter_map(|p| p.as_deref()).collect();
+        let leaves: Vec<String> = dependencies
+            .keys()
+            .filter(|id| !parents.contains(id.as_str()))
+            .cloned()
+            .collect();
+        if leaves.is_empty() {
+            return Err("Child chat filesystem views have cyclic parent dependencies".into());
+        }
+        for id in leaves {
+            dependencies.remove(&id);
+            order.push(id);
+        }
+    }
+    Ok(order)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod upgrade_order_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires Linux FUSE; run with ROVIK_MOUNTED_BACKEND=1"]
+    fn mounted_child_views_drain_without_losing_their_dependency_tree() {
+        assert_eq!(std::env::var("ROVIK_MOUNTED_BACKEND").as_deref(), Ok("1"));
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("base"), "project").unwrap();
+        let _data = test_data(&root.path().join("data"));
+        let parent = open("drain-parent", &project, Box::new(|_, _| {})).unwrap();
+        std::fs::write(parent.view.join("parent"), "parent edit").unwrap();
+        let child = open_child("drain-parent", "drain-child").unwrap();
+        std::fs::write(child.view.join("child"), "child edit").unwrap();
+        let grandchild = open_child("drain-child", "drain-grandchild").unwrap();
+        std::fs::write(grandchild.view.join("grandchild"), "grandchild edit").unwrap();
+        let views = [
+            parent.view.clone(),
+            child.view.clone(),
+            grandchild.view.clone(),
+        ];
+        let marker = child.store.join("parent.txt");
+        std::fs::write(&marker, "missing-parent").unwrap();
+        assert!(drain_for_upgrade().unwrap_err().contains("inconsistent"));
+        assert!(views.iter().all(|view| view.join("base").is_file()));
+        std::fs::write(&marker, "drain-parent").unwrap();
+        let busy_leaf = std::fs::File::open(&grandchild.view).unwrap();
+        let busy_parent = std::fs::File::open(&parent.view).unwrap();
+        drop((parent, child, grandchild));
+        assert!(drain_for_upgrade().is_err());
+        assert!(get("drain-grandchild").is_some());
+        assert!(views.iter().all(|view| view.join("base").is_file()));
+        drop(busy_leaf);
+        // A partial drain may close both descendants, but must leave their
+        // busy ancestor mounted and all three stores available for reopening.
+        for _ in 0..400 {
+            assert!(drain_for_upgrade().is_err());
+            if get("drain-child").is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(get("drain-child").is_none());
+        assert!(get("drain-grandchild").is_none());
+        assert_eq!(
+            std::fs::read_to_string(views[0].join("parent")).unwrap(),
+            "parent edit"
+        );
+        let child = reopen_child("drain-parent", "drain-child", 1).unwrap();
+        let grandchild = reopen_child("drain-child", "drain-grandchild", 1).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(grandchild.view.join("child")).unwrap(),
+            "child edit"
+        );
+        assert_eq!(
+            std::fs::read_to_string(grandchild.view.join("grandchild")).unwrap(),
+            "grandchild edit"
+        );
+        drop((child, grandchild, busy_parent));
+        for _ in 0..400 {
+            if drain_for_upgrade().is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!retains_views());
+        // Reconstruct the hierarchy from disk as a replacement process does.
+        CHILDREN.lock().unwrap().clear();
+        let parent = open("drain-parent", &project, Box::new(|_, _| {})).unwrap();
+        let child = reopen_child("drain-parent", "drain-child", 1).unwrap();
+        let grandchild = reopen_child("drain-child", "drain-grandchild", 1).unwrap();
+        for (name, content) in [
+            ("base", "project"),
+            ("parent", "parent edit"),
+            ("child", "child edit"),
+            ("grandchild", "grandchild edit"),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(grandchild.view.join(name)).unwrap(),
+                content
+            );
+        }
+        assert!(!project.join("parent").exists());
+        assert!(!parent.view.join("child").exists());
+        assert!(!child.view.join("grandchild").exists());
+        drop((parent, child, grandchild));
+        close("drain-grandchild");
+        close("drain-child");
+        close("drain-parent");
+    }
+
+    #[test]
+    fn children_drain_before_parents_across_multiple_trees() {
+        let dependencies = [
+            ("a", None),
+            ("b", Some("a")),
+            ("c", Some("b")),
+            ("d", Some("a")),
+            ("e", None),
+        ]
+        .into_iter()
+        .map(|(id, parent)| (id.into(), parent.map(String::from)))
+        .collect();
+        assert_eq!(
+            drain_order(dependencies).unwrap(),
+            ["c", "d", "e", "b", "a"]
+        );
+    }
+
+    #[test]
+    fn cycles_are_refused_before_any_view_drains() {
+        for entries in [vec![("a", "a")], vec![("a", "b"), ("b", "a"), ("c", "b")]] {
+            let dependencies = entries
+                .into_iter()
+                .map(|(id, parent)| (id.into(), Some(parent.into())))
+                .collect();
+            assert!(drain_order(dependencies).unwrap_err().contains("cyclic"));
+        }
+    }
 }
 
 /// Whether the chat has an overlay, open or saved.

@@ -42,6 +42,9 @@ existing protocol and routing. Native window actions stay in Tauri.
 12. **Completed**: Drain idle remote connections during Unix upgrades, joining
     event receivers and retaining queued imports and detached event work.
 
+13. **Completed**: Drain dependent Linux chat views children first, retaining
+    busy ancestors and reconstructing saved descendants after refusal or replacement.
+
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
 pretend they are ready for IPC. Windows remains embedded until its transport is ready.
@@ -568,3 +571,24 @@ imports waiting on the pause, work arriving during draining, detached tasks, and
 reconnection without a settings change. Retained remote chats and transfers still
 need a separate drain protocol; child-overlay dependency handling, macOS mount
 draining, and Windows transport also remain.
+
+## Draining dependent Linux chat views
+
+Idle child overlays now drain before their parents. The backend checks every open
+view’s saved parent marker against its live relationship and base path before
+closing any view. Missing parents, unreadable markers, inconsistent metadata, and
+cycles refuse retirement. Ordering is iterative so deeply nested views do not
+consume the call stack.
+
+Each view retains the existing checked-save and ordinary-unmount behavior. A busy
+child leaves its ancestors mounted. If children have drained before a busy parent
+refuses, their saved changes remain available: reopening reconstructs the same
+hierarchy from parent markers. Neither draining nor reopening lands child edits
+into the parent or changes the project.
+
+A mandatory Linux FUSE regression exercises three nested views, malformed parent
+metadata, a busy leaf, partial draining at a busy ancestor, reopening after refusal,
+and reconstruction from disk after all views drain. CI runs it alongside both
+shared-backend mounted contracts. Pure ordering tests cover multiple trees and
+cycles. Retained remote-work draining, macOS mount draining, and Windows transport
+remain separate.

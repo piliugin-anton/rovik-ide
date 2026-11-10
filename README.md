@@ -2334,13 +2334,14 @@ See [the mounted test commands](docs/design/desktop-command-migration.md#require
 An upgrade can release an empty, unused virtual-files mount on Linux. A program
 holding a file or directory open keeps that mount busy and defers replacement;
 virtual files with retained contents also defer it. Close programs using the
-volume and release its files before retrying. Child chat views and retained remote
-work still require separate cleanup.
+volume and release its files before retrying. Retained remote work still
+requires separate cleanup.
 
-On Linux, idle top-level chat views can also drain for an upgrade without landing
+On Linux, idle chat views can also drain for an upgrade without landing
 or discarding their edits. The replacement reads their saved changes. Busy views
-or failed persistence defer retirement and keep the old backend; child views and
-retained remote work still require separate cleanup.
+or failed persistence defer retirement and keep the old backend. Child views drain
+before their parents, preserving each view’s saved edits. Invalid dependency
+metadata defers the whole drain; retained remote work requires separate cleanup.
 
 Idle remote connections, including offline hosts, can drain during a Unix backend
 upgrade. Queued result imports, mirrored chats, transfers, forwarded ports, and
