@@ -2,6 +2,9 @@
 //! the client's unit tests.
 #[path = "support/desktop_browser.rs"]
 mod desktop_browser;
+#[cfg(unix)]
+#[path = "support/desktop_formatter.rs"]
+mod desktop_formatter;
 #[path = "support/desktop_git.rs"]
 mod desktop_git;
 #[path = "support/desktop_journal.rs"]
@@ -96,6 +99,13 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     desktop_git::check(&connection, &other, &[std::process::id()]).await;
     #[cfg(unix)]
     desktop_lsp::check(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+        &[std::process::id()],
+    )
+    .await;
+    #[cfg(unix)]
+    desktop_formatter::check(
         DesktopConnection::embedded(backend.clone()),
         DesktopConnection::embedded(backend.clone()),
         &[std::process::id()],

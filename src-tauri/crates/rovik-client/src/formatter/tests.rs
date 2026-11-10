@@ -1,5 +1,6 @@
 use super::*;
 use std::fs;
+use std::time::Instant;
 
 /// A scratch project; removed when dropped.
 struct Project(PathBuf);
@@ -122,7 +123,14 @@ fn a_declared_formatter_that_isnt_installed_blocks_the_fallbacks() {
     let r = resolve(&file, "python", Some(&p.0), &p.path_env());
     assert!(r.found.is_none());
     assert_eq!(r.missing.map(|s| s.id), Some("black"));
-    let err = format_text(&file, "python", Some(&p.0), "x = 1\n".into(), &p.path_env());
+    let err = format_text(
+        &file,
+        "python",
+        Some(&p.0),
+        "x = 1\n".into(),
+        &p.path_env(),
+        &AtomicBool::new(false),
+    );
     assert_eq!(
         err,
         Err("the project uses Black, but `black` isn't installed".into())
@@ -170,10 +178,24 @@ tr a-z A-Z"#,
     // Canonical, as $PWD is.
     let file = fs::canonicalize(&file).unwrap();
     let root = fs::canonicalize(&p.0).unwrap();
-    let out = format_text(&file, "c", Some(&root), "int x;\n".into(), &p.path_env());
+    let out = format_text(
+        &file,
+        "c",
+        Some(&root),
+        "int x;\n".into(),
+        &p.path_env(),
+        &AtomicBool::new(false),
+    );
     assert_eq!(out, Ok("INT X;\n".into()));
     // Nothing to format: the tool isn't run.
-    let out = format_text(&file, "c", Some(&root), "\n".into(), &p.path_env());
+    let out = format_text(
+        &file,
+        "c",
+        Some(&root),
+        "\n".into(),
+        &p.path_env(),
+        &AtomicBool::new(false),
+    );
     assert_eq!(out, Ok("\n".into()));
 }
 
@@ -186,7 +208,14 @@ fn a_failing_formatter_reports_its_error() {
         "cat >/dev/null; echo '1:1: expected package' >&2; exit 2",
     );
     let file = p.file("main.go", "");
-    let out = format_text(&file, "go", Some(&p.0), "nonsense".into(), &p.path_env());
+    let out = format_text(
+        &file,
+        "go",
+        Some(&p.0),
+        "nonsense".into(),
+        &p.path_env(),
+        &AtomicBool::new(false),
+    );
     assert_eq!(out, Err("gofmt: 1:1: expected package".into()));
 
     // ktlint exits 1 for issues it couldn't fix: still formatted.
@@ -198,6 +227,7 @@ fn a_failing_formatter_reports_its_error() {
         Some(&p.0),
         "val x = 1\n".into(),
         &p.path_env(),
+        &AtomicBool::new(false),
     );
     assert_eq!(out, Ok("val x = 1\n".into()));
 }
@@ -271,7 +301,14 @@ fn windows_runs_cmd_wrappers_with_paths_that_have_spaces() {
         "@echo off\r\necho %~2\r\n",
     );
     let file = p.file("my project/a b.ts", "");
-    let out = format_text(&file, "typescript", Some(&p.0), "x\n".into(), &p.path_env());
+    let out = format_text(
+        &file,
+        "typescript",
+        Some(&p.0),
+        "x\n".into(),
+        &p.path_env(),
+        &AtomicBool::new(false),
+    );
     assert_eq!(
         out.map(|o| o.trim_end().to_string()),
         Ok(file.to_string_lossy().into_owned())
@@ -295,6 +332,7 @@ fn a_hanging_formatter_is_killed_with_everything_it_started() {
         "x".into(),
         &[0],
         Duration::from_secs(1),
+        &AtomicBool::new(false),
     );
     assert_eq!(out, Err("timed out after 1 s".into()));
     assert!(start.elapsed() < Duration::from_secs(3));
@@ -321,6 +359,7 @@ fn a_hanging_cmd_wrapper_is_killed_with_everything_it_started() {
         "x".into(),
         &[0],
         Duration::from_secs(1),
+        &AtomicBool::new(false),
     );
     assert_eq!(out, Err("timed out after 1 s".into()));
     assert!(start.elapsed() < Duration::from_secs(3));
@@ -356,6 +395,7 @@ fn a_child_a_wrapper_left_holding_its_output_is_killed_at_the_timeout() {
         "x".into(),
         &[0],
         Duration::from_secs(1),
+        &AtomicBool::new(false),
     );
     assert_eq!(out, Err("timed out after 1 s".into()));
     assert!(start.elapsed() < Duration::from_secs(3));
@@ -378,4 +418,69 @@ fn without_a_root_the_search_stays_in_the_files_folder() {
         search_dirs(&inside, None),
         [p.0.join("repo/src"), p.0.join("repo")]
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_cancels_blocked_input_and_rejects_later_work() {
+    let p = Project::new("shutdown");
+    let tool = p.tool("wait.sh", "echo ready > ready; sleep 1000 & wait");
+    let state = Arc::new(FormatterState::default());
+    let worker = state.clone();
+    let cwd = p.0.clone();
+    let started = p.0.join("ready");
+    let task = rovik_core::rt::spawn(async move {
+        worker
+            .work(move |cancelled| {
+                let mut cmd = Command::new(tool);
+                cmd.current_dir(cwd);
+                run(
+                    cmd,
+                    "x".repeat(2 * 1024 * 1024),
+                    &[0],
+                    Duration::from_secs(60),
+                    cancelled,
+                )
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !started.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let closing = state.clone();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        rovik_core::rt::spawn_blocking(move || closing.shutdown()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(task.await.unwrap().unwrap_err(), "formatting cancelled");
+    assert!(state
+        .work(|_| Ok(()))
+        .await
+        .unwrap_err()
+        .contains("shutting down"));
+}
+
+#[cfg(unix)]
+#[test]
+fn overflowing_output_is_rejected_without_waiting_for_the_timeout() {
+    let p = Project::new("overflow");
+    let tool = p.tool("flood.sh", "yes x");
+    let started = Instant::now();
+    assert!(run(
+        Command::new(tool),
+        "x".into(),
+        &[0],
+        Duration::from_secs(60),
+        &AtomicBool::new(false)
+    )
+    .unwrap_err()
+    .contains("more than a source file"));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

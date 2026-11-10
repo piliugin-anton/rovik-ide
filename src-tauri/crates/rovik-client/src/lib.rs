@@ -91,3 +91,6 @@ pub mod browser_install;
 
 /// Private routing of one-shot remote page requests to UI clients.
 pub mod desktop_pages;
+
+/// Backend-owned editor formatter discovery and execution.
+pub mod formatter;

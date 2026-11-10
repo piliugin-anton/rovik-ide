@@ -2282,3 +2282,9 @@ project and retained chats. The backend chooses one owner and includes the ports
 needed to open its tab; missing or ambiguous owners produce a chat notice.
 Page actions are not replayed after reconnection or project switches. Native
 browser opening stays in the selected UI client.
+
+Editor formatter discovery and execution now run in the backend through desktop
+RPC. Each request uses its own project configuration and unsaved buffer, leaving
+the source file untouched. Disconnecting a client cancels its formatter process;
+backend shutdown waits for formatter cleanup. Other clients can keep formatting
+and sending commands while a formatter is busy.

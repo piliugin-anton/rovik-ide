@@ -11,6 +11,7 @@ rovik-protocol.workspace = true
 # events go out through its sink (6.1).
 rovik-core.workspace = true
 log.workspace = true
+regex.workspace = true
 portable-pty = "0.9.0"
 sha2.workspace = true
 dirs = "7.0"

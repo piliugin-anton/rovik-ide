@@ -96,7 +96,7 @@ export async function readFileUnlessGone(path: string): Promise<string | null | 
   }
 }
 
-/** A command-line formatter for a file (src-tauri/src/formatter.rs). */
+/** A command-line formatter for a file (src-tauri/crates/rovik-client/src/formatter/mod.rs). */
 export interface FormatterInfo {
   id: string;
   name: string;

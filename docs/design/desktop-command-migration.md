@@ -203,6 +203,33 @@ cover subscription lifecycle, cross-client rejection, and reuse after errors.
 Frontend tests cover stale callbacks, late replies, metadata ordering, and OS
 opener failures.
 
-Workload/formatter and remaining native startup hooks still need migration.
+Workload and remaining native startup hooks still need migration.
 Automatic daemon activation, session reconstruction, Windows transport, and
 mounted multi-window FUSE validation remain. The app still selects embedded mode.
+
+## Editor formatter ownership
+
+Formatter discovery and execution now use typed desktop RPC. Project-local tools,
+configuration search boundaries, Rust editions, PATH fallback, and buffer/error
+shapes retain their existing contracts. The backend formats the unsaved buffer
+and returns text without writing the source file. Both discovery and execution
+run as finite tasks, leaving the request connection available to other commands.
+
+Each accepted worker stays registered until cleanup completes. Losing its client
+cancels only that client's formatter. Backend shutdown rejects new workers,
+cancels existing work, and waits for cleanup. Formatter stdin/stdout/stderr use
+cancellable I/O rather than detached reader threads; cancellation, timeouts, and
+output-limit failures close the pipes and kill/reap the wrapper's process tree.
+
+Existing formatter regression tests moved with the implementation. New tests
+cover blocked input during shutdown and prompt rejection of excessive output.
+Embedded and real-daemon fixtures verify backend process execution, different
+project-local formatters in two clients, unsaved-buffer results, unchanged source
+files, useful errors and connection reuse, and disconnect cleanup while another
+client continues formatting. Platform-specific Windows wrapper tests are retained;
+this environment validates the Linux paths.
+
+Workload commands and native startup hooks remain before automatic daemon
+attachment. Workload focus still needs an explicit policy for competing windows.
+Session reconstruction, Windows transport, and mounted multi-window FUSE
+validation also remain; the app continues to select embedded mode.

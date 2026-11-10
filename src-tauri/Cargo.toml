@@ -101,7 +101,6 @@ tokio = { workspace = true, features = ["time"] }
 uuid.workspace = true
 sha2.workspace = true
 log.workspace = true
-regex.workspace = true
 # Deleting moves to the system trash (Recycle Bin, macOS Trash, freedesktop.org trash).
 trash = "5"
 

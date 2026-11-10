@@ -3,6 +3,9 @@
 
 #[path = "support/desktop_browser.rs"]
 mod desktop_browser;
+#[cfg(unix)]
+#[path = "support/desktop_formatter.rs"]
+mod desktop_formatter;
 #[path = "support/desktop_git.rs"]
 mod desktop_git;
 #[path = "support/desktop_journal.rs"]
@@ -164,6 +167,17 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     desktop_operations::check_terminal_contract(&adapter, &other_adapter).await;
     desktop_git::check(&adapter, &other_adapter, &[first.0.id(), second.0.id()]).await;
     desktop_lsp::check(
+        rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+            .await
+            .unwrap(),
+        rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
+            .await
+            .unwrap(),
+        &[first.0.id(), second.0.id()],
+    )
+    .await;
+    #[cfg(unix)]
+    desktop_formatter::check(
         rovik_client::desktop_connection::DesktopConnection::connect(&endpoint)
             .await
             .unwrap(),

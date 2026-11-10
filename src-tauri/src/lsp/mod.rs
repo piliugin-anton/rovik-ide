@@ -1,6 +1,5 @@
 //! Native adapters for client-owned language servers in the backend.
 pub mod rust_analyzer;
-pub use rovik_client::lsp::tool_path;
 use rovik_client::{desktop_api::lsp::LspRequest, desktop_connection::DesktopConnection};
 use serde_json::Value;
 use tauri::{ipc::Channel, State};

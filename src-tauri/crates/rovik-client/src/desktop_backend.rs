@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Cancellable editor formatter workers.
+    pub formatters: Arc<crate::formatter::FormatterState>,
     /// Private, one-shot page requests for the owning UI client.
     pub pages: Arc<crate::desktop_pages::PageRouter>,
     /// Shared Chrome installation, independent of its observing windows.
@@ -133,6 +135,7 @@ impl DesktopBackend {
         }));
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
+            formatters: Default::default(),
             pages,
             journal,
             browser_install: Default::default(),
@@ -205,6 +208,10 @@ impl DesktopBackend {
         if let Err(error) = rovik_core::rt::spawn_blocking(move || lsp.shutdown()).await {
             log::error!("Could not wait for language-server cleanup: {error}");
         }
+        let formatters = self.formatters.clone();
+        if let Err(error) = rovik_core::rt::spawn_blocking(move || formatters.shutdown()).await {
+            log::error!("Could not wait for formatter cleanup: {error}");
+        }
         self.browser_install.shutdown().await;
         self.core.shutdown().await;
         let terminals = self.terminals.clone();
@@ -254,6 +261,7 @@ mod routing_tests {
             "test",
         ));
         DesktopBackend {
+            formatters: Default::default(),
             pages,
             journal: Default::default(),
             browser_install: Default::default(),

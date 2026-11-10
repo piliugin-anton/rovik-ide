@@ -10,6 +10,7 @@ pub mod browser;
 pub mod chat;
 pub mod clm;
 pub mod filesystem;
+pub mod formatter;
 pub mod git;
 pub mod hosts;
 pub mod lsp;
@@ -30,6 +31,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Editor formatter discovery and execution.
+    Formatter(Box<formatter::FormatterRequest>),
     /// Scoped UI callbacks for opening forwarded pages.
     Pages(Box<pages::PagesRequest>),
     /// Headless browser tools and shared Chrome installation.
@@ -90,6 +93,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Formatter(request) => request.dispatch(backend, session),
                 Self::Pages(request) => request.dispatch(backend, session),
                 Self::Browser(request) => request.dispatch(backend, session).await,
                 Self::Lsp(request) => request.dispatch(backend, session).await,
