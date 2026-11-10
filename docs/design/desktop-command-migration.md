@@ -51,6 +51,9 @@ existing protocol and routing. Native window actions stay in Tauri.
 15. **Completed**: Persist remote Keep/recheck decisions with checked atomic writes,
     restart restoration, explicit failures, and upgrade checkpoints.
 
+16. **Completed**: Drain local remote-work queues before pausing results and detach
+    verified server-owned runs/drivers for restoration by the replacement.
+
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
 pretend they are ready for IPC. Windows remains embedded until its transport is ready.
@@ -642,3 +645,30 @@ Replacement checkpoints live decisions and retries failed writes before validati
 mirror ownership. Tests cover restoration, replay and reset boundaries, corrupt
 records, storage failure, successful retry, and forgetting a chat. Active-work
 draining is the next phase.
+
+## Active remote-work draining
+
+With RPC admission closed, the backend pauses host maintenance and gives local
+remote-work queues time to finish before taking the result-worker pause. The
+existing one-second producer timeout bounds this wait. Timing out releases the
+maintenance pause and leaves accepted imports, transfers, relays, and forwarded
+traffic running; it never aborts them.
+
+After acquiring the result pause, the backend checks for work that arrived while
+acquiring it. If anything arrived, it releases the pause and drains again. The
+existing receiver join and retained-work checks still catch events that arrive
+during connection shutdown. Late work refuses retirement and resumes on the
+existing owner, whose saved hosts reconnect as before.
+
+Remote runs and Autopilot drivers belong to their server and no longer count as
+local work that must end. Their chat ownership and mirror records must pass the
+same persistence checks; unknown owners refuse retirement. No Stop request is
+sent. A fresh connection restores runs, drivers, approvals, and questions from
+server status. Failed pulls retry from their durable revision on reconnection.
+
+Tests cover a result arriving while the pause is being acquired, work continuing
+after a drain timeout, real forwarded traffic surviving timeout and completing
+normally, and run/driver restoration with synchronization at the saved revision.
+Long-lived forwarded pages or MCP relays, unresolved held results, and transfers
+that outlast the grace period continue to defer replacement safely. macOS mount
+draining and Windows transport remain separate platform work.

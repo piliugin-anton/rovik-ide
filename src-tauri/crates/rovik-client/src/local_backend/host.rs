@@ -82,7 +82,7 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                                         control::Reply::Busy("Windows or accepted requests are still connected".into())
                                     } else {
                                         match tokio::time::timeout(std::time::Duration::from_secs(1), backend.pause_producers()).await {
-                                            Err(_) => control::Reply::Busy("Host maintenance or remote imports are still finishing".into()),
+                                            Err(_) => control::Reply::Busy("Host maintenance or local remote work is still finishing".into()),
                                             Ok(guard) => {
                                                 if let Err(reason) = backend.prepare_replacement().await {
                                                     control::Reply::Busy(reason)

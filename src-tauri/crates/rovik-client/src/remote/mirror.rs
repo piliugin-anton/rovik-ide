@@ -47,10 +47,10 @@ pub(super) struct Pulls {
 }
 
 impl Pulls {
-    /// Failed or unfinished pulls need another successful synchronization.
+    /// In-flight pulls must finish locally; failed pulls retry from their saved cursor.
     #[cfg(any(unix, test))]
     pub(super) fn retains_work(&self) -> bool {
-        self.coming || self.going || self.again || self.failed
+        self.coming || self.going || self.again
     }
 }
 
@@ -458,8 +458,13 @@ mod upgrade_tests {
     use super::*;
 
     #[test]
-    fn only_successfully_finished_pull_records_can_retire() {
+    fn unfinished_pulls_block_but_failed_pulls_can_retry_after_replacement() {
         assert!(!Pulls::default().retains_work());
+        assert!(!Pulls {
+            failed: true,
+            ..Default::default()
+        }
+        .retains_work());
         for pulls in [
             Pulls {
                 coming: true,
@@ -471,10 +476,6 @@ mod upgrade_tests {
             },
             Pulls {
                 again: true,
-                ..Default::default()
-            },
-            Pulls {
-                failed: true,
                 ..Default::default()
             },
         ] {

@@ -303,6 +303,7 @@ impl State {
     fn forget(&mut self, chat: &str) {
         self.chats.remove(chat);
         self.running.remove(chat);
+        self.driving.remove(chat);
         self.pulls.remove(chat);
         self.last_sync.remove(chat);
         self.syncs.remove(chat);
@@ -391,8 +392,6 @@ impl Remote {
             || !state.moving.is_empty()
             || !state.cancels.is_empty()
             || !state.mcp_relayable.is_empty()
-            || !state.running.is_empty()
-            || !state.driving.is_empty()
             || !state.uploads.is_empty()
             || !state.steer_uploads.is_empty()
             || !state.backs.is_empty()
@@ -415,7 +414,21 @@ impl Remote {
     #[cfg(any(unix, test))]
     async fn verify_saved_mirrors(&self) -> Result<(), String> {
         self.lock().checkpoint_decisions()?;
-        let chats = self.lock().chats.clone();
+        let chats = {
+            let state = self.lock();
+            if state
+                .running
+                .keys()
+                .chain(state.driving.iter())
+                .any(|chat| !state.chats.contains_key(chat))
+            {
+                return Err(
+                    "Active remote work has no known owner; reconnect before retrying the upgrade"
+                        .into(),
+                );
+            }
+            state.chats.clone()
+        };
         if chats.is_empty() {
             return Ok(());
         }
@@ -441,7 +454,7 @@ impl Remote {
         Ok(())
     }
 
-    /// Stops only connections without retained work, then joins buffered events.
+    /// Detaches server-owned execution after local work pauses, joining buffered events.
     /// The caller must exclude new clients and pause maintenance and results.
     #[cfg(any(unix, test))]
     pub(crate) async fn drain_for_upgrade(&self, wait: Duration) -> Result<(), String> {

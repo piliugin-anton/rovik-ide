@@ -211,7 +211,7 @@ impl DesktopBackend {
             .start(self.remote.clone(), self.hosts.clone())
     }
 
-    /// Freezes automatic host discovery before checking replacement eligibility.
+    /// Freezes host discovery and drains accepted local remote work before pausing results.
     #[cfg(unix)]
     pub(crate) async fn pause_producers(
         &self,
@@ -220,7 +220,7 @@ impl DesktopBackend {
         tokio::sync::OwnedMutexGuard<()>,
     ) {
         let maintenance = self.maintenance.pause().await;
-        let results = self.remote.pause_results().await;
+        let results = self.remote.pause_for_upgrade().await;
         (maintenance, results)
     }
 

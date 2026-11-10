@@ -2271,14 +2271,18 @@ async fn persisted_idle_mirrors_survive_retirement_and_reload() {
 }
 
 #[tokio::test]
-async fn persisted_mirrors_refuse_live_runs_and_invalid_local_decisions() {
+async fn persisted_mirrors_refuse_unknown_run_owners_and_invalid_local_decisions() {
     let app = App::new();
     app.chat("saved", None, vec![]).await;
     let remote = Remote::new(app.core.clone());
     remote.place("saved", HOST);
     let _pause = remote.pause_results().await;
-    remote.lock().running.insert("saved".into(), "run".into());
-    assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
+    remote.lock().running.insert("unknown".into(), "run".into());
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("known owner"));
     remote.lock().running.clear();
     remote.lock().kept.insert("saved".into());
     assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
@@ -2415,10 +2419,177 @@ async fn forgetting_a_chat_clears_its_saved_decisions() {
     remote.place("decisions", HOST);
     remote.synced(waiting_sync("decisions"));
     remote.keep_older_copy("decisions").unwrap();
+    remote.lock().driving.insert("decisions".into());
     remote.lock().forget("decisions");
+    assert!(!remote.lock().driving.contains("decisions"));
     remote.place("decisions", HOST);
     remote.verify_saved_mirrors().await.unwrap();
     let restored = Remote::new(app.core.clone());
     restored.load().await.unwrap();
     assert!(!restored.lock().kept.contains("decisions"));
+}
+
+#[tokio::test]
+async fn results_arriving_while_acquiring_the_pause_finish_before_upgrade() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let held = remote.pause_results().await;
+    let (reply, result) = oneshot::channel();
+    let draining = remote.clone();
+    let wait = tokio::spawn(async move { draining.pause_for_upgrade().await });
+    tokio::task::yield_now().await;
+    assert!(!wait.is_finished());
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    drop(held);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err(),
+        "accepted work gets its normal result"
+    );
+    let _pause = tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!remote.jobs.has_pending());
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_drain_timeout_does_not_cancel_the_work_it_waits_for() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let (finish, finished) = oneshot::channel();
+    let work = remote.spawn(async move {
+        finished.await.unwrap();
+    });
+    assert!(
+        tokio::time::timeout(Duration::ZERO, remote.pause_for_upgrade())
+            .await
+            .is_err()
+    );
+    assert!(!work.is_finished());
+    finish.send(()).unwrap();
+    work.await.unwrap();
+    let _pause = remote.pause_for_upgrade().await;
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn remote_runs_and_drivers_continue_and_are_restored_after_replacement() {
+    let app = App::new();
+    app.chat("active", None, vec![]).await;
+    let (remote, fake) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    remote.place("active", HOST);
+    remote
+        .receive(
+            HOST,
+            event(AgentEvent::RunStarted {
+                dialog_id: "active".into(),
+                run_id: "remote-run".into(),
+                steerable: false,
+            }),
+        )
+        .await;
+    remote
+        .receive(
+            HOST,
+            event(AgentEvent::TaskDriving {
+                dialog_id: "active".into(),
+                driving: true,
+            }),
+        )
+        .await;
+    *fake.status.lock().unwrap() = Some(AgentStatus {
+        runs: vec![RunningRun {
+            dialog_id: "active".into(),
+            run_id: "remote-run".into(),
+            steerable: false,
+        }],
+        driving: vec!["active".into()],
+        ..Default::default()
+    });
+    app.core
+        .db
+        .write(|conn| {
+            conn.execute(
+                "UPDATE mirror_state SET rev = 7 WHERE dialog_id = 'active'",
+                [],
+            )
+            .map_err(|e| e.to_string())
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let _pause = remote.pause_for_upgrade().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(remote.states().is_empty());
+    assert_eq!(
+        remote.lock().running.get("active").map(String::as_str),
+        Some("remote-run")
+    );
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|req| matches!(req, Request::AgentStop { .. })));
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    restored.connect(HOST, fake.clone(), identity(HOST));
+    until(|| {
+        let state = restored.lock();
+        state.running.contains_key("active") && state.driving.contains("active")
+    })
+    .await;
+    assert_eq!(
+        restored.lock().running.get("active").map(String::as_str),
+        Some("remote-run")
+    );
+    until(|| {
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|req| matches!(req, Request::ChatChangesSince { rev: 7, .. }))
+    })
+    .await;
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|req| matches!(req, Request::ChatChangesSince { rev: 7, .. })),
+        "replacement retries synchronization from the durable cursor"
+    );
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|req| matches!(req, Request::AgentStop { .. })));
+    assert!(restored.lock().driving.contains("active"));
+    // The fake cannot serve changes: a failed pull still retries from the saved
+    // cursor on the next connection rather than pinning this backend forever.
+    let _restored_pause =
+        tokio::time::timeout(Duration::from_secs(5), restored.pause_for_upgrade())
+            .await
+            .unwrap();
+    restored
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
 }

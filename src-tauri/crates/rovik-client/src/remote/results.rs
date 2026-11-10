@@ -139,6 +139,25 @@ impl Remote {
         self.result_turn.clone().lock_owned().await
     }
 
+    /// Let accepted local work finish before pausing its worker. The host bounds
+    /// this wait while admission and maintenance stay closed. Cancelling only
+    /// cancels the wait; imports, transfers, and relays keep running.
+    #[cfg(any(unix, test))]
+    pub(crate) async fn pause_for_upgrade(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        loop {
+            while self.retained_remote_work().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let pause = self.pause_results().await;
+            // A result may have arrived while acquiring the pause. Resume it
+            // rather than freezing the very queue we are waiting to drain.
+            if self.retained_remote_work().is_none() {
+                return pause;
+            }
+            drop(pause);
+        }
+    }
+
     /// The default project for single-client callers. Desktop clients use
     /// `set_client_project` so opening a folder cannot replace another client's.
     pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {

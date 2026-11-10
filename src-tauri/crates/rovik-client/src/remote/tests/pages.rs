@@ -722,3 +722,40 @@ async fn forwarded_pages_reach_only_the_retaining_window_with_their_ports() {
     );
     remote.receive(HOST, page_closed("chat", port)).await;
 }
+
+#[tokio::test]
+async fn upgrade_waits_for_forwarded_pages_without_interrupting_their_traffic() {
+    let app = App::new();
+    let fake = Fake::default();
+    let port = free_port();
+    let server = echo_server().await;
+    fake.network.lock().unwrap().insert(port, server);
+    let (remote, _, browser) = with_pages(&app, fake, &["chat"]).await;
+    remote
+        .receive(
+            HOST,
+            page_wanted("chat", "page", &format!("http://localhost:{port}/"), port),
+        )
+        .await;
+    browser.next_opened().await;
+    assert!(
+        tokio::time::timeout(Duration::ZERO, remote.pause_for_upgrade())
+            .await
+            .is_err()
+    );
+    assert_eq!(echoed(port, b"still served").await, b"still served");
+    let draining = remote.clone();
+    let wait = tokio::spawn(async move { draining.pause_for_upgrade().await });
+    tokio::task::yield_now().await;
+    assert!(!wait.is_finished());
+    remote.receive(HOST, page_closed("chat", port)).await;
+    let _pause = tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .unwrap()
+        .unwrap();
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    until_closed(port).await;
+}

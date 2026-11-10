@@ -2334,30 +2334,37 @@ See [the mounted test commands](docs/design/desktop-command-migration.md#require
 An upgrade can release an empty, unused virtual-files mount on Linux. A program
 holding a file or directory open keeps that mount busy and defers replacement;
 virtual files with retained contents also defer it. Close programs using the
-volume and release its files before retrying. Retained remote work still
-requires separate cleanup.
+volume and release its files before retrying. Remote work follows the draining
+rules below.
 
 On Linux, idle chat views can also drain for an upgrade without landing
 or discarding their edits. The replacement reads their saved changes. Busy views
 or failed persistence defer retirement and keep the old backend. Child views drain
 before their parents, preserving each view’s saved edits. Invalid dependency
-metadata defers the whole drain; retained remote work requires separate cleanup.
+metadata defers the whole drain.
 
 Idle remote connections, including offline hosts, can drain during a Unix backend
-upgrade. Persisted, inactive chat mirrors can reconnect through the replacement;
-queued result imports, active or failed pulls, transfers, forwarded ports, and
-unfinished event tasks still defer replacement. The backend waits for buffered
-events to finish and checks for newly retained work before retiring. If draining
+upgrade. Persisted chat mirrors can reconnect through the replacement;
+queued result imports, unfinished pulls, transfers, forwarded ports, and
+unfinished event tasks must finish locally before replacement. A bounded drain
+lets that work complete; a timeout leaves it running in the existing backend.
+The backend waits for buffered events to finish and checks for newly retained work before retiring. If draining
 times out or another resource blocks replacement, saved hosts reconnect on the
 next maintenance refresh without changing their settings.
 
 Before releasing a mirrored chat connection, the backend verifies each chat’s
 saved owner and its lead’s mirror record on the database writer queue. It repeats
 the check after buffered events finish. Unsaved or inconsistent records defer
-replacement, as do active runs and decisions whose persistence failed.
+replacement, as do decisions whose persistence failed.
 
 Keep the older copy and automatic recheck counts are saved locally per remote
 chat. Replayed sync events preserve Keep; a changed sync clears it. A new message
 or successful landing resets the recheck budget. Failed saves report an error and
 defer replacement until the decision can be saved; corrupt records are reported
 during startup.
+
+Server-owned runs and Autopilot drivers can continue during local backend
+replacement. The replacement restores their status from the server and retries
+mirror synchronization from its saved cursor. Draining sends no Stop request.
+Long-lived forwarded pages, MCP relays, unresolved results, or transfers may still
+defer replacement until they finish; timing out never cancels them.
