@@ -79,6 +79,34 @@ enum ServerFrame {
 
 async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<T> {
     let size = stream.read_u32().await? as usize;
+    read_body(stream, size).await
+}
+
+// Readiness can be stale after the previous frame (notably with kqueue).
+// Only an actual byte starts the deadline; a quiet window is not a stalled sender.
+async fn read_after_idle<T: DeserializeOwned>(
+    stream: &mut (impl AsyncRead + Unpin),
+    wait: Duration,
+) -> io::Result<T> {
+    let first = stream.read_u8().await?;
+    tokio::time::timeout(wait, async {
+        let mut header = [first, 0, 0, 0];
+        stream.read_exact(&mut header[1..]).await?;
+        read_body(stream, u32::from_be_bytes(header) as usize).await
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Local RPC sender did not finish its frame",
+        )
+    })?
+}
+
+async fn read_body<T: DeserializeOwned>(
+    stream: &mut (impl AsyncRead + Unpin),
+    size: usize,
+) -> io::Result<T> {
     if size == 0 || size > MAX_MESSAGE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -377,28 +405,15 @@ pub async fn serve(
         .register(session_id)
         .map_err(io::Error::other)?;
     loop {
-        // An idle window may stay connected indefinitely. Once bytes arrive,
-        // bound the time allowed to finish a frame to reject stalled senders.
-        tokio::select! {
-            biased;
-            _ = lease.session.closed() => return Ok(()),
-            ready = stream.readable() => ready?,
-        }
         let received = tokio::select! {
             biased;
             _ = lease.session.closed() => return Ok(()),
-            frame = tokio::time::timeout(IO_WAIT, read(&mut stream)) => frame,
+            frame = read_after_idle(&mut stream, IO_WAIT) => frame,
         };
         let frame: ClientFrame = match received {
-            Ok(Ok(frame)) => frame,
-            Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Backend client did not finish its request",
-                ))
-            }
+            Ok(frame) => frame,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(e) => return Err(e),
         };
         // Close can also race the completed frame. Only operations already
         // accepted by the dispatcher may outlive the client's session.
@@ -495,11 +510,7 @@ async fn serve_events(stream: UnixStream, mut events: SessionEvents) -> io::Resu
     // read() would discard partially read frames whenever an event arrived.
     let mut reader = tokio::spawn(async move {
         loop {
-            input.readable().await?;
-            match tokio::time::timeout(IO_WAIT, read(&mut input))
-                .await
-                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Event client stalled"))??
-            {
+            match read_after_idle(&mut input, IO_WAIT).await? {
                 ClientFrame::CancelSink { sink } => session.cancel_sink(&sink),
                 _ => {
                     return Err(io::Error::new(
@@ -547,6 +558,38 @@ async fn serve_events(stream: UnixStream, mut events: SessionEvents) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn idle_between_frames_does_not_start_the_frame_deadline() {
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        let wait = Duration::from_millis(10);
+        write(&mut sender, &ClientFrame::Ping).await.unwrap();
+        assert!(matches!(
+            read_after_idle::<ClientFrame>(&mut receiver, wait)
+                .await
+                .unwrap(),
+            ClientFrame::Ping
+        ));
+        let next = read_after_idle::<ClientFrame>(&mut receiver, wait);
+        tokio::pin!(next);
+        assert!(tokio::time::timeout(wait * 3, &mut next).await.is_err());
+        write(&mut sender, &ClientFrame::Ping).await.unwrap();
+        assert!(matches!(next.await.unwrap(), ClientFrame::Ping));
+    }
+
+    #[tokio::test]
+    async fn a_started_header_or_body_must_finish_before_the_deadline() {
+        let payload = serde_json::to_vec(&ClientFrame::Ping).unwrap();
+        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+        frame.extend(payload);
+        for prefix in [1, 4, 5] {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            sender.write_all(&frame[..prefix]).await.unwrap();
+            let result =
+                read_after_idle::<ClientFrame>(&mut receiver, Duration::from_millis(10)).await;
+            assert_eq!(result.err().unwrap().kind(), io::ErrorKind::TimedOut);
+        }
+    }
 
     #[tokio::test]
     async fn detaching_interrupts_a_pending_reply_even_when_control_cannot_reconnect() {

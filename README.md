@@ -2374,3 +2374,7 @@ macFUSE channel or serving session. Busy mounts and unmount errors defer the
 upgrade with the current backend still serving them. This path never forces a
 volume off its users. Saved edits remain available after refusal, including
 edits made before retrying the upgrade.
+
+Idle backend RPC connections stay open without periodic traffic. The frame-read
+timeout starts with the first received byte, so stale socket readiness cannot
+disconnect a quiet window; partially sent requests still time out.
