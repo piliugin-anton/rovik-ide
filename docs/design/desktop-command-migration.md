@@ -30,6 +30,8 @@ existing protocol and routing. Native window actions stay in Tauri.
    shared host startup, native focus separation, and updater network configuration.
 7. **Completed**: Explicit Unix command-session recovery with guarded project registration,
    UI resource reconstruction, and stale-response rejection.
+8. **Completed**: Guarded Unix backend upgrades with independent control negotiation,
+   retained-work checks, serialized launchers, and ownership through shutdown.
 
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
@@ -37,9 +39,8 @@ pretend they are ready for IPC. Windows remains embedded until its transport is 
 
 ## Following this migration
 
-Safe backend replacement during
-upgrades; Windows named pipes; real multi-window FUSE and execution isolation
-tests. Unix packaging/start/attach is implemented below.
+Windows named pipes; automatic draining of mounted and remote resources for
+upgrades; real multi-window FUSE and execution isolation tests. Unix packaging/start/attach is implemented below.
 
 ## Private event transport prerequisite
 
@@ -415,3 +416,36 @@ Validation covers reconnect coalescing, changing project context, failed setup a
 restoration, close during recovery, same-host project ownership, abrupt host death
 and a new boot, and stale event/resource replies. Both the standalone daemon and
 the native executable run the attachment/recovery contract.
+
+## Guarded Unix backend upgrades
+
+Local protocol 20 introduces a separate `control.sock` with stable control
+protocol 1. It negotiates replacement independently of the desktop command
+protocol, authenticates same-user peers, bounds frames and negotiation time, and
+binds each request to the running host's boot identity. Version and command
+protocol must advance monotonically; an older app cannot retire a newer host.
+A persistent `launch.lock` serializes automatic launchers across negotiation,
+shutdown, and replacement startup. The old host retains `owner.lock` through all
+cleanup and the clean database marker; no launcher kills it or steals its mounts.
+
+Retirement requires no accepted RPC connections, including event streams, pending
+handshakes, and requests whose window disappeared. The host temporarily stops
+accepting connections, joins and pauses host maintenance and result imports, then
+checks retained work. Chats, approvals, connector setup, memory preparation,
+background commands and unread results, browser installation, client tasks,
+detached blocking work, remote receivers/hosts/mirrors, open chat filesystem views,
+mounted VFS volumes, and retained virtual files defer replacement. A refusal
+releases the pause guards. Compatible apps continue using the existing host;
+incompatible apps report the blocker without launching a second execution owner.
+
+This phase deliberately does not unmount volumes or drain remote work to make an
+upgrade possible. Close windows and finish/release retained work before retrying.
+Hosts predating control protocol 1 still require an explicit graceful stop for an
+incompatible upgrade. Failure or timeout never authorizes forced replacement.
+Windows named pipes, automatic draining of mounted/remote resources, and real
+multi-window mounted FUSE validation remain follow-up phases.
+
+Validation covers monotonic version/protocol negotiation, stale identities,
+bounded frames, maintenance resume and shutdown while paused, detached blocking
+work, retained virtual files and mounts, live-client refusal, and a real daemon's
+clean retirement followed by a new owner and boot identity.

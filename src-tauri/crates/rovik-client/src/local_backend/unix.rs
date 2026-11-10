@@ -18,6 +18,10 @@ impl Lease {
     /// Acquires ownership before any backend services are initialized.
     /// None means another process owns this directory.
     pub fn acquire(directory: &Path) -> io::Result<Option<Self>> {
+        Self::acquire_named(directory, "owner.lock")
+    }
+
+    fn acquire_named(directory: &Path, name: &str) -> io::Result<Option<Self>> {
         match std::fs::DirBuilder::new().mode(0o700).create(directory) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
@@ -40,7 +44,7 @@ impl Lease {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join("owner.lock"))?;
+            .open(directory.join(name))?;
         let metadata = lock.metadata()?;
         if !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
@@ -90,6 +94,10 @@ pub struct Listener<'a> {
 }
 
 impl Listener<'_> {
+    pub(super) fn boot(&self) -> &str {
+        &self.boot
+    }
+
     /// Accepts a same-user client and sends its bounded readiness handshake.
     pub async fn accept(&self) -> io::Result<UnixStream> {
         self.accept_pending().await?.finish().await
@@ -200,6 +208,50 @@ pub async fn ensure_command(
     config: &Path,
 ) -> io::Result<(UnixStream, Ready)> {
     let directory = super::directory(data);
+    std::fs::create_dir_all(data)?;
+    // Serialize upgrade and launch, without taking the host's lifetime lease.
+    let _launch = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(lease) = Lease::acquire_named(&directory, "launch.lock")? {
+                return Ok::<_, io::Error>(lease);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Another backend launcher is still starting or upgrading",
+        )
+    })??;
+    if let Some((host, reply)) = super::control::negotiate(&directory).await? {
+        match reply {
+            super::control::Reply::Retiring => {
+                // The retiring host retains ownership through all cleanup. A
+                // timeout must never turn into permission to force replacement.
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    loop {
+                        if Lease::acquire(&directory)?.is_some() {
+                            return Ok::<_, io::Error>(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Backend is still shutting down; reopen Rovik after it finishes",
+                    )
+                })??;
+            }
+            super::control::Reply::Busy(reason) if host.protocol != PROTOCOL => {
+                return Err(io::Error::new(io::ErrorKind::Unsupported, format!("Backend upgrade deferred: {reason}. Finish its work and close its windows, then reopen Rovik.")));
+            }
+            super::control::Reply::Current | super::control::Reply::Busy(_) => {}
+        }
+    }
     match connect(&directory).await {
         Ok(connected) => return Ok(connected),
         Err(e)

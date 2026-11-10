@@ -173,6 +173,10 @@ fn jobs() -> MutexGuard<'static, HashMap<String, Arc<Job>>> {
     JOBS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+pub(super) fn active() -> bool {
+    jobs().values().any(|job| job.state().ended.is_none())
+}
+
 fn job(id: &str) -> Result<Arc<Job>, String> {
     jobs().get(id).cloned().ok_or_else(|| {
         "That setup step is gone: it ended a while ago, or Rovik restarted.".to_string()
@@ -395,6 +399,10 @@ mod tests {
                 Some("https://example.com/sign-in?code=true")
             );
             assert!(!job.done);
+            assert!(
+                active(),
+                "setup must block replacement while awaiting input"
+            );
             setup(SetupOp::Send {
                 id: job.id.clone(),
                 text: " abc#xyz \n".into(),

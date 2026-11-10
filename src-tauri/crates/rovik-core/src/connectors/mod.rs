@@ -63,6 +63,10 @@ pub use rovik_protocol::connectors::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use setup::{setup, SetupCommand};
+/// Setup processes continue independently of the window polling their status.
+pub(crate) fn setup_active() -> bool {
+    setup::active()
+}
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;

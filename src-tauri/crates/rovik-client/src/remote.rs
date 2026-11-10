@@ -189,6 +189,9 @@ pub struct Remote {
     cloud: Mutex<Option<CloudSink>>,
     /// The queue of results to import and land (remote/results.rs).
     jobs: mpsc::UnboundedSender<Job>,
+    result_turn: Arc<tokio::sync::Mutex<()>>,
+    results_closing: std::sync::atomic::AtomicBool,
+    receivers: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether a project is open in another of Rovik's windows, each a
     /// process with its own connections (the app's instances.rs).
     elsewhere: Mutex<Option<crate::project_ownership::EmbeddedOwnership>>,
@@ -311,6 +314,9 @@ impl Remote {
             state: Mutex::new(State::default()),
             cloud: Mutex::new(None),
             jobs,
+            result_turn: Default::default(),
+            results_closing: Default::default(),
+            receivers: Default::default(),
             elsewhere: Mutex::new(None),
             refresh: Mutex::new(None),
             sign_outs: Mutex::new(None),
@@ -319,6 +325,25 @@ impl Remote {
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
         remote
+    }
+
+    /// Remote producers are not drained by local automatic upgrades. Refuse
+    /// replacement even while a configured host is offline or reconnecting.
+    #[cfg(any(unix, test))]
+    pub(crate) fn prevents_replacement(&self) -> bool {
+        if self.receivers.load(std::sync::atomic::Ordering::SeqCst) != 0
+            || !self.hosts.states().is_empty()
+        {
+            return true;
+        }
+        let state = self.lock();
+        !state.chats.is_empty()
+            || !state.pulls.is_empty()
+            || !state.moving.is_empty()
+            || !state.running.is_empty()
+            || !state.driving.is_empty()
+            || !state.uploads.is_empty()
+            || !state.steer_uploads.is_empty()
     }
 
     /// Where uploads' and pushes' progress goes from now on.
@@ -441,7 +466,18 @@ impl Remote {
         });
         self.hosts.connect(host, connector, identity, sink);
         let (me, host) = (self.me.clone(), host.to_string());
+        // Removed hosts may still have buffered events or an import in flight.
+        struct Receiving(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Receiving {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        self.receivers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let receiving = Receiving(self.receivers.clone());
         tokio::spawn(async move {
+            let _receiving = receiving;
             while let Some(incoming) = rx.recv().await {
                 let Some(remote) = me.upgrade() else { break };
                 remote.receive(&host, incoming).await;

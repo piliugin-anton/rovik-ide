@@ -2011,3 +2011,59 @@ async fn workload_priority_is_replayed_to_a_reconnecting_host_including_a_clear(
         vec![Some("watched".into()), Some("watched".into()), None, None]
     );
 }
+
+#[tokio::test]
+async fn upgrade_pauses_resume_results_but_shutdown_never_restarts_queued_imports() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    assert!(!remote.prevents_replacement());
+    let pause = remote.pause_results().await;
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut result)
+        .await
+        .is_err());
+    drop(pause);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err(),
+        "a missing chat reports a completed landing error"
+    );
+    let pause = remote.pause_results().await;
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut result)
+        .await
+        .is_err());
+    remote.stop_results();
+    drop(pause);
+    assert!(tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap()
+        .is_err());
+    remote
+        .lock()
+        .chats
+        .insert("mirrored".into(), "offline-host".into());
+    assert!(
+        remote.prevents_replacement(),
+        "offline mirrors still retain work"
+    );
+}

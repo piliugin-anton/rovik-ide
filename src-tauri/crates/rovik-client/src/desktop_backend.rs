@@ -211,11 +211,40 @@ impl DesktopBackend {
             .start(self.remote.clone(), self.hosts.clone())
     }
 
+    /// Freezes automatic host discovery before checking replacement eligibility.
+    #[cfg(unix)]
+    pub(crate) async fn pause_producers(
+        &self,
+    ) -> (
+        tokio::sync::OwnedMutexGuard<()>,
+        tokio::sync::OwnedMutexGuard<()>,
+    ) {
+        let maintenance = self.maintenance.pause().await;
+        let results = self.remote.pause_results().await;
+        (maintenance, results)
+    }
+
+    /// The host must stop accepting clients and hold the maintenance pause first.
+    #[cfg(unix)]
+    pub(crate) fn replacement_blocker(&self) -> Option<&'static str> {
+        if crate::desktop_task::active() {
+            return Some("Client operations are still finishing");
+        }
+        if self.remote.prevents_replacement() {
+            return Some("Remote hosts or mirrored chats are still registered");
+        }
+        if self.browser_install.active() {
+            return Some("Browser installation is still running");
+        }
+        self.core.replacement_blocker()
+    }
+
     /// Stops local execution and flushes its persisted state before the
     /// hosting process exits. Window disconnection must not call this
     /// once the service moves into a shared process.
     pub async fn shutdown(&self) {
         self.maintenance.stop().await;
+        self.remote.stop_results();
         self.sessions.close_all();
         self.workload.shutdown().await;
         self.terminals.end_all();

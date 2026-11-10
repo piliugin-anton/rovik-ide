@@ -64,11 +64,30 @@ pub(super) enum Job {
 pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedReceiver<Job>) {
     while let Some(job) = jobs.recv().await {
         let Some(remote) = me.upgrade() else { break };
+        let _turn = remote.result_turn.lock().await;
+        if remote
+            .results_closing
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            break;
+        }
         remote.work(job).await;
     }
 }
 
 impl Remote {
+    /// Prevents queued imports from resuming after the shutdown pause is dropped.
+    pub(crate) fn stop_results(&self) {
+        self.results_closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Joins any accepted result import before checking upgrade eligibility.
+    #[cfg(any(unix, test))]
+    pub(crate) async fn pause_results(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.result_turn.clone().lock_owned().await
+    }
+
     /// The default project for single-client callers. Desktop clients use
     /// `set_client_project` so opening a folder cannot replace another client's.
     pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {

@@ -9,6 +9,8 @@ use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[cfg(unix)]
+mod control;
+#[cfg(unix)]
 pub mod host;
 #[cfg(unix)]
 pub mod rpc;
@@ -18,7 +20,7 @@ mod unix;
 pub use unix::{connect, ensure_backend, ensure_command, Lease, Listener, Pending};
 
 /// Version of the local bootstrap protocol, independent of remote RPC.
-pub const PROTOCOL: u32 = 19;
+pub const PROTOCOL: u32 = 20;
 #[cfg(unix)]
 const MAX_HANDSHAKE: usize = 4096;
 
@@ -88,6 +90,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = directory(root.path());
         std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let listener = tokio::net::UnixListener::bind(dir.join("rpc.sock")).unwrap();
         let server = async {
             let (mut stream, _) = listener.accept().await.unwrap();

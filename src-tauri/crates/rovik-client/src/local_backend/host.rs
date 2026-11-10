@@ -1,5 +1,5 @@
 //! Shared desktop host used by the packaged app and standalone daemon.
-use super::{directory, rpc, Lease};
+use super::{control, directory, rpc, Lease};
 use crate::desktop_backend::DesktopBackend;
 use rovik_core::{agent_run::events::AgentEvent, EventSink, Paths};
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
@@ -52,14 +52,61 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(std::io::Error::other)?,
     );
+    let mut retirement = None;
     let result = async {
         backend.start_services().map_err(std::io::Error::other)?;
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
+        let control = control::Listener::bind(&lease, &directory)?;
+        let hello = control::Hello::new(listener.boot());
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut clients = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
+                accepted = control.accept() => {
+                    match accepted {
+                        Ok(mut stream) => {
+                            // Do not accept new RPC clients between checking the
+                            // active tasks and committing to retirement.
+                            let result = tokio::time::timeout(control::TIMEOUT, async {
+                                control::write(&mut stream, &hello).await?;
+                                let candidate: control::Candidate = control::read(&mut stream).await?;
+                                let mut pause = None;
+                                let reply = if !candidate.upgrades(&hello)? {
+                                    control::Reply::Current
+                                } else {
+                                    while let Some(result) = clients.try_join_next() {
+                                        if let Err(error) = result { eprintln!("Local backend client task: {error}"); }
+                                    }
+                                    if !clients.is_empty() {
+                                        control::Reply::Busy("Windows or accepted requests are still connected".into())
+                                    } else {
+                                        match tokio::time::timeout(std::time::Duration::from_secs(1), backend.pause_producers()).await {
+                                            Err(_) => control::Reply::Busy("Host maintenance or remote imports are still finishing".into()),
+                                            Ok(guard) => {
+                                                if let Some(reason) = backend.replacement_blocker() {
+                                                    control::Reply::Busy(reason.into())
+                                                } else {
+                                                    pause = Some(guard);
+                                                    control::Reply::Retiring
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                                control::write(&mut stream, &reply).await?;
+                                Ok::<_, std::io::Error>(pause)
+                            }).await;
+                            match result {
+                                Ok(Ok(Some(guard))) => { retirement = Some(guard); break; },
+                                Ok(Ok(None)) => {},
+                                Ok(Err(error)) => eprintln!("Local backend upgrade: {error}"),
+                                Err(_) => eprintln!("Local backend upgrade negotiation timed out"),
+                            }
+                        }
+                        Err(error) => eprintln!("Local backend control connection: {error}"),
+                    }
+                },
                 result = listener.accept_pending(), if clients.len() < 64 => {
                     match result {
                         Ok(pending) => {
@@ -93,6 +140,7 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
     }
     .await;
     backend.shutdown().await;
+    drop(retirement);
     result?;
     Ok(())
 }

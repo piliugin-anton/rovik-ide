@@ -12,7 +12,10 @@
 //! written for runs that go on beside them.
 
 use std::future::Future;
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    OnceLock,
+};
 use tokio::runtime::{Builder, Handle};
 use tokio::task::JoinHandle;
 
@@ -34,15 +37,58 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    handle().spawn(future)
+    let activity = Activity::new();
+    handle().spawn(async move {
+        let _activity = activity;
+        future.await
+    })
 }
 
+static ACTIVITY: AtomicUsize = AtomicUsize::new(0);
+struct Activity;
+impl Activity {
+    fn new() -> Self {
+        ACTIVITY.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for Activity {
+    fn drop(&mut self) {
+        ACTIVITY.fetch_add(1, Ordering::SeqCst);
+    }
+}
+/// Detects work starting or finishing across a host's idle-state snapshot.
+pub(crate) fn activity_epoch() -> usize {
+    ACTIVITY.load(Ordering::SeqCst)
+}
+
+static BLOCKING: AtomicUsize = AtomicUsize::new(0);
+struct Blocking;
+impl Drop for Blocking {
+    fn drop(&mut self) {
+        // Publish completion before observers can see no blocking work.
+        ACTIVITY.fetch_add(1, Ordering::SeqCst);
+        BLOCKING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+/// Includes queued and detached blocking work, until its closure actually exits.
+pub(crate) fn has_blocking_work() -> bool {
+    BLOCKING.load(Ordering::SeqCst) != 0
+}
+
+/// Runs blocking work and retains its activity even when its caller goes away.
 pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    handle().spawn_blocking(f)
+    BLOCKING.fetch_add(1, Ordering::SeqCst);
+    ACTIVITY.fetch_add(1, Ordering::SeqCst);
+    let active = Blocking;
+    handle().spawn_blocking(move || {
+        let _active = active;
+        f()
+    })
 }
 
 /// Runs `future` to its end on the process's runtime, blocking the calling

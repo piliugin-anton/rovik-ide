@@ -1650,8 +1650,9 @@ loaded, rather than treating those chats as local.
 
 Unix windows now attach to a shared backend with singleton ownership and a
 private readiness socket. The packaged app hosts it in `--desktop-backend` mode;
-`rovik-desktopd` provides the same host as a standalone binary. `local_backend::ensure_backend` connects first or starts that
-binary, then waits for initialization. The handshake identifies the protocol,
+`rovik-desktopd` provides the same host as a standalone binary.
+`local_backend::ensure_backend` negotiates safe upgrades and attaches to the host,
+or starts that binary and waits for initialization. The handshake identifies the protocol,
 backend boot, and client session; the daemon retains ownership through shutdown.
 The Unix endpoint also serves bounded typed request/reply calls through
 `local_backend::rpc::Client`. Requests route by their chat or message identity;
@@ -1660,8 +1661,8 @@ operations. Status includes connected hosts, and `call_host` explicitly targets
 a host for operations such as connector setup. The handshake requires client
 acknowledgement before accepting operations; a stalled handshake cannot block
 other clients. A lost or cancelled reply invalidates the client connection, and
-mutations are never retried automatically. Windows named pipes and automatic
-command-session reconstruction remain outstanding. Desktop-only commands and
+mutations are never retried automatically. Unix command-session recovery is
+explicit; Windows named pipes remain outstanding. Desktop-only commands and
 events use their own adapters. Build the standalone host with
 `cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
 
@@ -2313,7 +2314,14 @@ notification. The window keeps unsaved editor text and chat drafts, restores its
 project registration and watches, and refreshes authoritative chat/host state.
 Terminal sessions end; their shells and commands are not restarted. Language
 support restarts from the open editor models. Rovik does not replay commands whose
-completion is uncertain: check their result before retrying them. If an update reports an
-incompatible backend, let its work finish and stop the process running with
-`--desktop-backend` (SIGTERM), then reopen Rovik. Automatic backend replacement
-remains follow-up work.
+completion is uncertain: check their result before retrying them.
+
+Newer Unix apps automatically replace an idle backend once all windows are closed
+and its work and retained resources are released. Mounted virtual filesystems,
+open chat filesystem views, virtual files in memory, remote hosts/chats, and
+unfinished background work defer replacement. Compatible apps keep using that
+backend; incompatible apps explain why the upgrade must wait. The old process
+keeps its ownership lock through shutdown, so replacement cannot create a second
+mount owner. Hosts from before upgrade negotiation was introduced still need an
+explicit graceful stop: finish their work, stop the process running with
+`--desktop-backend` (SIGTERM), then reopen Rovik.

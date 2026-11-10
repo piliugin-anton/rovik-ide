@@ -175,6 +175,14 @@ pub(crate) fn retrieve(
     }
 }
 
+/// Queued preparation includes model downloads and gaps between blocking batches.
+pub(crate) fn active() -> bool {
+    JOBS.get().is_some_and(|jobs| {
+        jobs.lock()
+            .map_or(true, |jobs| jobs.values().any(Option::is_none))
+    })
+}
+
 /// Prepares the native model and completes a project's pending snapshot off the
 /// response path. Projects queue independently; failures retry after one minute.
 pub(crate) fn schedule(

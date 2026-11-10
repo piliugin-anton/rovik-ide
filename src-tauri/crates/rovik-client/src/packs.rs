@@ -11,14 +11,13 @@ use crate::http;
 use git2::{Oid, Repository};
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
-use rovik_core::packs;
+use rovik_core::{packs, rt::spawn_blocking};
 use rovik_protocol::packs::{Fetch, Pushed, Update};
 use rovik_protocol::{Fail, FailCode};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::task::spawn_blocking;
 
 /// A pack's pieces on their way between the repository and the socket.
 const PIECES: usize = 16;

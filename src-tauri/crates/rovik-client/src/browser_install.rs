@@ -108,6 +108,17 @@ impl BrowserInstaller {
         follow(run, progress).await
     }
 
+    /// An install outlives its UI observers and prevents automatic host replacement.
+    #[cfg(any(unix, test))]
+    pub(crate) fn active(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .run
+            .as_ref()
+            .is_some_and(|run| run.borrow().result.is_none())
+    }
+
     /// Waits for accepted installation/publication before backend shutdown.
     pub async fn shutdown(&self) {
         let run = {
@@ -187,9 +198,14 @@ mod tests {
         .unwrap_err()
         .contains("callback closed"));
         assert_eq!(seen, [7]);
+        assert!(
+            installer.active(),
+            "observer loss cannot permit replacement"
+        );
         release.send(()).unwrap();
         assert_eq!(follow(b, |_| true).await.unwrap(), "installed/chrome");
         installer.shutdown().await;
+        assert!(!installer.active());
     }
 
     #[tokio::test]

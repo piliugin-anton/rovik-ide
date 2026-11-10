@@ -497,6 +497,11 @@ pub fn get(dialog_id: &str) -> Option<Arc<ChatOverlay>> {
         .cloned()
 }
 
+/// A mounted or open view must not be torn down by an automatic host upgrade.
+pub(crate) fn retains_views() -> bool {
+    !OPEN.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+}
+
 /// Whether the chat has an overlay, open or saved.
 pub fn exists(dialog_id: &str) -> bool {
     get(dialog_id).is_some()

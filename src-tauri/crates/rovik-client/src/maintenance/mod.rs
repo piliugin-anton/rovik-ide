@@ -20,6 +20,7 @@ struct State {
 pub(crate) struct Maintenance {
     state: Mutex<State>,
     shutdown: tokio::sync::Mutex<()>,
+    turn: Arc<tokio::sync::Mutex<()>>,
 }
 impl Maintenance {
     pub(crate) fn start(
@@ -51,16 +52,23 @@ impl Maintenance {
             return Ok(());
         }
         let (stop, mut stopping) = watch::channel(false);
+        let turn = self.turn.clone();
         let task = rovik_core::rt::spawn(async move {
             if *stopping.borrow() {
                 return;
             }
+            let initial_turn = tokio::select! {
+                biased;
+                _ = stopping.changed() => return,
+                guard = turn.lock() => guard,
+            };
             // Blocking keychain/file work cannot be aborted safely. Always join
             // the accepted call, then check stop before starting another one.
             if let Err(error) = rovik_core::rt::spawn_blocking(initialize).await {
                 eprintln!("Backend host startup failed: {error}");
                 return;
             }
+            drop(initial_turn);
             let refresh = Arc::new(refresh);
             loop {
                 if *stopping.borrow() {
@@ -71,6 +79,11 @@ impl Maintenance {
                     _ = stopping.changed() => break,
                     _ = tokio::time::sleep(period) => {},
                 }
+                let _turn = tokio::select! {
+                    biased;
+                    _ = stopping.changed() => break,
+                    guard = turn.lock() => guard,
+                };
                 let refresh = refresh.clone();
                 if let Err(error) = rovik_core::rt::spawn_blocking(move || refresh()).await {
                     eprintln!("Backend host refresh failed: {error}");
@@ -80,6 +93,13 @@ impl Maintenance {
         state.running = Some(Running { stop, task });
         Ok(())
     }
+    /// Holds startup/refresh still while a host checks replacement eligibility.
+    /// Dropping the guard resumes scheduling when replacement is refused.
+    #[cfg(any(unix, test))]
+    pub(crate) async fn pause(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.turn.clone().lock_owned().await
+    }
+
     /// Stops scheduling before joining any accepted blocking work.
     pub(crate) async fn stop(&self) {
         let _turn = self.shutdown.lock().await;
@@ -113,6 +133,37 @@ impl Drop for Maintenance {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn a_refused_upgrade_resumes_maintenance_and_shutdown_works_while_paused() {
+        let maintenance = Maintenance::default();
+        let pause = maintenance.pause().await;
+        let (began, started) = tokio::sync::oneshot::channel();
+        maintenance
+            .start_with(
+                move || {
+                    began.send(()).unwrap();
+                },
+                || {},
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        let mut started = Box::pin(started);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut started)
+                .await
+                .is_err()
+        );
+        drop(pause);
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .unwrap()
+            .unwrap();
+        let _pause = maintenance.pause().await;
+        tokio::time::timeout(Duration::from_secs(5), maintenance.stop())
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn startup_is_once_and_stop_joins_startup_without_scheduling_refresh() {

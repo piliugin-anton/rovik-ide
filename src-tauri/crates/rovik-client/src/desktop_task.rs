@@ -6,7 +6,22 @@ use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
-use std::sync::{Arc, Weak};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Weak,
+};
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+struct Active;
+impl Drop for Active {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+/// Cancelled tasks remain active until their futures have actually been dropped.
+#[cfg(unix)]
+pub(crate) fn active() -> bool {
+    ACTIVE.load(Ordering::SeqCst) != 0
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
@@ -54,7 +69,10 @@ where
         owner: Arc::downgrade(owner),
         sink,
     };
+    ACTIVE.fetch_add(1, Ordering::SeqCst);
+    let active = Active;
     rovik_core::rt::spawn(Box::pin(async move {
+        let _active = active;
         let operation =
             std::panic::AssertUnwindSafe(async { work(output.clone()).await }).catch_unwind();
         let result = tokio::select! {
