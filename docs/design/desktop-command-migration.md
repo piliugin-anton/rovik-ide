@@ -855,3 +855,27 @@ and reads the saved chat unchanged. Unix endpoint cleanup assertions remain.
 
 Installer handoff, packaged Windows UI activation, and WSL execution validation
 remain. This phase does not enable shared startup in the ordinary Windows UI.
+
+The phase 20 native Windows workspace job passed in
+[CI on `3661569`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42919719538).
+
+### Phase 21: Retained Windows standalone images
+
+`ensure_backend` now launches the standalone Windows daemon from a
+content-addressed copy under its backend data directory. The installer can
+replace the installed source while the old daemon retains its executable and
+work. Discovery and upgrade negotiation happen first, under the launch lease;
+attaching to an existing owner does not require the installation file to exist.
+
+Copies are fully written and synchronized before publication. Existing images
+are verified before reuse, damaged images are refused, and older images are
+retained rather than overwritten or deleted. Native Windows coverage deletes
+the installation copy while the daemon is running, attaches again without it,
+then installs changed executable bytes and starts a new backend after the old
+owner exits. Portable tests cover image reuse and corruption refusal.
+
+This provides installer-safe launching for the standalone executable. The
+caller-prepared `ensure_command` API still preserves its command unchanged;
+packaged UI activation must explicitly arrange a self-contained backend image.
+Packaging that image, integrating installer/updater behavior, retained-image
+cleanup, and WSL execution validation remain. Windows UI startup stays embedded.

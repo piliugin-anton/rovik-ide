@@ -14,6 +14,8 @@ pub mod control;
 mod handshake;
 #[cfg(any(unix, windows))]
 pub mod host;
+#[cfg(any(windows, test))]
+mod image;
 #[cfg(any(unix, windows))]
 mod launch;
 #[cfg(unix)]

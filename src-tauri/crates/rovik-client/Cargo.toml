@@ -50,8 +50,9 @@ reqwest.workspace = true
 flate2 = "1.1.10"
 zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 
-[dev-dependencies]
 tempfile = "3.27.0"
+
+[dev-dependencies]
 # Cores on temporary folders, and the database read as the frontend would.
 rovik-core = { workspace = true, features = ["testing"] }
 # A release key and files it signed (release::fixture).

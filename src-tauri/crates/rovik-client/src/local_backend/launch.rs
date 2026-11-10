@@ -3,20 +3,38 @@ use super::{connect, Lease, Ready, Stream, PROTOCOL};
 use std::{io, path::Path, time::Duration};
 
 /// Connects first, otherwise starts the packaged daemon once and waits for
-/// readiness. Concurrent launchers are arbitrated by the daemon's lease.
+/// readiness. Windows runs a retained copy so installation can replace its source.
+/// Concurrent launchers are arbitrated by the daemon's lease.
 pub async fn ensure_backend(
     executable: &Path,
     data: &Path,
     config: &Path,
 ) -> io::Result<(Stream, Ready)> {
-    let command = rovik_core::process::command(executable);
-    ensure_command(command, data, config).await
+    ensure_prepared(
+        || {
+            #[cfg(windows)]
+            let executable =
+                super::image::stage(executable, &super::directory(data).join("images"))?;
+            Ok(rovik_core::process::command(executable))
+        },
+        data,
+        config,
+    )
+    .await
 }
 
 /// Attaches first, or launches a caller-prepared packaged command. AppImages
 /// use their original launcher; no second private Core is ever a fallback.
 pub async fn ensure_command(
-    mut command: std::process::Command,
+    command: std::process::Command,
+    data: &Path,
+    config: &Path,
+) -> io::Result<(Stream, Ready)> {
+    ensure_prepared(|| Ok(command), data, config).await
+}
+
+async fn ensure_prepared(
+    prepare: impl FnOnce() -> io::Result<std::process::Command>,
     data: &Path,
     config: &Path,
 ) -> io::Result<(Stream, Ready)> {
@@ -76,6 +94,7 @@ pub async fn ensure_command(
             ) => {}
         Err(e) => return Err(e),
     }
+    let mut command = prepare()?;
     command.arg("--data").arg(data).arg("--config").arg(config);
     command.stdin(std::process::Stdio::null());
     rovik_core::process::own_session(&mut command);

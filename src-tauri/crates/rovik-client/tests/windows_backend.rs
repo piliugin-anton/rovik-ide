@@ -104,3 +104,53 @@ mod desktop_upgrade;
 async fn windows_upgrade_preserves_a_busy_owner_and_waits_for_clean_shutdown() {
     desktop_upgrade::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
 }
+
+#[tokio::test]
+async fn installing_a_new_source_preserves_the_running_backend_image() {
+    use rovik_client::local_backend::ensure_backend;
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("installed.exe");
+    let original = std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"));
+    std::fs::copy(original, &source).unwrap();
+    let data = root.path().join("data");
+    let config = root.path().join("config");
+    let endpoint = directory(&data);
+    let (stream, ready) = ensure_backend(&source, &data, &config).await.unwrap();
+    let host = desktop_attach::desktop_host::Host::peer(&stream);
+    // Windows refuses deleting a running executable. The installation copy must
+    // be replaceable while the backend still owns its sessions and resources.
+    std::fs::remove_file(&source).unwrap();
+    let (sibling, current) = ensure_backend(&source, &data, &config).await.unwrap();
+    assert_eq!(ready.boot, current.boot);
+    let client = Client::connect(&endpoint).await.unwrap();
+    client
+        .call(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap()
+        .unwrap();
+    client.close().await.unwrap();
+    drop(client);
+    drop(sibling);
+    drop(stream);
+    drop(host);
+    assert!(Lease::acquire(&endpoint).unwrap().is_some());
+    // A PE overlay changes the image identity while retaining a valid executable.
+    std::fs::copy(original, &source).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&source)
+        .unwrap()
+        .write_all(b"replacement fixture")
+        .unwrap();
+    let (stream, next) = ensure_backend(&source, &data, &config).await.unwrap();
+    let host = desktop_attach::desktop_host::Host::peer(&stream);
+    assert_ne!(ready.boot, next.boot);
+    assert_eq!(
+        std::fs::read_dir(endpoint.join("images")).unwrap().count(),
+        2
+    );
+    std::fs::remove_file(source).unwrap();
+    drop(stream);
+    drop(host);
+}
