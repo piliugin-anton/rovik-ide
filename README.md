@@ -2276,3 +2276,9 @@ desktop RPC. They use the backend's serialized browser state and attachment stor
 Concurrent Chrome installation requests observe one backend-owned job through
 private progress callbacks. Losing a window stops its observer; an accepted
 installation finishes publication, and backend shutdown waits for it.
+
+Remote forwarded-page requests use private callbacks scoped to each window's
+project and retained chats. The backend chooses one owner and includes the ports
+needed to open its tab; missing or ambiguous owners produce a chat notice.
+Page actions are not replayed after reconnection or project switches. Native
+browser opening stays in the selected UI client.

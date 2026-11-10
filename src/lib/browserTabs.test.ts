@@ -13,7 +13,6 @@ import {
   addressFrom,
   closeTabsOfClosedPorts,
   frameUrl,
-  onPageWanted,
   openPage,
   pageAddress,
   pageLabel,
@@ -173,47 +172,6 @@ test('a page asked for opens through the opener App sets, and none without one',
   setPageOpener(null);
   openPage('http://localhost:4000/');
   assert.deepEqual(opened, ['http://localhost:3000/']);
-});
-
-test('the pages the app asks for come to the handler until it stops listening', async () => {
-  const callbacks = new Map<number, (event: unknown) => void>();
-  const listeners: { event: string; handler: number }[] = [];
-  const unlistened: number[] = [];
-  (window as any).__TAURI_INTERNALS__ = {
-    transformCallback: (callback: (event: unknown) => void) => {
-      const id = callbacks.size + 1;
-      callbacks.set(id, callback);
-      return id;
-    },
-    invoke: async (cmd: string, args: any) => {
-      if (cmd === 'plugin:event|listen') {
-        listeners.push({ event: args.event, handler: args.handler });
-        return args.handler;
-      }
-      if (cmd === 'plugin:event|unlisten') unlistened.push(args.eventId);
-      return null;
-    },
-  };
-  (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-  try {
-    const wanted: string[] = [];
-    const stop = onPageWanted((address) => wanted.push(address));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const [listener] = listeners;
-    assert.equal(listener.event, 'open-page');
-    callbacks.get(listener.handler)!({
-      event: 'open-page',
-      id: 1,
-      payload: 'http://localhost:5173/',
-    });
-    assert.deepEqual(wanted, ['http://localhost:5173/']);
-    stop();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.deepEqual(unlistened, [listener.handler]);
-  } finally {
-    delete (window as any).__TAURI_INTERNALS__;
-    delete (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__;
-  }
 });
 
 test('a page at its frame’s origin is shown at the port forwarded here, path and all', () => {

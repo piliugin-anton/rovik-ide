@@ -110,20 +110,6 @@ pub fn run() {
                     .try_state::<Instances>()
                     .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
             }));
-            // A page a remote chat's command opens on its team server opens
-            // here, through a forwarded port (D20): in a browser tab of the
-            // editor when one can show it (an http page), else in the
-            // default browser.
-            let window = app.handle().clone();
-            remote.on_open_page(Arc::new(move |page| {
-                if page.in_tab {
-                    window
-                        .emit(PAGE_EVENT, page.address)
-                        .map_err(|e| e.to_string())
-                } else {
-                    open_url::open(page.address)
-                }
-            }));
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();
@@ -357,6 +343,8 @@ pub fn run() {
             commands::agent::connector_probe,
             commands::agent::connector_setup,
             commands::agent::connector_commands,
+            commands::pages::desktop_pages_subscribe,
+            commands::pages::desktop_pages_unsubscribe,
             commands::browser::web_search,
             commands::browser::browse_url,
             commands::browser::browser_screenshot,
@@ -701,10 +689,6 @@ async fn attachment_response(
         }
     }
 }
-
-/// A page for a browser tab of the editor to open (D20,
-/// src/lib/browserTabs.ts): its address at the port forwarded here.
-const PAGE_EVENT: &str = "open-page";
 
 /// The `log` crate's messages (rovik-client's, mostly) on stderr, where
 /// the app's own go. `ROVIK_LOG` sets the level (error, warn, info, debug,

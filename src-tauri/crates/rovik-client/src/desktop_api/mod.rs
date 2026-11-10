@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod memory;
 pub mod network;
 pub mod overlay;
+pub mod pages;
 pub mod projects;
 pub mod settings;
 pub mod terminal;
@@ -29,6 +30,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Scoped UI callbacks for opening forwarded pages.
+    Pages(Box<pages::PagesRequest>),
     /// Headless browser tools and shared Chrome installation.
     Browser(Box<browser::BrowserRequest>),
     /// Client-owned language servers and their installation.
@@ -87,6 +90,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Pages(request) => request.dispatch(backend, session),
                 Self::Browser(request) => request.dispatch(backend, session).await,
                 Self::Lsp(request) => request.dispatch(backend, session).await,
                 Self::Git(request) => request.dispatch(session).await,

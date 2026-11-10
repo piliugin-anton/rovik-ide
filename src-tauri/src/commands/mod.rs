@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod memory;
 pub mod network;
 pub mod overlay;
+pub mod pages;
 pub mod project;
 pub mod sandbox;
 pub mod tools;

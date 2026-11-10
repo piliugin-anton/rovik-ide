@@ -12,6 +12,8 @@ mod desktop_journal;
 mod desktop_lsp;
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
+#[path = "support/desktop_pages.rs"]
+mod desktop_pages;
 #[path = "support/desktop_projects.rs"]
 mod desktop_projects;
 #[path = "support/desktop_tasks.rs"]
@@ -172,6 +174,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
     )
     .await;
     desktop_browser::check(&adapter, &other_adapter).await;
+    desktop_pages::check(&adapter, &other_adapter).await;
     desktop_tasks::check(&adapter, &other_adapter).await;
     desktop_journal::check(&adapter, &other_adapter, journal_projects).await;
     desktop_projects::check(&adapter, other_adapter).await;

@@ -14,6 +14,8 @@ use std::sync::Arc;
 /// Construct once per process; core overlay and network initialization
 /// configure process-wide services.
 pub struct DesktopBackend {
+    /// Private, one-shot page requests for the owning UI client.
+    pub pages: Arc<crate::desktop_pages::PageRouter>,
     /// Shared Chrome installation, independent of its observing windows.
     pub browser_install: Arc<crate::browser_install::BrowserInstaller>,
     /// Replay history for all UI clients.
@@ -107,7 +109,10 @@ impl DesktopBackend {
             .set_grants(Arc::new(crate::mcp_sign_in::KeychainGrants(
                 secrets.clone(),
             )));
+        let pages = Arc::new(crate::desktop_pages::PageRouter::default());
+        let opener = pages.clone();
         let remote = Remote::new(core.clone());
+        remote.on_open_page(Arc::new(move |page| opener.open(page)));
         remote.on_cloud(cloud_events);
         if let Err(error) = remote.load().await {
             core.shutdown().await;
@@ -128,6 +133,7 @@ impl DesktopBackend {
         }));
         remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
         Ok(Self {
+            pages,
             journal,
             browser_install: Default::default(),
             project_changes: Default::default(),
@@ -236,7 +242,10 @@ mod routing_tests {
             config.join("ai-settings.json"),
             secrets.clone(),
         ));
+        let pages = Arc::new(crate::desktop_pages::PageRouter::default());
+        let opener = pages.clone();
         let remote = Remote::new(core.clone());
+        remote.on_open_page(Arc::new(move |page| opener.open(page)));
         let hosts = Arc::new(HostsPage::new(
             config,
             root.join("ssh"),
@@ -245,6 +254,7 @@ mod routing_tests {
             "test",
         ));
         DesktopBackend {
+            pages,
             journal: Default::default(),
             browser_install: Default::default(),
             project_changes: Default::default(),

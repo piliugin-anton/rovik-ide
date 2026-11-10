@@ -2,7 +2,7 @@
 //
 // What a browser tab of the editor shows (BrowserView.tsx): a web page, in
 // a frame. A page a remote chat's command opens on its team server (D20)
-// opens in one as the app asks (`open-page`, src-tauri/src/lib.rs), and
+// opens through its private backend callback (pageRequests.ts), and
 // "Opened ports" opens one again (OpenedPorts.tsx); App has the tabs
 // (lib/editorTabs.ts). Such a page is framed through its forward's tab
 // port, which lifts what keeps a page out of a frame (rovik-client's
@@ -13,7 +13,6 @@
 // closes once its port isn't forwarded any more: nothing serves its page
 // then (`closeTabsOfClosedPorts`).
 import { createEffect, on } from 'solid-js';
-import { listen } from '@tauri-apps/api/event';
 import type { ForwardedPort } from './cloud';
 import type { BrowserTab } from './editorTabs';
 
@@ -150,13 +149,4 @@ export function setPageOpener(next: PageOpener | null): void {
 /** Opens `address` in a browser tab: the one showing it already, else a new one. */
 export function openPage(address: string): void {
   opener?.(address);
-}
-
-/**
- * Calls `handler` with each page the app asks a browser tab to open (a
- * remote chat's command's, D20), until the function it returns is called.
- */
-export function onPageWanted(handler: (address: string) => void): () => void {
-  const listening = listen<string>('open-page', (e) => handler(e.payload));
-  return () => void listening.then((stop) => stop());
 }

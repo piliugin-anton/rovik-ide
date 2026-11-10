@@ -202,6 +202,32 @@ impl Journal {
     }
 }
 
+/// Resolves child chats through their lead; missing/cyclic rows never become unassigned chats.
+pub(crate) fn chat_scope(
+    db: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
+    let mut at = id.to_string();
+    for _ in 0..32 {
+        let row: Option<(Option<String>, Option<String>)> = db
+            .query_row(
+                "SELECT project_id, parent_id FROM dialogs WHERE id = ?1",
+                [&at],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some((project, parent)) = row else {
+            return Ok(None);
+        };
+        match parent {
+            Some(parent) => at = parent,
+            None => return Ok(Some((at, project))),
+        }
+    }
+    Ok(None)
+}
+
 async fn allowed(
     backend: &DesktopBackend,
     scope: Scope,
@@ -216,27 +242,10 @@ async fn allowed(
                 if allowed.contains(&id) {
                     continue;
                 }
-                let mut at = id.clone();
-                for _ in 0..32 {
-                    let row: Option<(Option<String>, Option<String>)> = db
-                        .query_row(
-                            "SELECT project_id, parent_id FROM dialogs WHERE id = ?1",
-                            [&at],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .optional()
-                        .map_err(|e| e.to_string())?;
-                    let Some((project, parent)) = row else {
-                        break;
-                    };
-                    if let Some(parent) = parent {
-                        at = parent;
-                        continue;
-                    }
+                if let Some((_, project)) = chat_scope(db, &id)? {
                     if project == scope.project_id {
-                        allowed.insert(id.clone());
+                        allowed.insert(id);
                     }
-                    break;
                 }
             }
             Ok(allowed)

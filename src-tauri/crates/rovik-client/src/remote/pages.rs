@@ -57,6 +57,14 @@ pub struct ForwardedPort {
 /// A page to open on this computer, its server's port forwarded here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageToOpen<'a> {
+    /// Chat that requested the page.
+    pub dialog_id: &'a str,
+    /// Its lead chat, for a window retaining a running conversation.
+    pub lead_id: &'a str,
+    /// The lead's project; None is the no-project view.
+    pub project_id: Option<&'a str>,
+    /// The chat's forwarded ports, ready before the native tab opens.
+    pub ports: &'a [ForwardedPort],
     /// Its address at the port forwarded here, for the default browser.
     pub address: &'a str,
     /// A browser tab of the app can show it: an http page, whose forward
@@ -216,14 +224,28 @@ impl Remote {
         }
         // Before the page opens: a tab finds its tab port among them.
         self.tell_ports(dialog_id);
-        let page = PageToOpen {
-            address: &address,
-            in_tab,
-        };
-        let opened = match self.pages.opener() {
-            Some(open) => open(page),
-            None => Err("this app opens no pages".to_string()),
-        };
+        let chat = dialog_id.to_string();
+        let context = self
+            .core
+            .db
+            .read(move |db| crate::desktop_journal::chat_scope(db, &chat))
+            .await;
+        let ports = self.forwarded_ports(dialog_id);
+        let opened = context.and_then(|context| {
+            let (lead, project) = context.ok_or("The page's chat no longer exists")?;
+            let page = PageToOpen {
+                dialog_id,
+                lead_id: &lead,
+                project_id: project.as_deref(),
+                ports: &ports,
+                address: &address,
+                in_tab,
+            };
+            match self.pages.opener() {
+                Some(open) => open(page),
+                None => Err("this app opens no pages".to_string()),
+            }
+        });
         if let Err(why) = opened {
             log::warn!("{address} didn't open: {why}");
             self.core.emit(AgentEvent::Notice {

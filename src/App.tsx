@@ -1,3 +1,4 @@
+import { startPageRequests } from './lib/pageRequests';
 import { startBackendEvents } from './lib/backendEvents';
 import {
   batch,
@@ -107,7 +108,7 @@ import {
   withPage,
   type EditorTab,
 } from './lib/editorTabs';
-import { closeTabsOfClosedPorts, frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
+import { closeTabsOfClosedPorts, frameUrl, setPageOpener } from './lib/browserTabs';
 import { isMarkdownLanguage } from './lib/markdownView';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
@@ -1320,7 +1321,7 @@ export default function App() {
   // "Opened ports" opens a page again; the app asks for a remote chat's.
   setPageOpener(openPageTab);
   onCleanup(() => setPageOpener(null));
-  onMount(() => onCleanup(onPageWanted(openPageTab)));
+  onMount(() => onCleanup(startPageRequests(openPageTab)));
 
   /** The active tab's path, when it's a file's: its editor shows. */
   const activeFilePath = createMemo(() => {

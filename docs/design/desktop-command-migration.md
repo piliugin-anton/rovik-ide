@@ -186,6 +186,23 @@ real-daemon checks cover status, forbidden URL schemes/private destinations,
 empty searches, and connection reuse after errors. They need no external browser
 download. Live Chrome navigation/download is not exercised by these fixtures.
 
-Remote forwarded-page opening still uses a native callback and needs client
-routing. Workload/formatter and the remaining native startup hooks also remain
-before automatic daemon attachment. The app continues to select embedded mode.
+## Remote page callbacks
+
+Forwarded-page opening now uses a private, session-owned desktop RPC callback.
+The backend selects the unique window viewing the chat's project, falling back
+to a window retaining its chat or lead. Missing or ambiguous owners produce the
+existing chat notice instead of opening multiple windows. Child chats resolve
+through their lead, and each request includes its current forwarding metadata.
+Page actions are never journaled or replayed. Project switches and disposal
+invalidate queued UI callbacks; late subscription replies are released. Callback
+acceptance means queued delivery, not confirmation that the OS opened a browser.
+
+Unit and remote forwarding fixtures cover routing, ownership, ambiguity,
+disconnect, replacement, and forwarding metadata. Embedded and daemon fixtures
+cover subscription lifecycle, cross-client rejection, and reuse after errors.
+Frontend tests cover stale callbacks, late replies, metadata ordering, and OS
+opener failures.
+
+Workload/formatter and remaining native startup hooks still need migration.
+Automatic daemon activation, session reconstruction, Windows transport, and
+mounted multi-window FUSE validation remain. The app still selects embedded mode.

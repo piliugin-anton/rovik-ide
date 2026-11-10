@@ -88,3 +88,6 @@ pub mod lsp;
 
 /// Backend-owned Chrome installation and client progress observers.
 pub mod browser_install;
+
+/// Private routing of one-shot remote page requests to UI clients.
+pub mod desktop_pages;

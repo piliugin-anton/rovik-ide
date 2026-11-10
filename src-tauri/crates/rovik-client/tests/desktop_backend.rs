@@ -11,6 +11,8 @@ mod desktop_journal;
 mod desktop_lsp;
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
+#[path = "support/desktop_pages.rs"]
+mod desktop_pages;
 #[path = "support/desktop_projects.rs"]
 mod desktop_projects;
 #[path = "support/desktop_tasks.rs"]
@@ -100,6 +102,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     )
     .await;
     desktop_browser::check(&connection, &other).await;
+    desktop_pages::check(&connection, &other).await;
     desktop_tasks::check(&connection, &other).await;
     desktop_journal::check(&connection, &other, journal_projects).await;
     desktop_projects::check(&connection, other).await;

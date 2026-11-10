@@ -658,3 +658,67 @@ async fn a_tab_port_whose_server_is_gone_there_says_why() {
         "{body}"
     );
 }
+
+#[tokio::test]
+async fn forwarded_pages_reach_only_the_retaining_window_with_their_ports() {
+    use crate::{
+        desktop_journal::Scope,
+        desktop_pages::PageRouter,
+        desktop_session::{EventBody, Sessions},
+    };
+    let app = App::new();
+    let fake = Fake::default();
+    let port = free_port();
+    let server = echo_server().await;
+    fake.network.lock().unwrap().insert(port, server);
+    let (remote, _, _) = with_pages(&app, fake, &["chat"]).await;
+    let router = Arc::new(PageRouter::default());
+    let opener = router.clone();
+    remote.on_open_page(Arc::new(move |page| opener.open(page)));
+    let sessions = Sessions::default();
+    let window = sessions.create();
+    let other = sessions.create();
+    let mut events = window.session.events().unwrap();
+    router
+        .subscribe(
+            &window.session,
+            "page".into(),
+            Scope {
+                project_id: Some("another-project".into()),
+                chats: vec!["chat".into()],
+            },
+        )
+        .unwrap();
+    router
+        .subscribe(
+            &other.session,
+            "other".into(),
+            Scope {
+                project_id: Some("foreign-project".into()),
+                chats: vec![],
+            },
+        )
+        .unwrap();
+    remote
+        .receive(
+            HOST,
+            page_wanted("chat", "page-1", &format!("http://localhost:{port}/"), port),
+        )
+        .await;
+    let event = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.sink, "page");
+    let EventBody::Data(page) = event.body else {
+        panic!("page expected")
+    };
+    assert_eq!(page["dialogId"], "chat");
+    assert_eq!(page["leadId"], "chat");
+    assert!(page["projectId"].is_null());
+    assert_eq!(
+        page["ports"],
+        serde_json::to_value(remote.forwarded_ports("chat")).unwrap()
+    );
+    remote.receive(HOST, page_closed("chat", port)).await;
+}
