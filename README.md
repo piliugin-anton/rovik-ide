@@ -1119,8 +1119,8 @@ What one process must not do to another's work is guarded the same way:
   changed by one window at a time.
 - A window open while a newer Rovik updated the chat database (an update
   installed while it ran) stops writing to it: close it and open Rovik
-  again. rust-analyzer's old versions are cleaned up only while no other
-  window runs, as one may still run them.
+  again. rust-analyzer's older managed versions remain available, as another
+  window may still run or restart one.
 - What a window used to keep in its own browser storage, and so wrote back
   whole over what other windows had saved, is shared in `<data>/shared`: a
   file each for the projects' tabs, the editor settings, the reasoning
@@ -2263,3 +2263,10 @@ Git panel operations now execute in the shared desktop backend, including hooks,
 fetch/push, branches, stashes, merge/rebase, and conflict resolution. Windows keep
 only RPC adapters. History searches supersede only that client's previous search;
 Git working-tree guards live alongside the backend's FUSE and overlay services.
+
+Language servers and rust-analyzer setup now execute in the desktop backend.
+Each window owns its server IDs and private message/log stream; closing a window
+or losing a callback ends only its servers and their child processes. Stdin writes
+run independently so Stop works even when a server is not reading. The backend
+waits for language-server cleanup before shutting down. Managed rust-analyzer
+installs are serialized and preserve older binaries still used by other windows.

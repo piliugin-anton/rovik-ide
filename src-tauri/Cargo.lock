@@ -5241,6 +5241,7 @@ dependencies = [
  "uuid",
  "windows",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -5366,7 +5367,6 @@ dependencies = [
 name = "rovik-ide"
 version = "0.2.14"
 dependencies = [
- "flate2",
  "futures-util",
  "ignore",
  "libc",
@@ -5387,7 +5387,6 @@ dependencies = [
  "tokio",
  "trash",
  "uuid",
- "zip",
 ]
 
 [[package]]

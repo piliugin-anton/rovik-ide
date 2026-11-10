@@ -46,6 +46,7 @@ russh = "0.64.1"
 # builds gzipped on their way to a server.
 reqwest.workspace = true
 flate2 = "1.1.10"
+zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

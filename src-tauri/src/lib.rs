@@ -42,7 +42,6 @@ pub fn run() {
         // plugin's, which the window has no permission for.
         .plugin(updates::plugin())
         .manage(updates::Updates::default())
-        .manage(lsp::servers())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;

@@ -82,3 +82,6 @@ pub mod desktop_journal;
 pub mod git;
 /// Shared Git merge and rebase service.
 pub mod git_sync;
+
+/// Backend-owned language servers and rust-analyzer management.
+pub mod lsp;

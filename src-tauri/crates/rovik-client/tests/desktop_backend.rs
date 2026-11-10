@@ -4,6 +4,9 @@
 mod desktop_git;
 #[path = "support/desktop_journal.rs"]
 mod desktop_journal;
+#[cfg(unix)]
+#[path = "support/desktop_lsp.rs"]
+mod desktop_lsp;
 #[path = "support/desktop_operations.rs"]
 mod desktop_operations;
 #[path = "support/desktop_projects.rs"]
@@ -87,6 +90,13 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     #[cfg(unix)]
     desktop_operations::check_terminal_contract(&connection, &other).await;
     desktop_git::check(&connection, &other, &[std::process::id()]).await;
+    #[cfg(unix)]
+    desktop_lsp::check(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+        &[std::process::id()],
+    )
+    .await;
     desktop_tasks::check(&connection, &other).await;
     desktop_journal::check(&connection, &other, journal_projects).await;
     desktop_projects::check(&connection, other).await;

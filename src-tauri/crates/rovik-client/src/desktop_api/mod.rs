@@ -11,6 +11,7 @@ pub mod clm;
 pub mod filesystem;
 pub mod git;
 pub mod hosts;
+pub mod lsp;
 pub mod mcp;
 pub mod memory;
 pub mod network;
@@ -27,6 +28,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Client-owned language servers and their installation.
+    Lsp(Box<lsp::LspRequest>),
     /// Backend-owned Git operations.
     Git(Box<git::GitRequest>),
     /// Scoped run-state recovery for a UI event reader.
@@ -81,6 +84,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Lsp(request) => request.dispatch(backend, session).await,
                 Self::Git(request) => request.dispatch(session).await,
                 Self::EventStatus { scope } => {
                     encode_result(crate::desktop_journal::status(backend, scope).await)

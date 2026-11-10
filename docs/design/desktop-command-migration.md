@@ -96,7 +96,7 @@ steering and delivery tests.
 
 The command families listed in this migration are routed. This does not enable
 automatic daemon attachment: command/private-session recovery after failure,
-remaining native service ownership (such as LSP/browser integration), daemon
+remaining native service ownership (such as browser integration), daemon
 packaging/lifecycle, Windows transport, and real multi-window FUSE validation are
 still separate work before every window can run purely as a UI client.
 
@@ -141,5 +141,27 @@ window cannot supersede another window's history scan.
 Embedded and real-daemon tests cover two clients and separate repositories,
 commit/status/history, stash round trips, branch changes, path errors, and reuse
 after a failed request. Existing Git service tests move with the implementation.
-LSP/browser and other remaining native services still need migration before
+Browser integration and other remaining native services still need migration before
 automatic daemon attachment is enabled. The app continues to use embedded mode.
+
+## Language-server ownership
+
+LSP start, send, stop, and rust-analyzer discovery/install/toolchain commands now
+use desktop RPC. Server controls require the owning client; output is reserved
+before spawn and uses the bounded private stream. Pipe writes and setup commands
+use finite tasks, leaving Stop callable while stdin is blocked. Natural exit is
+reported after stdout/stderr drain. If a detached helper keeps a pipe open, the
+backend bounds the drain, closes the reader, and reports it explicitly. Disconnect, callback loss, startup failure,
+and backend shutdown stop the process tree; shutdown waits for output workers.
+
+The backend uses its existing data directory for managed rust-analyzer binaries.
+Installations serialize download and publication, including blocking work that
+outlives its requesting task. Failed staging directories are removed. Older
+published versions are retained because another window can still hold their path.
+Automatic pruning needs a later version-lease/lifecycle policy.
+
+Embedded and real-daemon fixtures cover early output, Unicode framing, execution
+in the backend process, cross-client controls, disconnect/callback cleanup,
+child-process termination, natural exit ordering, and Stop under stdin
+backpressure. Browser integration and other native services remain before
+automatic daemon attachment; the app still selects embedded mode.

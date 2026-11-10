@@ -18,6 +18,8 @@ pub struct DesktopBackend {
     pub journal: Arc<crate::desktop_journal::Journal>,
     /// Serializes ownership checks with project opens and destructive changes.
     pub(crate) project_changes: tokio::sync::Mutex<()>,
+    /// Language servers and their process-tree cleanup workers.
+    pub lsp: Arc<crate::lsp::LspState>,
     /// Terminals run by this backend, with per-client ownership.
     pub terminals: Arc<crate::terminal::TerminalState>,
     /// Client resource lifetimes and private event streams.
@@ -127,6 +129,7 @@ impl DesktopBackend {
             journal,
             project_changes: Default::default(),
             sessions: Default::default(),
+            lsp: Default::default(),
             terminals: Arc::new(crate::terminal::terminals()),
             core,
             secrets,
@@ -189,6 +192,10 @@ impl DesktopBackend {
     pub async fn shutdown(&self) {
         self.sessions.close_all();
         self.terminals.end_all();
+        let lsp = self.lsp.clone();
+        if let Err(error) = rovik_core::rt::spawn_blocking(move || lsp.shutdown()).await {
+            log::error!("Could not wait for language-server cleanup: {error}");
+        }
         self.core.shutdown().await;
         let terminals = self.terminals.clone();
         if let Err(error) = rovik_core::rt::spawn_blocking(move || terminals.wait_ended()).await {
@@ -237,6 +244,7 @@ mod routing_tests {
             journal: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
+            lsp: Default::default(),
             terminals: Arc::new(crate::terminal::terminals()),
             core,
             secrets,
