@@ -743,3 +743,9 @@ reload it. The setup script refuses ordinary machines. This follows the
 [FSKit enablement issue](https://github.com/macfuse/macfuse/issues/1194); normal
 Rovik installations continue to use System Settings. A successful mounted
 regression is still required before claiming macOS draining is validated.
+
+With FSKit approval configured, the native request trace on `b65c3c5` showed
+startup `STATFS` arriving with UID 0 and being rejected with `EACCES` by the
+owner-only session. The FSKit message adapter now permits root and the mount
+owner so the system mount service can initialize the volume. Other users remain
+subject to fuser's access check; the kernel transport's policy is unchanged.

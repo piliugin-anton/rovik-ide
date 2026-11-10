@@ -7,7 +7,7 @@ use std::io::{self, IoSlice};
 use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::time::Instant;
 
-use fuser::{BackgroundSession, Config, Session, Transport};
+use fuser::{BackgroundSession, Config, Session, SessionACL, Transport};
 
 use super::{dl_error, FuseFs, MountProblem, BUNDLE, MOUNT_TIMEOUT};
 
@@ -349,7 +349,12 @@ pub(super) fn mount(
     // FSKit needs INIT replies before MFMount can finish. Serve concurrently.
     let (session_tx, session_rx) = mpsc::channel();
     let serving = channel.clone();
-    let config = config.clone();
+    let mut config = config.clone();
+    // FSKit sends startup STATFS requests as root, even for a user-owned mount.
+    // Keep unrelated users denied while allowing the system's mount service.
+    if config.acl == SessionACL::Owner {
+        config.acl = SessionACL::RootAndOwner;
+    }
     if let Err(error) = std::thread::Builder::new()
         .name("fskit-handshake".into())
         .spawn(move || {
