@@ -109,7 +109,7 @@ impl BrowserInstaller {
     }
 
     /// An install outlives its UI observers and prevents automatic host replacement.
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(crate) fn active(&self) -> bool {
         self.0
             .lock()
