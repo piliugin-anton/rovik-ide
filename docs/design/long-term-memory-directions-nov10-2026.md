@@ -258,3 +258,29 @@ and positive-extra gates. Preserve these results as regression controls. Freeze
 fresh reserved queries before selecting another policy: Qwen's heldout outcomes
 are now exposed. Native backend/resource feasibility and actual captured-memory
 or paired-agent usefulness remain separate acceptance requirements.
+
+## Lightweight instruction-trained encoder completed
+
+The [BGE study](long-term-memory-bge-nov10-2026.md) tests official pinned
+`BAAI/bge-small-en-v1.5` with correct normalized CLS pooling through the existing
+native backend. Six reference vectors agree with ONNX Runtime within 0.000000388;
+203 existing MiniLM development rows retain every non-timing field. The new
+96-case suite supplies incident-separated implicit questions, literal/file controls
+and unsupported requests, with its 48 reserved queries left unscored.
+
+Neither plain nor instructed queries produce a safe gain across 192 registered
+cosine/margin policies. Five of twelve missed answers have empty MiniLM results;
+neither BGE variant ranks any of their required facts first. The other seven
+already return results and stay exact under empty-only admission. Of the policies,
+142 are unchanged and 50 change negative packets; no historical or reserved
+candidate evaluation is justified. Production remains on MiniLM.
+
+Smaller native-compatible instruction-trained embeddings solve the backend and
+weight-size obstacle, but not the missing relevance signal. Another threshold
+sweep on these winners cannot recover the required facts. Prefer evidence on
+actual source-grounded capture accuracy and independently judged relevance or
+paired-agent usefulness before broadening admission to nonempty results. This
+differs from the already rejected relabeling of existing cause fields: measure
+whether captured claims preserve the original problem, corrective action and
+verification evidence. Keep exposed synthetic cases as regressions and preserve
+fresh reserved outcomes until a development candidate qualifies.

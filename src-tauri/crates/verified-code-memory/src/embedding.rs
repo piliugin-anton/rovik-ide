@@ -32,8 +32,19 @@ pub trait VectorIndex: Send + Sync {
 /// the local model and tokenizer; embedding never downloads or starts a process.
 pub struct OnnxMiniLm {
     tokenizer: tokenizers::Tokenizer,
+    pooling: OnnxPooling,
     model:
         std::sync::Mutex<tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>>,
+}
+
+/// Pooling required by a compatible 384-dimensional BERT sentence encoder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OnnxPooling {
+    /// Attention-masked mean, the existing MiniLM default.
+    #[default]
+    MaskedMean,
+    /// First-token representation, as required by BGE, followed by L2 normalization.
+    Cls,
 }
 
 /// The number of dimensions produced by the pinned MiniLM model.
@@ -51,6 +62,13 @@ impl OnnxMiniLm {
     /// Loads an ONNX model and tokenizer from `directory`. CPU inference is
     /// compiled once and reused. Missing or unsupported model files return errors.
     pub fn new(directory: &std::path::Path) -> Result<Self> {
+        Self::new_with_pooling(directory, OnnxPooling::MaskedMean)
+    }
+
+    /// Loads a compatible BERT encoder with explicitly selected pooling.
+    /// Callers must use a model/preprocessing revision distinct from MiniLM when
+    /// indexing another model's vectors. Existing callers should use `new`.
+    pub fn new_with_pooling(directory: &std::path::Path, pooling: OnnxPooling) -> Result<Self> {
         use tract_onnx::prelude::*;
         let mut tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
             .map_err(onnx_error)?;
@@ -80,6 +98,7 @@ impl OnnxMiniLm {
             .map_err(onnx_error)?;
         Ok(Self {
             tokenizer,
+            pooling,
             model: std::sync::Mutex::new(model),
         })
     }
@@ -128,7 +147,7 @@ impl OnnxMiniLm {
             ));
         }
         let values: Vec<f32> = hidden.iter().copied().collect();
-        pool(&values, tokens.get_attention_mask())
+        pool(&values, tokens.get_attention_mask(), self.pooling)
     }
 }
 
@@ -149,14 +168,22 @@ impl MemoryEmbedder for OnnxMiniLm {
     }
 }
 
-fn pool(hidden: &[f32], mask: &[u32]) -> Result<Vec<f32>> {
+fn pool(hidden: &[f32], mask: &[u32], pooling: OnnxPooling) -> Result<Vec<f32>> {
     if hidden.len() != mask.len() * MINILM_DIMENSIONS {
         return Err(onnx_error(
             "token embeddings do not match the attention mask",
         ));
     }
     let mut vector = vec![0.0f64; MINILM_DIMENSIONS];
-    for (token, &include) in hidden.chunks_exact(MINILM_DIMENSIONS).zip(mask) {
+    if pooling == OnnxPooling::Cls && mask.first().copied().unwrap_or(0) == 0 {
+        return Err(onnx_error("CLS pooling requires an unmasked first token"));
+    }
+    for (position, (token, &include)) in
+        hidden.chunks_exact(MINILM_DIMENSIONS).zip(mask).enumerate()
+    {
+        if pooling == OnnxPooling::Cls && position > 0 {
+            break;
+        }
         if include != 0 {
             for (sum, &value) in vector.iter_mut().zip(token) {
                 *sum += f64::from(value);
@@ -179,12 +206,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cls_pooling_uses_only_the_unmasked_first_token_and_normalizes_it() {
+        let mut hidden = vec![100.0; 3 * MINILM_DIMENSIONS];
+        hidden[..MINILM_DIMENSIONS].fill(0.0);
+        hidden[0] = 3.0;
+        hidden[1] = 4.0;
+        let cls = pool(&hidden, &[1, 1, 0], OnnxPooling::Cls).unwrap();
+        assert_eq!(cls[0], 0.6);
+        assert_eq!(cls[1], 0.8);
+        assert!(cls[2..].iter().all(|v| *v == 0.0));
+        assert_ne!(
+            pool(&hidden, &[1, 1, 0], OnnxPooling::MaskedMean).unwrap(),
+            cls
+        );
+        assert!(pool(&hidden, &[0, 1, 1], OnnxPooling::Cls).is_err());
+        hidden[0] = f32::NAN;
+        assert!(pool(&hidden, &[1, 1, 0], OnnxPooling::Cls).is_err());
+        hidden[..MINILM_DIMENSIONS].fill(0.0);
+        assert!(pool(&hidden, &[1, 1, 0], OnnxPooling::Cls).is_err());
+        assert!(pool(&[], &[], OnnxPooling::Cls).is_err());
+        assert_eq!(OnnxPooling::default(), OnnxPooling::MaskedMean);
+    }
+
+    #[test]
     fn padding_does_not_contribute_to_the_normalized_embedding() {
         let mut hidden = vec![0.0; 3 * MINILM_DIMENSIONS];
         hidden[0] = 6.0;
         hidden[MINILM_DIMENSIONS + 1] = 8.0;
         hidden[2 * MINILM_DIMENSIONS..].fill(1000.0);
-        let vector = pool(&hidden, &[1, 1, 0]).unwrap();
+        let vector = pool(&hidden, &[1, 1, 0], OnnxPooling::MaskedMean).unwrap();
         assert!((vector[0] - 0.6).abs() < 1e-6);
         assert!((vector[1] - 0.8).abs() < 1e-6);
         assert!(vector[2..].iter().all(|value| *value == 0.0));
@@ -197,9 +247,9 @@ mod tests {
             vec![f32::NAN; MINILM_DIMENSIONS],
             vec![1.0; 300],
         ] {
-            assert!(pool(&hidden, &[1]).is_err());
+            assert!(pool(&hidden, &[1], OnnxPooling::MaskedMean).is_err());
         }
-        assert!(pool(&[], &[]).is_err());
+        assert!(pool(&[], &[], OnnxPooling::MaskedMean).is_err());
     }
 
     #[test]

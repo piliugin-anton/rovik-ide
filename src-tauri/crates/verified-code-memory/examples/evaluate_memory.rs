@@ -74,12 +74,8 @@ fn encoder_prefixes(config: &Value) -> Result<Option<EncoderPrefixes>, Box<dyn s
             let document = document
                 .as_str()
                 .ok_or("document_prefix must be a string")?;
-            if query.is_empty()
-                || document.is_empty()
-                || query.chars().count() > 64
-                || document.chars().count() > 64
-            {
-                return Err("encoder prefixes must contain 1 to 64 characters".into());
+            if query.is_empty() || query.chars().count() > 64 || document.chars().count() > 64 {
+                return Err("query_prefix must contain 1 to 64 characters; document_prefix may contain 0 to 64".into());
             }
             if config.get("vectors_file").is_some() || config.get("save_vectors_file").is_some() {
                 return Err("prefixed encoder experiments require native inference without vector import/export".into());
@@ -90,6 +86,25 @@ fn encoder_prefixes(config: &Value) -> Result<Option<EncoderPrefixes>, Box<dyn s
             }))
         }
         _ => Err("query_prefix and document_prefix must be supplied together".into()),
+    }
+}
+
+fn encoder_pooling(
+    config: &Value,
+) -> Result<verified_code_memory::embedding::OnnxPooling, Box<dyn std::error::Error>> {
+    use verified_code_memory::embedding::OnnxPooling;
+    match config.get("pooling") {
+        None => Ok(OnnxPooling::MaskedMean),
+        Some(value) if value == "masked_mean" => Ok(OnnxPooling::MaskedMean),
+        Some(value) if value == "cls" => {
+            if config.get("vectors_file").is_some() || config.get("save_vectors_file").is_some() {
+                return Err(
+                    "CLS experiments require native inference without vector import/export".into(),
+                );
+            }
+            Ok(OnnxPooling::Cls)
+        }
+        _ => Err("pooling must be masked_mean or cls".into()),
     }
 }
 
@@ -444,6 +459,7 @@ fn capture_order(uri: &str, offset: usize) -> Result<(), Box<dyn std::error::Err
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
     let prefixes = encoder_prefixes(&config)?;
+    let pooling = encoder_pooling(&config)?;
     let input = dataset_input(&config)?;
     let dataset: Value = serde_json::from_str(&input)?;
     let keys = match config["context_keys_file"].as_str() {
@@ -482,9 +498,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let revision = std::env::var("ROVIK_MEMORY_EVAL_REVISION")?;
                 let threshold: f32 = std::env::var("ROVIK_MEMORY_EVAL_THRESHOLD")?.parse()?;
                 Some((
-                    Box::new(verified_code_memory::embedding::OnnxMiniLm::new(
-                        std::path::Path::new(&model),
-                    )?),
+                    Box::new(
+                        verified_code_memory::embedding::OnnxMiniLm::new_with_pooling(
+                            std::path::Path::new(&model),
+                            pooling,
+                        )?,
+                    ),
                     revision,
                     dimensions,
                     threshold,
@@ -493,8 +512,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => None,
         }
     };
-    if prefixes.is_some() && backend.is_none() {
-        return Err("encoder prefixes require an embedding backend".into());
+    if (prefixes.is_some() || pooling != Default::default()) && backend.is_none() {
+        return Err("encoder formatting/pooling experiments require an embedding backend".into());
     }
     let backend = backend.map(|(inner, revision, dimensions, threshold)| {
         (
@@ -804,6 +823,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_cls_pooling_and_query_only_instruction_require_native_vectors() {
+        use verified_code_memory::embedding::OnnxPooling;
+        assert_eq!(
+            encoder_pooling(&json!({})).unwrap(),
+            OnnxPooling::MaskedMean
+        );
+        assert_eq!(
+            encoder_pooling(&json!({"pooling":"cls"})).unwrap(),
+            OnnxPooling::Cls
+        );
+        assert!(
+            encoder_prefixes(&json!({"query_prefix":"instruction: ","document_prefix":""}))
+                .unwrap()
+                .is_some()
+        );
+        for config in [
+            json!({"pooling":true}),
+            json!({"pooling":"unknown"}),
+            json!({"pooling":"cls","vectors_file":"saved.json"}),
+            json!({"pooling":"cls","save_vectors_file":"saved.json"}),
+        ] {
+            assert!(encoder_pooling(&config).is_err());
+        }
+    }
 
     #[test]
     fn selecting_rows_keeps_the_full_fixture_available_and_rejects_missing_or_duplicate_ids() {

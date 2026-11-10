@@ -102,6 +102,14 @@ CPU model. No Python, child process or separately installed runtime is used.
 The application provisions the pinned model from its dedicated GitHub release;
 this crate's encoder only reads local files and never downloads on inference.
 
+For native model research, `OnnxMiniLm::new_with_pooling` explicitly selects
+`OnnxPooling::Cls` for compatible 384-dimensional BERT graphs such as BGE, or
+`MaskedMean` for MiniLM. Both normalize the pooled vector and keep the existing
+input windows. A different model or preprocessing policy requires a distinct
+index revision. The ordinary constructor and application remain on pinned
+MiniLM with masked mean; the [BGE experiment](../../../docs/design/long-term-memory-bge-nov10-2026.md)
+does not justify a model or retrieval-policy change.
+
 For a stored note longer than the encoder's character window, background indexing
 also embeds its final nonempty paragraph (bounded to one window). Hybrid retrieval
 can append a matching conclusion into unused result slots, after all existing

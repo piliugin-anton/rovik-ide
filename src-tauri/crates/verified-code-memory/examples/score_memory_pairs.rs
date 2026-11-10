@@ -3,10 +3,11 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io::Write, path::Path};
 use tract_onnx::prelude::*;
+use verified_code_memory::MemoryEmbedder;
 
 type Error = Box<dyn std::error::Error>;
 const MAX_TOKENS: usize = 512;
-const USAGE: &str = "usage: score_memory_pairs --model directory --pairs pairs.json OR --tokenize-instruction-pairs tokenizer_directory pairs.json instruction.txt (use --tokenize-bounded-instruction-pairs to report unsupported prompts)";
+const USAGE: &str = "usage: score_memory_pairs --model directory --pairs pairs.json OR --tokenize-instruction-pairs tokenizer_directory pairs.json instruction.txt (use --tokenize-bounded-instruction-pairs to report unsupported prompts) OR --embedding-reference directory texts.json cls|masked_mean";
 const INSTRUCTION_PREFIX: &str = "<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be \"yes\" or \"no\".<|im_end|>\n<|im_start|>user\n";
 const INSTRUCTION_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
 
@@ -215,6 +216,46 @@ fn score(directory: &Path, pairs: &[Pair], mut writer: impl Write) -> Result<(),
 
 fn main() -> Result<(), Error> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let [mode, directory, texts_path, pooling] = args.as_slice() {
+        if mode == "--embedding-reference" {
+            use verified_code_memory::embedding::{OnnxMiniLm, OnnxPooling};
+            let texts: Vec<String> = serde_json::from_slice(&std::fs::read(texts_path)?)?;
+            // Keep references below either provider window so the independent
+            // engine can compare identical, untruncated token inputs.
+            if texts.iter().any(|s| s.chars().count() > 200) {
+                return Err("embedding references must contain at most 200 characters".into());
+            }
+            let pooling = match pooling.as_str() {
+                "cls" => OnnxPooling::Cls,
+                "masked_mean" => OnnxPooling::MaskedMean,
+                _ => return Err("reference pooling must be cls or masked_mean".into()),
+            };
+            let encoder = OnnxMiniLm::new_with_pooling(Path::new(directory), pooling)?;
+            let mut tokenizer =
+                tokenizers::Tokenizer::from_file(Path::new(directory).join("tokenizer.json"))
+                    .map_err(|e| format!("cannot load reference tokenizer: {e}"))?;
+            tokenizer
+                .with_truncation(None)
+                .map_err(|e| format!("cannot disable reference truncation: {e}"))?;
+            tokenizer.with_padding(None);
+            let mut writer = std::io::stdout().lock();
+            for text in texts {
+                let tokens = tokenizer
+                    .encode(text.as_str(), true)
+                    .map_err(|e| format!("cannot tokenize reference: {e}"))?;
+                if tokens.len() > 256 {
+                    return Err("embedding reference exceeds the native 256-token window".into());
+                }
+                let vector = encoder.embed(&text)?;
+                serde_json::to_writer(
+                    &mut writer,
+                    &serde_json::json!({"text":text,"vector":vector,"input_ids":tokens.get_ids(),"attention_mask":tokens.get_attention_mask(),"token_type_ids":tokens.get_type_ids()}),
+                )?;
+                writeln!(writer)?;
+            }
+            return Ok(());
+        }
+    }
     if let [mode, directory, pairs_path, instruction_path] = args.as_slice() {
         if mode == "--tokenize-instruction-pairs" || mode == "--tokenize-bounded-instruction-pairs"
         {

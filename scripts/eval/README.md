@@ -16,10 +16,20 @@ adds frozen implicit/no-match cases and records a rejected E5 replacement sweep.
 For native encoder research, the Rust `evaluate_memory` example accepts paired
 `query_prefix` and `document_prefix` fields in `--experiment-config`. They format
 query and indexing inputs separately and keep role-specific memoization entries.
-Both must be strings of 1–64 characters; they require native inference and cannot
+The query prefix must contain 1–64 characters; the document prefix may contain
+0–64 for query-only instructions. They require native inference and cannot
 be combined with vector import/export. Omit both for the existing MiniLM behavior.
 These fields are evaluation-only; the study documents model hashes, cutoffs,
 limits and reproduction commands.
+
+The [BGE study](../../docs/design/long-term-memory-bge-nov10-2026.md) adds 96 frozen
+cases and rejects both plain and instructed top-one rescue policies. Native
+evaluation accepts `pooling: "cls"` for compatible 384-dimensional BERT encoders;
+omitting it retains MiniLM's masked mean. CLS also requires native inference
+without vector import/export. The pair scorer's
+`--embedding-reference <directory> <texts.json> cls|masked_mean` mode emits vectors
+and exact token inputs for short cross-engine reference comparisons, rejecting
+overlong inputs. No application model or release asset changes.
 
 The [additive follow-up](../../docs/design/long-term-memory-additive-encoders-nov10-2026.md)
 rejects E5-winner and deeper model-agreement rescue policies. Native evaluation
