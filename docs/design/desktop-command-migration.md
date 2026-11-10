@@ -733,3 +733,13 @@ is rejected after an earlier write fails or the backend generation changes.
 The two-window project tests passed; full isolated-chat GUI validation still
 requires a working mounted backend. Native kernel-backend validation remains
 unavailable on GitHub-hosted virtual machines.
+
+The native run on `596556f` passed 58 fuser tests, three adapter tests and an
+explicit load of the installed MFMount API. Mounting then reached FSKit's
+extension-approval check and was refused despite PluginKit reporting the module
+enabled. The disposable hosted runner now configures FSKit's separate
+`enabledModules.plist`, preserving existing entries, and restarts `fskitd` to
+reload it. The setup script refuses ordinary machines. This follows the
+[FSKit enablement issue](https://github.com/macfuse/macfuse/issues/1194); normal
+Rovik installations continue to use System Settings. A successful mounted
+regression is still required before claiming macOS draining is validated.

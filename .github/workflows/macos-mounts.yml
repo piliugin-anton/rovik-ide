@@ -33,7 +33,8 @@ jobs:
         run: |
           sw_vers
           brew install --cask macfuse
-          /usr/bin/pluginkit -e use -i io.macfuse.app.fsmodule.macfuse
+          python3 -m unittest discover -s scripts -p enable_ci_fskit_test.py
+          python3 scripts/enable_ci_fskit.py
           /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule
       - name: Check message transport and channel lifetime
         run: |
