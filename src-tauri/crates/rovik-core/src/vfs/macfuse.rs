@@ -306,6 +306,24 @@ pub struct MacMount {
 }
 
 impl MacMount {
+    /// Refuses busy volumes before releasing the channel. Unlike normal close,
+    /// upgrade must never force a mount off programs still using it.
+    pub(super) fn unmount_if_unused(&self) -> Result<(), String> {
+        let lib = library()?;
+        // SAFETY: the mountpoint is NUL-terminated and flags=0 requests an
+        // ordinary unmount. On refusal neither channel nor session is touched.
+        if unsafe { libc::unmount(self.mountpoint.as_ptr(), 0) } != 0 {
+            return Err(format!(
+                "The virtual filesystem is still in use or could not be unmounted: {}; close programs using it and retry",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // Only after the OS detached the volume may libfuse release its channel.
+        // Do not use our normal close's force/diskutil fallback here.
+        unsafe { (lib.unmount)(self.mountpoint.as_ptr(), self.channel.0) };
+        Ok(())
+    }
+
     pub fn unmount(self, path: &Path) -> Result<(), String> {
         if let Ok(lib) = library() {
             unsafe { (lib.unmount)(self.mountpoint.as_ptr(), self.channel.0) };

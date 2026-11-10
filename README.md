@@ -2331,13 +2331,13 @@ entry points. It checks chat overlay isolation, commands continuing after every
 client closes, virtual-file handles surviving reattachment, and clean shutdown.
 See [the mounted test commands](docs/design/desktop-command-migration.md#required-mounted-multi-client-isolation).
 
-An upgrade can release an empty, unused virtual-files mount on Linux. A program
+An upgrade can release an empty, unused virtual-files mount on Linux and macOS. A program
 holding a file or directory open keeps that mount busy and defers replacement;
 virtual files with retained contents also defer it. Close programs using the
 volume and release its files before retrying. Remote work follows the draining
 rules below.
 
-On Linux, idle chat views can also drain for an upgrade without landing
+On Linux and macOS, idle chat views can also drain for an upgrade without landing
 or discarding their edits. The replacement reads their saved changes. Busy views
 or failed persistence defer retirement and keep the old backend. Child views drain
 before their parents, preserving each view’s saved edits. Invalid dependency
@@ -2368,3 +2368,9 @@ replacement. The replacement restores their status from the server and retries
 mirror synchronization from its saved cursor. Draining sends no Stop request.
 Long-lived forwarded pages, MCP relays, unresolved results, or transfers may still
 defer replacement until they finish; timing out never cancels them.
+
+On macOS, upgrade draining requests an ordinary unmount before releasing the
+macFUSE channel or serving session. Busy mounts and unmount errors defer the
+upgrade with the current backend still serving them. This path never forces a
+volume off its users. Saved edits remain available after refusal, including
+edits made before retrying the upgrade.

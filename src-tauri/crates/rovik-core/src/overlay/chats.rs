@@ -105,7 +105,7 @@ impl ChatOverlay {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn drain_for_upgrade(&self) -> Result<(), String> {
         self.fs
             .save_checked()
@@ -545,7 +545,7 @@ pub(crate) fn retains_views() -> bool {
 
 /// Drains idle views children first, without landing or discarding changes.
 /// Admission and background producers must stay paused throughout this call.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn drain_for_upgrade() -> Result<(), String> {
     // Snapshot dependency metadata before releasing any view. A malformed or
     // inconsistent relationship must not let a parent disappear under a child.
@@ -597,7 +597,7 @@ pub(crate) fn drain_for_upgrade() -> Result<(), String> {
 }
 
 /// Orders leaves before parents without recursing through an untrusted graph.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn drain_order(mut dependencies: BTreeMap<String, Option<String>>) -> Result<Vec<String>, String> {
     let mut order = Vec::with_capacity(dependencies.len());
     while !dependencies.is_empty() {
@@ -618,12 +618,12 @@ fn drain_order(mut dependencies: BTreeMap<String, Option<String>>) -> Result<Vec
     Ok(order)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod upgrade_order_tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires Linux FUSE; run with ROVIK_MOUNTED_BACKEND=1"]
+    #[ignore = "requires FUSE (macFUSE on macOS); run with ROVIK_MOUNTED_BACKEND=1"]
     fn mounted_child_views_drain_without_losing_their_dependency_tree() {
         assert_eq!(std::env::var("ROVIK_MOUNTED_BACKEND").as_deref(), Ok("1"));
         let root = tempfile::tempdir().unwrap();
@@ -653,6 +653,8 @@ mod upgrade_order_tests {
         assert!(drain_for_upgrade().is_err());
         assert!(get("drain-grandchild").is_some());
         assert!(views.iter().all(|view| view.join("base").is_file()));
+        // Refusal must leave the serving session writable, not just readable.
+        std::fs::write(views[0].join("parent"), "edit after refusal").unwrap();
         drop(busy_leaf);
         // A partial drain may close both descendants, but must leave their
         // busy ancestor mounted and all three stores available for reopening.
@@ -667,7 +669,7 @@ mod upgrade_order_tests {
         assert!(get("drain-grandchild").is_none());
         assert_eq!(
             std::fs::read_to_string(views[0].join("parent")).unwrap(),
-            "parent edit"
+            "edit after refusal"
         );
         let child = reopen_child("drain-parent", "drain-child", 1).unwrap();
         let grandchild = reopen_child("drain-child", "drain-grandchild", 1).unwrap();
@@ -694,7 +696,7 @@ mod upgrade_order_tests {
         let grandchild = reopen_child("drain-child", "drain-grandchild", 1).unwrap();
         for (name, content) in [
             ("base", "project"),
-            ("parent", "parent edit"),
+            ("parent", "edit after refusal"),
             ("child", "child edit"),
             ("grandchild", "grandchild edit"),
         ] {

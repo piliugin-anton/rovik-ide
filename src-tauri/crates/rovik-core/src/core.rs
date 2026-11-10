@@ -108,10 +108,10 @@ impl Core {
         self.replacement_blocker_inner(false)
     }
 
-    /// Drains unused Linux virtual and dependent chat volumes for an upgrade.
+    /// Drains unused Linux and macOS virtual and dependent chat volumes for an upgrade.
     /// The host must exclude clients and pause producers throughout this call.
     /// A busy mount or any retained work leaves the existing owner in place.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn prepare_replacement(&self) -> Result<(), String> {
         if let Some(reason) = self.replacement_blocker_inner(true) {
             return Err(reason.into());
@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(core.replacement_blocker(), None);
         let hold = crate::chat_hold::take("upgrade-held").unwrap();
         assert!(core.replacement_blocker().unwrap().contains("Chats"));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert!(core.prepare_replacement().unwrap_err().contains("Chats"));
         drop(hold);
         core.vfs.write_unmounted("kept.txt", b"unsaved").unwrap();
@@ -228,7 +228,7 @@ mod tests {
             .replacement_blocker()
             .unwrap()
             .contains("Virtual files"));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert!(core
             .prepare_replacement()
             .unwrap_err()

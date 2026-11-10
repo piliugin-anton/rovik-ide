@@ -672,3 +672,30 @@ normally, and run/driver restoration with synchronization at the saved revision.
 Long-lived forwarded pages or MCP relays, unresolved held results, and transfers
 that outlast the grace period continue to defer replacement safely. macOS mount
 draining and Windows transport remain separate platform work.
+
+## macOS mount draining
+
+The Unix backend now runs the same guarded virtual-file and child-before-parent
+chat drain on Linux and macOS. On macOS it first calls `unmount` with flags zero.
+Only successful detachment allows libfuse channel cleanup, listener removal, and
+joining the serving session. Errors retain all live mount ownership; there is no
+forced-unmount or diskutil fallback on this path. If the installed macFUSE backend
+refuses ordinary unmount, replacement stays deferred rather than forcing it.
+
+Chat stores are checked before unmount and saved again afterward to capture final
+kernel writes. Busy views retain their store locks and remain writable. A partial
+drain preserves already-detached descendants on disk for reopening. Persistence
+errors retain the backend and attempt to restore a detached view.
+
+The mounted dependency regression is available on Linux and macOS, including
+writes after refusal and reconstruction from saved edits. Run it on a Mac with
+macFUSE installed and enabled (FSKit or kernel backend, according to the system):
+
+```sh
+ROVIK_MOUNTED_BACKEND=1 cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib mounted_child_views_drain_without_losing_their_dependency_tree -- --ignored
+```
+
+The test requires a working mount and fails rather than skipping when unavailable.
+Hosted macOS CI builds the platform path and runs the non-mounted drain tests;
+it does not install or enable macFUSE. Native mounted validation is still required
+for both macFUSE backends.

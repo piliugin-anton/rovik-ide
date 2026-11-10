@@ -244,7 +244,7 @@ impl DesktopBackend {
             .collect();
         self.hosts.retry_drained(&removed);
         drained?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let core = self.core.clone();
             // Join this work without a cancellation timeout: a detached unmount
@@ -253,7 +253,7 @@ impl DesktopBackend {
                 .await
                 .map_err(|error| format!("Could not drain the virtual filesystem: {error}"))?
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         self.core
             .replacement_blocker()
             .map_or(Ok(()), |reason| Err(reason.into()))
