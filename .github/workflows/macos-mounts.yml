@@ -63,6 +63,12 @@ jobs:
             /usr/bin/otool -L "$framework"
             /usr/bin/nm -gU "$framework" | grep -E 'MF(Channel|Message|Mount|Release)'
           } > macos-mount-diagnostics.log 2>&1
+      - name: FSKit service diagnostics
+        if: always()
+        run: |
+          /usr/bin/log show --last 5m --style compact --info --debug \
+            --predicate 'subsystem == "io.macfuse" OR subsystem == "com.apple.FSKit"' \
+            2>&1 | tee macos-mount-services.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
