@@ -204,9 +204,9 @@ impl Lease {
         };
         if handle.is_invalid() {
             let error = io::Error::last_os_error();
-            // FIRST_PIPE_INSTANCE fails with ACCESS_DENIED while an owner holds
-            // its handle. Never steal ownership, including from an unknown peer.
-            if error.raw_os_error() == Some(5) {
+            // Windows reports ACCESS_DENIED or PIPE_BUSY while an owner holds
+            // its single instance. Never steal ownership, even from an unknown peer.
+            if matches!(error.raw_os_error(), Some(5 | 231)) {
                 return Ok(None);
             }
             return Err(error);
@@ -349,12 +349,13 @@ mod tests {
                 ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo,
                 SE_KERNEL_OBJECT,
             },
-            DACL_SECURITY_INFORMATION,
+            GetAce, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION, PSID,
         };
         let root = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(root.path(), "rpc").unwrap();
         let pending = endpoint.pending.lock().await;
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        let mut dacl = std::ptr::null_mut();
         unsafe {
             GetSecurityInfo(
                 HANDLE(pending.as_raw_handle()),
@@ -362,7 +363,7 @@ mod tests {
                 DACL_SECURITY_INFORMATION,
                 None,
                 None,
-                None,
+                Some(&mut dacl),
                 None,
                 Some(&mut descriptor),
             )
@@ -392,11 +393,23 @@ mod tests {
             1,
             "only one access entry: {text}"
         );
-        assert!(
-            text.contains(&current_user().unwrap()),
-            "current user must own access: {text}"
-        );
         assert!(text.contains("(A;"), "the entry must allow access: {text}");
+        // SDDL abbreviates well-known accounts (including a renamed local
+        // administrator) as LA/SY/etc. Compare the ACE's actual SID instead.
+        assert!(!dacl.is_null(), "the pipe must have an explicit DACL");
+        assert_eq!(unsafe { (*dacl).AceCount }, 1);
+        let mut ace = std::ptr::null_mut();
+        unsafe { GetAce(dacl, 0, &mut ace) }.unwrap();
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let trustee = PSID(std::ptr::addr_of!(allowed.SidStart).cast_mut().cast());
+        let mut sid = PWSTR::null();
+        unsafe { ConvertSidToStringSidW(trustee, &mut sid) }.unwrap();
+        let _sid = LocalMemory(sid.0.cast());
+        assert_eq!(
+            unsafe { sid.to_string() }.unwrap(),
+            current_user().unwrap(),
+            "only the current user may receive access: {text}"
+        );
     }
 
     #[tokio::test]
