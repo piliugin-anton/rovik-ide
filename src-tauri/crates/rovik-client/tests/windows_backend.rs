@@ -84,3 +84,15 @@ async fn competing_processes_share_one_backend_and_detaching_keeps_it_alive() {
     // Process death releases ownership without stale file/socket cleanup.
     assert!(Lease::acquire(&endpoint).unwrap().is_some());
 }
+
+#[path = "support/desktop_attach.rs"]
+mod desktop_attach;
+
+#[tokio::test]
+async fn windows_recover_after_a_crash_with_stale_siblings_and_persisted_state() {
+    desktop_attach::check(
+        std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd")),
+        None,
+    )
+    .await;
+}

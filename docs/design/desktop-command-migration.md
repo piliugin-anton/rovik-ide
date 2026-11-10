@@ -820,3 +820,18 @@ Windows renders an administrator account using an SDDL alias.
 The Windows UI still uses its embedded host. Native crash/reconnect and upgrade
 scenarios, installer handoff, packaged UI activation, and WSL execution
 validation are the next integration phase.
+
+### Phase 19: Windows crash recovery contract
+
+The standalone attachment contract now runs on native Windows as well as Linux.
+It checks concurrent launchers, reconnecting to an existing owner, rejecting a
+changed project identity, and restoring project ownership after abrupt daemon
+loss. A sibling window retains its old command and journal connections while
+another window launches the replacement. The recovered sibling must receive a
+journal reset, and a saved chat must survive unchanged. Windows test cleanup
+retains the authenticated pipe server's process handle to avoid terminating a
+process through a reused PID.
+
+This is recovery validation for the standalone host. Guarded-upgrade integration,
+installer handoff, packaged Windows UI activation, and WSL execution validation
+remain; the ordinary Windows UI still uses its embedded host.

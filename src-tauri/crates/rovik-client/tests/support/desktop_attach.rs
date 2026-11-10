@@ -1,6 +1,9 @@
 //! Attachment contract shared by the standalone and packaged executable tests.
 use rovik_client::local_backend::{connect, directory};
 use std::{path::Path, process::Command, time::Duration};
+#[path = "desktop_host.rs"]
+mod desktop_host;
+use desktop_host::Host;
 
 /// Two launchers share one host, which remains after all client sessions close.
 pub async fn check(executable: &Path, flag: Option<&str>) {
@@ -9,7 +12,7 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
     let data = root.path().join("data");
     let config = root.path().join("config");
     let command = || {
-        let mut command = Command::new(executable);
+        let mut command = rovik_core::process::command(executable);
         if let Some(flag) = flag {
             command.arg(flag);
         }
@@ -23,17 +26,7 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
     let (a, b) = (a.unwrap(), b.unwrap());
     let endpoint = directory(&data);
     let (stream, ready) = connect(&endpoint).await.unwrap();
-    let pid = stream.peer_cred().unwrap().pid().unwrap();
-    // This peer is the host launched for this test's unique private directory.
-    struct Host(i32);
-    impl Drop for Host {
-        fn drop(&mut self) {
-            unsafe {
-                libc::kill(self.0, libc::SIGTERM);
-            }
-        }
-    }
-    let host = Host(pid);
+    let host = Host::peer(&stream);
     drop(stream);
     a.request(rovik_protocol::Request::AgentStatus)
         .await
@@ -118,9 +111,40 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
     c.request(rovik_protocol::Request::AgentStatus)
         .await
         .unwrap();
+    // Keep a sibling's command and journal handles alive while the owner recovers.
+    let sibling = DesktopConnection::attach(command(), &data, &config)
+        .await
+        .unwrap();
+    use rovik_client::{
+        desktop_api::chat::ChatRequest,
+        desktop_journal::{Batch, Scope},
+    };
+    c.desktop(
+        ChatRequest::CreateDialog {
+            id: "persisted-chat".into(),
+            title: "Saved before crash".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: Some(project_id.clone()),
+        }
+        .into(),
+    )
+    .await
+    .unwrap();
+    let saved = c
+        .desktop(
+            ChatRequest::GetDialog {
+                dialog_id: "persisted-chat".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert!(!saved.is_null());
+    let checkpoint: Batch =
+        serde_json::from_value(sibling.poll_events(Scope::default(), None).await.unwrap()).unwrap();
     // Abrupt loss must release the OS lease before a new process can own execution.
-    assert_eq!(unsafe { libc::kill(host.0, libc::SIGKILL) }, 0);
-    std::mem::forget(host);
+    host.crash();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if Lease::acquire(&endpoint).unwrap().is_some() {
@@ -136,15 +160,52 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         .await
         .is_err());
     assert!(!c.usable());
-    c.reconnect(command(), &data, &config, Some((folder, project_id)))
-        .await
-        .unwrap();
+    c.reconnect(
+        command(),
+        &data,
+        &config,
+        Some((folder.clone(), project_id.clone())),
+    )
+    .await
+    .unwrap();
     let (stream, restarted) = connect(&endpoint).await.unwrap();
-    let host = Host(stream.peer_cred().unwrap().pid().unwrap());
+    let host = Host::peer(&stream);
     assert_ne!(restarted.boot, ready.boot);
     c.request(rovik_protocol::Request::AgentStatus)
         .await
         .unwrap();
+    assert_eq!(
+        c.desktop(
+            ChatRequest::GetDialog {
+                dialog_id: "persisted-chat".into()
+            }
+            .into()
+        )
+        .await
+        .unwrap(),
+        saved
+    );
+    sibling
+        .reconnect(command(), &data, &config, None)
+        .await
+        .unwrap();
+    let resumed: Batch = serde_json::from_value(
+        sibling
+            .poll_events(Scope::default(), Some(checkpoint.cursor))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        resumed.reset,
+        "a restarted host must invalidate the old journal cursor"
+    );
+    assert!(sibling
+        .desktop(ProjectRequest::Delete { project_id }.into())
+        .await
+        .unwrap_err()
+        .contains("open in another window"));
+    sibling.close().await.unwrap();
     c.close().await.unwrap();
     drop(stream);
     drop(host);
