@@ -2378,3 +2378,8 @@ edits made before retrying the upgrade.
 Idle backend RPC connections stay open without periodic traffic. The frame-read
 timeout starts with the first received byte, so stale socket readiness cannot
 disconnect a quiet window; partially sent requests still time out.
+
+Terminal input is sent in order per terminal even when RPC writes complete
+asynchronously. Other terminals remain independent. Failed writes reject input
+already queued behind them, and reconnecting never sends queued input into the
+replacement backend.

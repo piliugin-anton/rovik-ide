@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { reconnectBackend, onBackendLost } from './backendSession';
-import { spawnTerminal, type TerminalEvent } from './terminal';
+import { spawnTerminal, writeToTerminal, type TerminalEvent } from './terminal';
 import { subscribeVirtualFiles } from './virtualFiles';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -135,4 +135,62 @@ test('embedded Windows recovery cannot invalidate live handles or invoke Unix at
     if (original) Object.defineProperty(globalThis, 'navigator', original);
     else Reflect.deleteProperty(globalThis, 'navigator');
   }
+});
+
+test('terminal input keeps call order without blocking another terminal', async () => {
+  const calls: string[] = [];
+  let finish!: () => void;
+  backend = async (command, args) => {
+    assert.equal(command, 'write_to_terminal');
+    calls.push(`${args.id}:${args.data}`);
+    if (args.id === 'a' && args.data === 'first')
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+  };
+  const first = writeToTerminal('a', 'first');
+  const second = writeToTerminal('a', 'second');
+  await writeToTerminal('b', 'independent');
+  assert.deepEqual(calls, ['a:first', 'b:independent']);
+  finish();
+  await Promise.all([first, second]);
+  assert.deepEqual(calls, ['a:first', 'b:independent', 'a:second']);
+});
+
+test('a failed terminal write rejects the queued rest of the command', async () => {
+  const calls: string[] = [];
+  let fail!: (error: Error) => void;
+  backend = async (command, args) => {
+    assert.equal(command, 'write_to_terminal');
+    calls.push(args.data);
+    await new Promise<void>((_, reject) => {
+      fail = reject;
+    });
+  };
+  const first = assert.rejects(writeToTerminal('failed', 'first'), /write failed/);
+  const second = assert.rejects(writeToTerminal('failed', 'second'), /write failed/);
+  await Promise.resolve();
+  fail(new Error('write failed'));
+  await Promise.all([first, second]);
+  assert.deepEqual(calls, ['first']);
+});
+
+test('queued terminal input is never sent into a replacement backend', async () => {
+  const calls: string[] = [];
+  let finish!: () => void;
+  backend = async (command, args) => {
+    calls.push(command === 'write_to_terminal' ? args.data : command);
+    if (command === 'write_to_terminal')
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    else assert.equal(command, 'desktop_reconnect');
+  };
+  const first = writeToTerminal('old-input', 'accepted');
+  const queued = assert.rejects(writeToTerminal('old-input', 'queued'), /session ended/);
+  await Promise.resolve();
+  await reconnectBackend();
+  finish();
+  await Promise.all([first, queued]);
+  assert.deepEqual(calls, ['accepted', 'desktop_reconnect']);
 });

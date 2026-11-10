@@ -86,8 +86,25 @@ export async function spawnRemoteTerminal(
   );
 }
 
-export async function writeToTerminal(id: string, data: string): Promise<void> {
-  return invoke('write_to_terminal', { id, data });
+const pendingInput = new Map<string, Promise<void>>();
+
+/** Preserves input order across async RPC; different terminals remain independent. */
+export function writeToTerminal(id: string, data: string): Promise<void> {
+  const generation = backendGeneration();
+  const previous = pendingInput.get(id) ?? Promise.resolve();
+  const written = previous.then(() => {
+    if (generation !== backendGeneration())
+      throw new Error('Terminal session ended before queued input was sent');
+    return invoke<void>('write_to_terminal', { id, data });
+  });
+  pendingInput.set(id, written);
+  const finished = () => {
+    if (pendingInput.get(id) === written) pendingInput.delete(id);
+  };
+  // A failed write also rejects input already queued behind it. Do not send
+  // the rest of a command after an uncertain or partially completed write.
+  void written.then(finished, finished);
+  return written;
 }
 
 export async function resizeTerminal(id: string, cols: number, rows: number): Promise<void> {
