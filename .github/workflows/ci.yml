@@ -148,6 +148,17 @@ jobs:
           cargo nextest run --workspace --profile ci
           --test-threads ${{ matrix.threads }} ${{ matrix.args }}
           -E "${{ matrix.filter || 'all()' }}"
+      # This contract must create real mounts. Unlike capability-sensitive unit
+      # tests, a missing driver or broken mount fails this required Linux step.
+      - name: Shared backend mounted isolation
+        if: runner.os == 'Linux'
+        working-directory: src-tauri
+        env:
+          ROVIK_MOUNTED_BACKEND: '1'
+          ROVIK_CONFINE_COMMANDS: ${{ matrix.confine }}
+        run: |
+          cargo test -p rovik-client --test mounted_backend -- --ignored
+          cargo test -p rovik-ide --test shared_backend -- --ignored
       # Doctests aren't nextest's. They run no commands: not again under
       # Landlock.
       - name: cargo test --doc

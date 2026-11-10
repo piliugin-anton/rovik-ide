@@ -2325,3 +2325,8 @@ keeps its ownership lock through shutdown, so replacement cannot create a second
 mount owner. Hosts from before upgrade negotiation was introduced still need an
 explicit graceful stop: finish their work, stop the process running with
 `--desktop-backend` (SIGTERM), then reopen Rovik.
+
+Linux CI also requires a real mounted multi-client regression for both backend
+entry points. It checks chat overlay isolation, commands continuing after every
+client closes, virtual-file handles surviving reattachment, and clean shutdown.
+See [the mounted test commands](docs/design/desktop-command-migration.md#required-mounted-multi-client-isolation).

@@ -32,6 +32,8 @@ existing protocol and routing. Native window actions stay in Tauri.
    UI resource reconstruction, and stale-response rejection.
 8. **Completed**: Guarded Unix backend upgrades with independent control negotiation,
    retained-work checks, serialized launchers, and ownership through shutdown.
+9. **Completed**: Required Linux mounted multi-client regression for standalone and
+   packaged hosts, including isolated execution across client detachment.
 
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
@@ -40,7 +42,8 @@ pretend they are ready for IPC. Windows remains embedded until its transport is 
 ## Following this migration
 
 Windows named pipes; automatic draining of mounted and remote resources for
-upgrades; real multi-window FUSE and execution isolation tests. Unix packaging/start/attach is implemented below.
+upgrades; GUI multi-window smoke testing and macOS mounted validation. Linux
+mounted multi-client execution is covered by the required contract below.
 
 ## Private event transport prerequisite
 
@@ -449,3 +452,33 @@ Validation covers monotonic version/protocol negotiation, stale identities,
 bounded frames, maintenance resume and shutdown while paused, detached blocking
 work, retained virtual files and mounts, live-client refusal, and a real daemon's
 clean retirement followed by a new owner and boot identity.
+
+## Required mounted multi-client isolation
+
+Linux CI explicitly runs the mounted contract against both `rovik-desktopd` and
+the packaged executable in headless backend mode. These tests require
+`ROVIK_MOUNTED_BACKEND=1` and working FUSE; mount failures fail the CI step rather
+than producing a capability skip. Both the default sandbox and Landlock matrix
+run this contract. They use a local scripted model and actual sandboxed commands.
+
+Two independent UI-client connections reuse one host and one virtual-files
+mount. They keep the existing exclusive project-view policy: a second client
+views another folder while requests address chats by their explicit identities.
+Two chats on the same project write the same filename through distinct kernel
+mounts, leaving the project and the other selected folder untouched. Commands
+continue after one client closes and after all clients close. An already-open
+virtual-file handle remains usable. A new client reuses the same boot and files;
+stopping one chat's command leaves the other running. Cleanup discards both
+views, unmounts the volume, and verifies a clean host exit and released lease.
+
+Run on a Linux machine with `fuse3` and `/dev/fuse`:
+
+```sh
+cd src-tauri
+ROVIK_MOUNTED_BACKEND=1 cargo test -p rovik-client --test mounted_backend -- --ignored
+ROVIK_MOUNTED_BACKEND=1 cargo test -p rovik-ide --test shared_backend -- --ignored
+```
+
+This validates the actual mounted backend boundary used by windows. It does not
+launch graphical windows or validate macOS's mount driver. Those smoke tests,
+Windows transport, and automatic draining of retained resources remain separate.
