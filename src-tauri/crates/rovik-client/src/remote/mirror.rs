@@ -46,6 +46,14 @@ pub(super) struct Pulls {
     failed: bool,
 }
 
+impl Pulls {
+    /// Failed or unfinished pulls need another successful synchronization.
+    #[cfg(any(unix, test))]
+    pub(super) fn retains_work(&self) -> bool {
+        self.coming || self.going || self.again || self.failed
+    }
+}
+
 impl Remote {
     /// Pulls the chat's changes from `host` after `wait`, unless a pull is
     /// coming already; one going now is followed by another.
@@ -443,4 +451,34 @@ impl Remote {
 fn files_of(changes: &ChangeSet) -> BTreeSet<String> {
     let named = changes.messages.iter().flat_map(|m| m.attachments.iter());
     named.cloned().collect()
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    #[test]
+    fn only_successfully_finished_pull_records_can_retire() {
+        assert!(!Pulls::default().retains_work());
+        for pulls in [
+            Pulls {
+                coming: true,
+                ..Default::default()
+            },
+            Pulls {
+                going: true,
+                ..Default::default()
+            },
+            Pulls {
+                again: true,
+                ..Default::default()
+            },
+            Pulls {
+                failed: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(pulls.retains_work());
+        }
+    }
 }

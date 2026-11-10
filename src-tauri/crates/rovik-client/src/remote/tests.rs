@@ -2016,7 +2016,7 @@ async fn workload_priority_is_replayed_to_a_reconnecting_host_including_a_clear(
 async fn upgrade_pauses_resume_results_but_shutdown_never_restarts_queued_imports() {
     let app = App::new();
     let remote = Remote::new(app.core.clone());
-    assert!(!remote.prevents_replacement());
+    assert!(!remote.prevents_replacement().await);
     let pause = remote.pause_results().await;
     let (reply, mut result) = tokio::sync::oneshot::channel();
     remote
@@ -2063,13 +2063,13 @@ async fn upgrade_pauses_resume_results_but_shutdown_never_restarts_queued_import
         .chats
         .insert("mirrored".into(), "offline-host".into());
     assert!(
-        remote.prevents_replacement(),
+        remote.prevents_replacement().await,
         "offline mirrors still retain work"
     );
 }
 
 #[tokio::test]
-async fn idle_connections_drain_but_live_mirrors_are_left_connected() {
+async fn idle_connections_drain_but_unsaved_mirrors_are_left_connected() {
     let app = App::new();
     let (remote, _) = connected(&app).await;
     until(|| remote.retained_remote_work().is_none()).await;
@@ -2090,20 +2090,20 @@ async fn idle_connections_drain_but_live_mirrors_are_left_connected() {
         .await
         .unwrap_err()
         .contains("receivers"));
-    assert!(remote.prevents_replacement());
+    assert!(remote.prevents_replacement().await);
     assert!(remote.states().is_empty());
     drop(held);
     remote
         .drain_for_upgrade(Duration::from_secs(5))
         .await
         .unwrap();
-    assert!(!remote.prevents_replacement());
+    assert!(!remote.prevents_replacement().await);
     remote.connect("offline", crate::testing::Nowhere, identity("offline"));
     remote
         .drain_for_upgrade(Duration::from_secs(5))
         .await
         .unwrap();
-    assert!(!remote.prevents_replacement());
+    assert!(!remote.prevents_replacement().await);
 }
 
 #[tokio::test]
@@ -2204,4 +2204,125 @@ fn a_closed_result_queue_releases_its_pending_registration() {
     drop(receiver);
     assert!(jobs.send(Job::Opened).is_err());
     assert!(!jobs.has_pending());
+}
+
+#[tokio::test]
+async fn persisted_idle_mirrors_survive_retirement_and_reload() {
+    let app = App::new();
+    app.chat("saved", None, vec![]).await;
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    app.core
+        .db
+        .write(|conn| {
+            store::create_child_dialog(
+                conn,
+                &NewChildDialog {
+                    id: "child".into(),
+                    parent_id: "saved".into(),
+                    parent_call_id: "call".into(),
+                    kind: "scout".into(),
+                    title: "Child".into(),
+                    created_at: 0,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    remote.place("saved", HOST);
+    // Flush the detached placement, then reconstruct the child's routing.
+    remote.verify_saved_mirrors().await.unwrap();
+    remote.load().await.unwrap();
+    app.core
+        .db
+        .write(|conn| {
+            rovik_core::chat_db::mirror::set_imported(conn, "saved", "imported-commit", 7)?;
+            rovik_core::chat_db::mirror::set_unreported(conn, "saved", Some("pending-landing"))
+        })
+        .await
+        .unwrap();
+    remote
+        .lock()
+        .pulls
+        .insert("saved".into(), Default::default());
+    let _pause = remote.pause_results().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!remote.prevents_replacement().await);
+    // A subsequent local refusal must leave the existing routing usable too.
+    assert_eq!(remote.host_of("saved").as_deref(), Some(HOST));
+    let replacement = Remote::new(app.core.clone());
+    replacement.load().await.unwrap();
+    assert_eq!(replacement.host_of("saved").as_deref(), Some(HOST));
+    assert_eq!(replacement.host_of("child").as_deref(), Some(HOST));
+    let before = app
+        .core
+        .db
+        .read(|c| rovik_core::chat_db::mirror::state(c, "saved"))
+        .await
+        .unwrap();
+    let saved = before.unwrap();
+    assert_eq!(saved.host, HOST);
+    assert_eq!(saved.imported_result.as_deref(), Some("imported-commit"));
+    assert_eq!(saved.imported_seq, Some(7));
+    assert_eq!(saved.unreported_landing.as_deref(), Some("pending-landing"));
+}
+
+#[tokio::test]
+async fn persisted_mirrors_with_live_runs_or_local_decisions_still_refuse_retirement() {
+    let app = App::new();
+    app.chat("saved", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("saved", HOST);
+    let _pause = remote.pause_results().await;
+    remote.lock().running.insert("saved".into(), "run".into());
+    assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
+    remote.lock().running.clear();
+    remote.lock().kept.insert("saved".into());
+    assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
+    remote.lock().kept.clear();
+    remote.lock().rechecks.insert("saved".into(), 1);
+    assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
+    remote.lock().rechecks.clear();
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    app.core
+        .db
+        .write(|c| {
+            c.execute("DELETE FROM mirror_state WHERE dialog_id = 'saved'", [])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("mirror state"));
+}
+
+#[tokio::test]
+async fn ownership_changed_while_receivers_drain_refuses_retirement() {
+    let app = App::new();
+    app.chat("saved", None, vec![]).await;
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    remote.place("saved", HOST);
+    let _pause = remote.pause_results().await;
+    let held = remote.client(HOST).unwrap();
+    let draining = remote.clone();
+    let drain =
+        tokio::spawn(async move { draining.drain_for_upgrade(Duration::from_secs(5)).await });
+    until(|| remote.states().is_empty()).await;
+    assert!(remote.states().is_empty());
+    app.core
+        .db
+        .write(|conn| location::set(conn, "saved", &Location::Here))
+        .await
+        .unwrap();
+    drop(held);
+    assert!(drain.await.unwrap().unwrap_err().contains("new work"));
+    assert_eq!(remote.host_of("saved").as_deref(), Some(HOST));
 }

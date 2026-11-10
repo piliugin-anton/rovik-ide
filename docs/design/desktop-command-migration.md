@@ -45,6 +45,9 @@ existing protocol and routing. Native window actions stay in Tauri.
 13. **Completed**: Drain dependent Linux chat views children first, retaining
     busy ancestors and reconstructing saved descendants after refusal or replacement.
 
+14. **Completed**: Allow persisted inactive remote mirrors through Unix replacement,
+    checking ownership before and after draining without clearing live routing.
+
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
 pretend they are ready for IPC. Windows remains embedded until its transport is ready.
@@ -592,3 +595,27 @@ and reconstruction from disk after all views drain. CI runs it alongside both
 shared-backend mounted contracts. Pure ordering tests cover multiple trees and
 cycles. Retained remote-work draining, macOS mount draining, and Windows transport
 remain separate.
+
+## Replacing backends with persisted remote mirrors
+
+Inactive chat mirrors no longer block Unix replacement merely because their
+routing and completed pull records remain cached. The backend verifies every
+cached chat’s saved owner, its lead’s saved owner, and the lead’s mirror record.
+Verification runs on the database writer queue behind earlier detached placement
+writes. A failed write, missing record, or mismatched owner refuses replacement.
+
+The checks run before disconnecting and again after receivers finish buffered
+events. Active or failed pulls, transfers, runs, Autopilot drivers, forwarded
+ports, queued imports, held results, cancellation state, and local Keep/recheck
+decisions still block retirement. Active event tasks remain counted throughout.
+
+No mirror data or live routing is cleared during preparation. A later local
+refusal keeps the existing routing available and saved hosts reconnect normally.
+A replacement loads ownership from the database and resumes synchronization from
+the saved mirror state, including imported-result numbers and unreported landings.
+
+Tests cover persisted lead and child mirrors, preservation of import and landing
+records, routing after preparation, missing mirror records, active runs and
+local decisions, pull states, and ownership changing while receivers drain.
+Draining active remote work or persisting its remaining local decisions,
+macOS mount draining, and Windows transport remain separate.

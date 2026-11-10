@@ -377,30 +377,69 @@ impl Remote {
             return Some("Forwarded remote ports still retain work");
         }
         let state = self.lock();
-        let retained = !state.chats.is_empty()
-            || !state.pulls.is_empty()
+        let retained = state.pulls.values().any(mirror::Pulls::retains_work)
             || !state.moving.is_empty()
+            || !state.cancels.is_empty()
+            || !state.mcp_relayable.is_empty()
             || !state.running.is_empty()
             || !state.driving.is_empty()
             || !state.uploads.is_empty()
             || !state.steer_uploads.is_empty()
             || !state.backs.is_empty()
-            || !state.held.is_empty();
+            || !state.held.is_empty()
+            || !state.kept.is_empty()
+            || !state.rechecks.is_empty();
         retained.then_some("Remote chats or transfers still retain work")
     }
 
     /// Whether connections, buffered events, or retained work still own state.
     #[cfg(any(unix, test))]
-    pub(crate) fn prevents_replacement(&self) -> bool {
+    pub(crate) async fn prevents_replacement(&self) -> bool {
         self.receivers.load(std::sync::atomic::Ordering::SeqCst) != 0
             || !self.hosts.states().is_empty()
             || self.retained_remote_work().is_some()
+            || self.verify_saved_mirrors().await.is_err()
+            || self.retained_remote_work().is_some()
+    }
+
+    /// Queries on the writer queue so earlier detached placements have finished.
+    /// Keep the in-memory routing intact if a later resource refuses retirement.
+    #[cfg(any(unix, test))]
+    async fn verify_saved_mirrors(&self) -> Result<(), String> {
+        let chats = self.lock().chats.clone();
+        if chats.is_empty() {
+            return Ok(());
+        }
+        let expected = chats.clone();
+        self.core.db.write(move |conn| {
+            for (chat, host) in expected {
+                let lead = store::lead_chat(conn, &chat)?;
+                let saved = rovik_core::chat_db::mirror::state(conn, &lead)?;
+                if location::of_chat(conn, &chat)? != Location::Host(host.clone())
+                    || location::of_chat(conn, &lead)? != Location::Host(host.clone())
+                    || !saved.is_some_and(|saved| saved.host == host)
+                {
+                    return Err(format!("Remote chats lack saved ownership or mirror state: {chat}; synchronize before retrying the upgrade"));
+                }
+            }
+            Ok(())
+        }).await.map_err(|error| format!("Could not verify saved remote chats: {error}"))?;
+        if self.lock().chats != chats {
+            return Err(
+                "Remote chats changed during the upgrade check; retry after synchronization".into(),
+            );
+        }
+        Ok(())
     }
 
     /// Stops only connections without retained work, then joins buffered events.
     /// The caller must exclude new clients and pause maintenance and results.
     #[cfg(any(unix, test))]
     pub(crate) async fn drain_for_upgrade(&self, wait: Duration) -> Result<(), String> {
+        if let Some(reason) = self.retained_remote_work() {
+            return Err(reason.into());
+        }
+        self.verify_saved_mirrors().await?;
         if let Some(reason) = self.retained_remote_work() {
             return Err(reason.into());
         }
@@ -424,7 +463,7 @@ impl Remote {
         if joined.is_err() {
             return Err("Remote event receivers are still finishing; retry the upgrade".into());
         }
-        if self.prevents_replacement() {
+        if self.prevents_replacement().await {
             return Err(
                 "Remote events retained new work while draining; retry after it finishes".into(),
             );

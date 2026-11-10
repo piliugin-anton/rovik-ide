@@ -2344,8 +2344,14 @@ before their parents, preserving each view’s saved edits. Invalid dependency
 metadata defers the whole drain; retained remote work requires separate cleanup.
 
 Idle remote connections, including offline hosts, can drain during a Unix backend
-upgrade. Queued result imports, mirrored chats, transfers, forwarded ports, and
+upgrade. Persisted, inactive chat mirrors can reconnect through the replacement;
+queued result imports, active or failed pulls, transfers, forwarded ports, and
 unfinished event tasks still defer replacement. The backend waits for buffered
 events to finish and checks for newly retained work before retiring. If draining
 times out or another resource blocks replacement, saved hosts reconnect on the
 next maintenance refresh without changing their settings.
+
+Before releasing a mirrored chat connection, the backend verifies each chat’s
+saved owner and its lead’s mirror record on the database writer queue. It repeats
+the check after buffered events finish. Unsaved or inconsistent records defer
+replacement, as do active runs and local decisions that are not persisted.
