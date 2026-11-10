@@ -1,6 +1,5 @@
 //! Native filesystem commands forward operations and deliver private watch events.
 mod settings;
-pub use rovik_client::filesystem::to_trash;
 use rovik_client::{
     desktop_api::filesystem::FilesystemRequest, desktop_connection::DesktopConnection,
     filesystem::OpenFile,

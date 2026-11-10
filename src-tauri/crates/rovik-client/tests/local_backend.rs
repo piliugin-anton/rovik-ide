@@ -1,6 +1,8 @@
 //! Actual daemon processes arbitrate startup through the OS lifetime lock.
 #![cfg(unix)]
 
+#[path = "support/desktop_git.rs"]
+mod desktop_git;
 #[path = "support/desktop_journal.rs"]
 mod desktop_journal;
 #[path = "support/desktop_operations.rs"]
@@ -153,6 +155,7 @@ async fn simultaneous_launchers_leave_one_owner_and_clients_share_readiness() {
         .await
         .unwrap();
     desktop_operations::check_terminal_contract(&adapter, &other_adapter).await;
+    desktop_git::check(&adapter, &other_adapter, &[first.0.id(), second.0.id()]).await;
     desktop_tasks::check(&adapter, &other_adapter).await;
     desktop_journal::check(&adapter, &other_adapter, journal_projects).await;
     desktop_projects::check(&adapter, other_adapter).await;

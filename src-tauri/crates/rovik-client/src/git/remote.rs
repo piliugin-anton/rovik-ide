@@ -187,7 +187,6 @@ pub(super) fn push_remote_name(repo: &Repository, branch: &str) -> Result<String
     }
 }
 
-#[tauri::command]
 pub async fn git_fetch(path: String) -> Result<(), String> {
     blocking(move || git_fetch_blocking(path)).await
 }
@@ -246,7 +245,6 @@ fn is_behind_remote(reason: &str) -> bool {
         || r.contains("not present locally")
 }
 
-#[tauri::command]
 pub async fn git_push(path: String, no_verify: Option<bool>) -> Result<PushOutcome, String> {
     blocking(move || git_push_blocking_with(path, no_verify.unwrap_or(false))).await
 }

@@ -360,7 +360,6 @@ pub(crate) fn compute_ahead_behind(repo: &Repository) -> Option<(usize, usize)> 
     repo.graph_ahead_behind(local_oid, upstream_oid).ok()
 }
 
-#[tauri::command]
 pub async fn git_status(path: String) -> Result<GitStatus, String> {
     blocking(move || git_status_blocking(path)).await
 }
@@ -447,7 +446,6 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     })
 }
 
-#[tauri::command]
 pub async fn git_init(path: String) -> Result<(), String> {
     blocking(move || git_init_blocking(path)).await
 }

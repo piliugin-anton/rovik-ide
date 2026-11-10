@@ -1,5 +1,7 @@
 //! A separate test executable keeps backend process globals isolated from
 //! the client's unit tests.
+#[path = "support/desktop_git.rs"]
+mod desktop_git;
 #[path = "support/desktop_journal.rs"]
 mod desktop_journal;
 #[path = "support/desktop_operations.rs"]
@@ -84,6 +86,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     );
     #[cfg(unix)]
     desktop_operations::check_terminal_contract(&connection, &other).await;
+    desktop_git::check(&connection, &other, &[std::process::id()]).await;
     desktop_tasks::check(&connection, &other).await;
     desktop_journal::check(&connection, &other, journal_projects).await;
     desktop_projects::check(&connection, other).await;

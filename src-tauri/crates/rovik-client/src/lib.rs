@@ -77,3 +77,8 @@ pub mod shared_state;
 
 /// Replayable shared desktop events.
 pub mod desktop_journal;
+
+/// Shared Git panel service.
+pub mod git;
+/// Shared Git merge and rebase service.
+pub mod git_sync;

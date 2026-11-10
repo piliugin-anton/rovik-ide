@@ -26,7 +26,7 @@ hyper-util.workspace = true
 http-body-util.workspace = true
 tokio-tungstenite.workspace = true
 # Shadow repositories and the packs between them and a daemon (6.4).
-git2.workspace = true
+git2 = { workspace = true, features = ["https", "ssh"] }
 # Each move's id (6.8).
 uuid.workspace = true
 # Secrets in the OS keychain, or in a file encrypted under a passphrase
@@ -59,3 +59,7 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+# The standalone desktop daemon also needs vendored OpenSSL on Intel Macs.
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }

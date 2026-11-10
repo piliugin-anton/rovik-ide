@@ -86,27 +86,24 @@ impl GitCommitEntry {
 /// is the `offset` for the next page. The walk is capped per call so
 /// typing stays interactive on large histories; "load more / search
 /// further" pages further back instead of raising the cap.
-#[tauri::command]
 pub async fn git_log(
     path: String,
     limit: Option<u32>,
     query: Option<String>,
     offset: Option<usize>,
     tip: Option<String>,
+    latest: std::sync::Arc<AtomicU64>,
 ) -> Result<GitLogPage, String> {
-    // Each call supersedes the ones before it (the panel shows only the
+    // Each call supersedes searches from this client only (its panel shows the
     // latest reply): an older search still scanning stops at its next
     // commit instead of finishing hundreds of diffs nobody will see.
-    let generation = GIT_LOG_LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = latest.fetch_add(1, Ordering::SeqCst) + 1;
     blocking(move || {
-        let superseded = || GIT_LOG_LATEST.load(Ordering::SeqCst) != generation;
+        let superseded = || latest.load(Ordering::SeqCst) != generation;
         git_log_scan(path, limit, query, offset, tip.as_deref(), &superseded)
     })
     .await
 }
-
-/// The latest `git_log` call's generation (see `git_log`).
-static GIT_LOG_LATEST: AtomicU64 = AtomicU64::new(0);
 
 /// One page of history: the matches plus the cursor for the next page.
 /// `offset`/`next_offset` count scanned (raw) commits, so pages resume
@@ -629,7 +626,6 @@ fn find_commit<'r>(repo: &'r Repository, oid: &str) -> Result<git2::Commit<'r>, 
 /// ("filename", "content", "both") against the same smart-search terms
 /// used by `git_log`, so the UI can pin matching files to the top and
 /// show "N of M files match". Without a query every file is `matched`.
-#[tauri::command]
 pub async fn git_commit_show(
     path: String,
     oid: String,
@@ -688,7 +684,6 @@ pub fn git_commit_show_blocking(
 /// `content`: the file at the commit (None: deleted in the commit);
 /// `base`: the version at the first parent (None: new in the commit, or
 /// the initial commit). Same shape as the stash preview.
-#[tauri::command]
 pub async fn git_commit_file_preview(
     path: String,
     oid: String,

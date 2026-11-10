@@ -11,7 +11,6 @@ use git2::{Repository, ResetType, Status};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[tauri::command]
 pub async fn git_commit(
     path: String,
     message: String,
@@ -87,7 +86,6 @@ pub fn git_commit_blocking_with(
 /// folder): tracked files go back to HEAD, and new files, untracked or
 /// staged, go to the trash (as with reverting one file, so the action can
 /// be undone from there).
-#[tauri::command]
 pub async fn git_discard_all(path: String) -> Result<(), String> {
     let repo = path.clone();
     rewriting(&path, move || git_discard_all_blocking(repo)).await
@@ -182,7 +180,6 @@ fn base_blob<'r>(repo: &'r Repository, file: &str) -> Result<Option<git2::Blob<'
 
 /// The file's earlier version (see base_blob), for the editor's change marks.
 /// `file` is relative to the repository's working folder. None: new file.
-#[tauri::command]
 pub async fn git_base_content(path: String, file: String) -> Result<Option<String>, String> {
     blocking(move || git_base_content_blocking(path, file)).await
 }
@@ -245,7 +242,6 @@ pub(super) fn literal_pathspec(rel: &Path) -> String {
 /// Puts the file back as it was (see base_blob). The current version goes to
 /// the trash first, so a revert can itself be undone; a new file is moved to
 /// the trash, since there is no earlier version.
-#[tauri::command]
 pub async fn git_revert_file(path: String, file: String) -> Result<RevertOutcome, String> {
     blocking(move || git_revert_file_blocking(path, file)).await
 }
@@ -344,7 +340,6 @@ pub struct FailedRevert {
 /// folder), each as git_revert_file does. Conflicted and renamed files are
 /// left as they are, as is a file whose revert fails; the rest go on, and
 /// the outcome lists each.
-#[tauri::command]
 pub async fn git_revert_folder(
     path: String,
     folder: String,

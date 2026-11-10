@@ -173,7 +173,6 @@ impl Place {
     }
 }
 
-#[tauri::command]
 pub async fn git_hooks(path: String) -> Result<GitHooks, String> {
     blocking(move || git_hooks_blocking(&path)).await
 }
@@ -193,7 +192,6 @@ pub fn git_hooks_blocking(path: &str) -> Result<GitHooks, String> {
 
 /// A new hook: a shell script that does nothing yet, with a note of when it
 /// runs, executable. Its path; an existing hook is left as it is.
-#[tauri::command]
 pub async fn git_hook_create(path: String, name: String) -> Result<String, String> {
     blocking(move || git_hook_create_blocking(&path, &name)).await
 }
@@ -226,7 +224,6 @@ pub fn git_hook_create_blocking(path: &str, name: &str) -> Result<String, String
 }
 
 /// Makes hook `name` executable (`chmod +x`): git skips one that isn't.
-#[tauri::command]
 pub async fn git_hook_make_executable(path: String, name: String) -> Result<(), String> {
     blocking(move || git_hook_make_executable_blocking(&path, &name)).await
 }
@@ -240,7 +237,6 @@ pub fn git_hook_make_executable_blocking(path: &str, name: &str) -> Result<(), S
 }
 
 /// Moves hook `name` to the trash, from where it can be put back.
-#[tauri::command]
 pub async fn git_hook_delete(path: String, name: String) -> Result<(), String> {
     blocking(move || git_hook_delete_blocking(&path, &name)).await
 }

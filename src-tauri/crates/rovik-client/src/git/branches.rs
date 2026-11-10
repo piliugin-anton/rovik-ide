@@ -15,7 +15,6 @@ pub struct GitBranch {
     pub is_remote: bool,
 }
 
-#[tauri::command]
 pub async fn git_branches(path: String) -> Result<Vec<GitBranch>, String> {
     blocking(move || git_branches_blocking(path)).await
 }
@@ -58,7 +57,6 @@ pub struct GitHead {
 }
 
 /// Where HEAD is in the repository the project at `path` is in.
-#[tauri::command]
 pub async fn git_head(path: String) -> Result<GitHead, String> {
     blocking(move || git_head_blocking(path)).await
 }
@@ -106,7 +104,6 @@ fn main_branch(repo: &Repository) -> Option<String> {
         .find(|name| repo.find_branch(name, BranchType::Local).is_ok())
 }
 
-#[tauri::command]
 pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
     let repo = path.clone();
     rewriting(&path, move || git_checkout_blocking(repo, branch)).await
@@ -268,7 +265,6 @@ fn resolve_start_point<'r>(
 /// branch out does). A branch under another name doesn't: the panel's
 /// push goes to the remote branch of the same name, and that's what the
 /// badges would be wrong against.
-#[tauri::command]
 pub async fn git_create_branch(
     path: String,
     name: String,
@@ -331,7 +327,6 @@ pub fn git_create_branch_blocking(
 }
 
 /// Deletes a local branch. The branch that's checked out can't be deleted.
-#[tauri::command]
 pub async fn git_delete_branch(path: String, name: String) -> Result<(), String> {
     blocking(move || git_delete_branch_blocking(path, name)).await
 }

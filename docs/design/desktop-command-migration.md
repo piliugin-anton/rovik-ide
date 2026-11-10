@@ -96,7 +96,7 @@ steering and delivery tests.
 
 The command families listed in this migration are routed. This does not enable
 automatic daemon attachment: command/private-session recovery after failure,
-remaining native service ownership (such as Git/LSP/browser integration), daemon
+remaining native service ownership (such as LSP/browser integration), daemon
 packaging/lifecycle, Windows transport, and real multi-window FUSE validation are
 still separate work before every window can run purely as a UI client.
 
@@ -127,3 +127,19 @@ Recovery failures remain visible and do not acknowledge an incomplete refresh.
 The UI still explicitly selects embedded mode. Automatic daemon activation,
 remaining native service ownership, Windows transport, and mounted multi-window
 FUSE validation remain outstanding.
+
+## Git service ownership
+
+All 35 Git panel commands now use typed desktop RPC. The implementation and its
+regression tests live in `rovik-client`; Tauri only forwards inputs and replies.
+Commit hooks, credentials, trash handling, merge/rebase, and working-tree busy
+guards retain their existing behavior while executing in the backend process.
+HTTPS/SSH support and Intel macOS OpenSSL linkage also belong to the standalone
+backend. History cancellation counters are client-scoped, so searching in one
+window cannot supersede another window's history scan.
+
+Embedded and real-daemon tests cover two clients and separate repositories,
+commit/status/history, stash round trips, branch changes, path errors, and reuse
+after a failed request. Existing Git service tests move with the implementation.
+LSP/browser and other remaining native services still need migration before
+automatic daemon attachment is enabled. The app continues to use embedded mode.

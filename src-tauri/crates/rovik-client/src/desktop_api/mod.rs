@@ -9,6 +9,7 @@ pub mod agent;
 pub mod chat;
 pub mod clm;
 pub mod filesystem;
+pub mod git;
 pub mod hosts;
 pub mod mcp;
 pub mod memory;
@@ -26,6 +27,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Backend-owned Git operations.
+    Git(Box<git::GitRequest>),
     /// Scoped run-state recovery for a UI event reader.
     EventStatus {
         scope: crate::desktop_journal::Scope,
@@ -78,6 +81,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Git(request) => request.dispatch(session).await,
                 Self::EventStatus { scope } => {
                     encode_result(crate::desktop_journal::status(backend, scope).await)
                 }

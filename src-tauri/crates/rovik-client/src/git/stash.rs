@@ -16,7 +16,6 @@ pub struct GitStashEntry {
 
 /// Shelves the working tree (tracked changes and untracked files) on the
 /// stash, so the tree comes back clean. Needs a git identity, like commit.
-#[tauri::command]
 pub async fn git_stash_push(path: String, message: Option<String>) -> Result<(), String> {
     let repo = path.clone();
     rewriting(&path, move || git_stash_push_blocking(repo, message)).await
@@ -44,7 +43,6 @@ pub fn git_stash_push_blocking(path: String, message: Option<String>) -> Result<
 }
 
 /// The stash list, newest first — what `git stash list` shows.
-#[tauri::command]
 pub async fn git_stash_list(path: String) -> Result<Vec<GitStashEntry>, String> {
     blocking(move || git_stash_list_blocking(path)).await
 }
@@ -66,7 +64,6 @@ pub fn git_stash_list_blocking(path: String) -> Result<Vec<GitStashEntry>, Strin
 /// Restores a stashed state and drops it from the list (`git stash pop`).
 /// `index` defaults to the newest entry. On conflicts nothing is dropped —
 /// the error says to resolve them first.
-#[tauri::command]
 pub async fn git_stash_pop(path: String, index: Option<usize>) -> Result<(), String> {
     let repo = path.clone();
     rewriting(&path, move || git_stash_pop_blocking(repo, index)).await
@@ -80,7 +77,6 @@ pub fn git_stash_pop_blocking(path: String, index: Option<usize>) -> Result<(), 
 }
 
 /// Forgets a stashed state without restoring it.
-#[tauri::command]
 pub async fn git_stash_drop(path: String, index: usize) -> Result<(), String> {
     blocking(move || git_stash_drop_blocking(path, index)).await
 }
@@ -151,7 +147,6 @@ fn stash_trees(repo: &Repository, index: usize) -> Result<StashTrees<'_>, String
 /// against the stash tree (tracked changes) and — when present — the
 /// untracked files, each new. What `git stash show --include-untracked`
 /// lists.
-#[tauri::command]
 pub async fn git_stash_show(path: String, index: usize) -> Result<Vec<GitStashFile>, String> {
     blocking(move || git_stash_show_blocking(path, index)).await
 }
@@ -196,7 +191,6 @@ pub fn git_stash_show_blocking(path: String, index: usize) -> Result<Vec<GitStas
 /// The stashed version of one file's content, for previewing a stash.
 /// `file` is relative to the repository's working folder. None: the file
 /// was deleted in the stash.
-#[tauri::command]
 pub async fn git_stash_file_content(
     path: String,
     index: usize,
@@ -225,7 +219,6 @@ pub struct GitStashFilePreview {
     pub base: Option<String>,
 }
 
-#[tauri::command]
 pub async fn git_stash_file_preview(
     path: String,
     index: usize,

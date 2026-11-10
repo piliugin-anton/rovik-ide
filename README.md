@@ -1137,7 +1137,7 @@ What one process must not do to another's work is guarded the same way:
 ### Git hooks
 
 The Git panel works through libgit2, which runs no hooks, so the panel
-runs them itself (`src-tauri/src/git/hooks.rs`), where git would and with
+runs them itself (`src-tauri/crates/rovik-client/src/git/hooks.rs`), where git would and with
 git's arguments and input:
 
 | In the Git panel               | Hooks that run                                               |
@@ -1167,7 +1167,7 @@ pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
 
 The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
 **Git hooks…** (`src/components/GitHooksView.tsx`,
-`src-tauri/src/git/hook_files.rs`). It lists each of the hooks above with
+`src-tauri/crates/rovik-client/src/git/hook_files.rs`). It lists each of the hooks above with
 its state: on, not executable (skipped), only git's example (`.sample`),
 or not there. A hook opens in the editor. **Create** makes one from a
 small template, executable, and opens it. **Enable** makes one executable
@@ -2258,3 +2258,8 @@ The read connection reconnects independently of commands, and a missed-history
 reset refreshes chats, live runs, approvals, hosts, and ports before advancing its
 cursor. Command-session reconstruction after a backend crash remains lifecycle
 work; automatic daemon attachment is still disabled.
+
+Git panel operations now execute in the shared desktop backend, including hooks,
+fetch/push, branches, stashes, merge/rebase, and conflict resolution. Windows keep
+only RPC adapters. History searches supersede only that client's previous search;
+Git working-tree guards live alongside the backend's FUSE and overlay services.

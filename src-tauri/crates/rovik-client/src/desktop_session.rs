@@ -51,6 +51,7 @@ pub struct Session {
     id: String,
     pub(crate) chat_requests: Arc<rovik_core::chat_request::ChatRequests>,
     pub(crate) filesystem: Arc<crate::filesystem::WatcherState>,
+    pub(crate) git_history: Arc<std::sync::atomic::AtomicU64>,
     project_cleanup: Mutex<Option<Cleanup>>,
     closed: AtomicBool,
     failure: watch::Sender<Option<String>>,
@@ -69,6 +70,7 @@ impl Session {
             id,
             filesystem: Default::default(),
             chat_requests: Default::default(),
+            git_history: Default::default(),
             project_cleanup: Default::default(),
             closed: AtomicBool::new(false),
             failure,
@@ -397,6 +399,18 @@ impl Drop for SessionLease {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn history_searches_from_another_window_do_not_supersede_this_window() {
+        let a = Session::new("a".into());
+        let b = Session::new("b".into());
+        let first = a.git_history.fetch_add(1, Ordering::SeqCst) + 1;
+        b.git_history.fetch_add(1, Ordering::SeqCst);
+        b.git_history.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(a.git_history.load(Ordering::SeqCst), first);
+        a.git_history.fetch_add(1, Ordering::SeqCst);
+        assert_ne!(a.git_history.load(Ordering::SeqCst), first);
+    }
 
     #[test]
     fn disconnecting_one_client_cleans_up_only_its_resources() {
