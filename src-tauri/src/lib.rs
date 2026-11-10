@@ -191,6 +191,8 @@ pub fn run() {
             });
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_session_usable,
+            desktop_reconnect,
             desktop_poll_events,
             desktop_event_status,
             terminal::spawn_terminal,
@@ -818,4 +820,39 @@ async fn desktop_event_status(
     scope: rovik_client::desktop_journal::Scope,
 ) -> Result<serde_json::Value, String> {
     backend.event_status(scope).await
+}
+
+/// Session health is separate from the independently reconnectable journal reader.
+#[tauri::command]
+fn desktop_session_usable(backend: tauri::State<'_, DesktopConnection>) -> bool {
+    backend.usable()
+}
+
+/// Recreates only this window's session; accepted mutations are never replayed.
+#[tauri::command]
+async fn desktop_reconnect(
+    app: tauri::AppHandle,
+    backend: tauri::State<'_, DesktopConnection>,
+    root: Option<String>,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let project = match (root, project_id) {
+            (Some(root), Some(id)) => Some((root, id)),
+            (None, None) => None,
+            _ => return Err("Wait for the project to finish opening before reconnecting".into()),
+        };
+        let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let config = app.path().app_config_dir().map_err(|e| e.to_string())?;
+        let mut command = rovik_command()?;
+        command.arg(rovik_client::local_backend::host::HOST_FLAG);
+        command.stderr(std::process::Stdio::inherit());
+        backend.reconnect(command, &data, &config, project).await
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, backend, root, project_id);
+        Err("Restart this window to recover its embedded backend".into())
+    }
 }

@@ -28,6 +28,8 @@ existing protocol and routing. Native window actions stay in Tauri.
 5. **Completed (`af41d6a`)**: Backend project guards and explicit client detachment.
 6. **Completed**: Automatic Unix attachment through the packaged executable,
    shared host startup, native focus separation, and updater network configuration.
+7. **Completed**: Explicit Unix command-session recovery with guarded project registration,
+   UI resource reconstruction, and stale-response rejection.
 
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
@@ -35,7 +37,7 @@ pretend they are ready for IPC. Windows remains embedded until its transport is 
 
 ## Following this migration
 
-Command-session reconstruction after failure; safe backend replacement during
+Safe backend replacement during
 upgrades; Windows named pipes; real multi-window FUSE and execution isolation
 tests. Unix packaging/start/attach is implemented below.
 
@@ -377,3 +379,39 @@ Validation covers launcher failures, existing-host attachment, incompatible-host
 refusal, concurrent automatic attachment, reuse after all clients close, native
 proxy snapshot behavior, and the existing embedded/daemon command contracts.
 Windows transport and mounted multi-window FUSE validation remain outstanding.
+
+## Explicit command-session recovery
+
+The connection notification now offers Reconnect. A native window holds a
+replaceable session; recovery detaches the old session, discovers or launches the
+host, and validates the existing project identity/path before publishing the new
+session. It never resolves a copy/move, merges history, or retries an uncertain
+command. A rejected project snapshot leaves commands unavailable until a valid
+recovery. Concurrent recovery operations are serialized, and closing a window
+interrupts recovery so it cannot publish another live session afterward.
+
+The UI coalesces reconnect clicks and keeps its editor models and composer state.
+If the project changes while attachment is pending, only session setup is repeated
+for the latest context. Recovery refreshes chat/run/approval/host state, restores
+file identities and watches, re-registers page/VFS subscriptions and workload
+focus, resends diagnostics, and restarts language support from open models. A new
+host remounts virtual files when a driver is installed. Terminal views receive an
+exit; no shell or terminal job is replayed. Finite tasks lose their old callbacks
+and report failure rather than being rerun.
+
+Generations reject late terminal output, startup replies, VFS callbacks, and
+journal snapshots from abandoned sessions. A late numeric VFS subscription ID
+cannot unsubscribe a new session's reused ID. Old and new native calls remain
+pinned to their own session throughout each await. Restore failures remain
+visible and can be retried explicitly; mutations are never automatically replayed.
+
+Local protocol 19 adds guarded project restoration. An incompatible older host
+still requires an explicit stop after its work finishes. Safe automatic backend
+replacement during upgrades, Windows transport, and real multi-window mounted
+FUSE validation remain separate phases. Recovery is implemented for Unix shared
+hosts; Windows continues to recover its embedded host by restarting the window.
+
+Validation covers reconnect coalescing, changing project context, failed setup and
+restoration, close during recovery, same-host project ownership, abrupt host death
+and a new boot, and stale event/resource replies. Both the standalone daemon and
+the native executable run the attachment/recovery contract.

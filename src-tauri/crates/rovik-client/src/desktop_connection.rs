@@ -1,370 +1,247 @@
-//! The desktop command boundary. Embedded mode supports incremental
-//! migration; IPC mode never constructs or falls back to an embedded Core.
+//! A window's replaceable command session. Recovery never retries an operation.
+mod session;
 
+use crate::desktop_api::{DesktopRequest, DesktopResult};
 use crate::desktop_backend::DesktopBackend;
 use rovik_protocol::{Fail, Request, Response};
-use std::sync::Arc;
+use session::Connection;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-/// One explicit backend destination for a window's adapted commands.
-pub struct DesktopConnection {
-    #[cfg(unix)]
-    journal_reader: tokio::sync::Mutex<Option<crate::local_backend::rpc::Client>>,
-    closing: tokio::sync::watch::Sender<bool>,
-    backend: Backend,
-    events: crate::desktop_events::EventRouter,
+type Reporter = Arc<dyn Fn(String) + Send + Sync>;
+struct State {
+    connection: Option<Arc<Connection>>,
+    closed: bool,
+    report: Reporter,
 }
 
-enum Backend {
-    Embedded {
-        backend: Arc<DesktopBackend>,
-        lease: crate::desktop_session::SessionLease,
-    },
-    #[cfg(unix)]
-    Local(crate::local_backend::rpc::Client),
+/// A window's command boundary; each replacement owns a fresh resource session.
+pub struct DesktopConnection {
+    state: Mutex<State>,
+    #[cfg(any(unix, test))]
+    replacement: tokio::sync::Mutex<()>,
+    closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl DesktopConnection {
-    /// Detaches only this window. Execution and mounts remain owned by the host.
-    /// Repeating this call retries the idempotent server acknowledgement.
-    pub async fn close(&self) -> Result<(), String> {
-        self.closing.send_replace(true);
-        self.events.close();
-        let result = match &self.backend {
-            Backend::Embedded { lease, .. } => {
-                lease.session.close("Desktop client detached");
-                Ok(())
-            }
-            #[cfg(unix)]
-            Backend::Local(client) => client.close().await.map_err(|error| error.to_string()),
-        };
-        #[cfg(unix)]
-        if let Ok(mut reader) = self.journal_reader.try_lock() {
-            reader.take();
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn new(connection: Connection) -> Self {
+        Self {
+            state: Mutex::new(State {
+                connection: Some(Arc::new(connection)),
+                closed: false,
+                report: Arc::new(|reason| log::warn!("Desktop events disconnected: {reason}")),
+            }),
+            #[cfg(any(unix, test))]
+            replacement: Default::default(),
+            closing: tokio::sync::watch::channel(false).0,
         }
-        result
     }
 
-    /// Reads shared work independently of command and private-resource connections.
-    /// Only this read connection is reopened after failure; commands are never replayed.
-    pub async fn poll_events(
-        &self,
-        scope: crate::desktop_journal::Scope,
-        cursor: Option<crate::desktop_journal::Cursor>,
-    ) -> Result<serde_json::Value, String> {
-        self.read_events(crate::desktop_api::DesktopRequest::Events { scope, cursor })
-            .await
-    }
-
-    /// Reads scoped run state using the reconnectable read connection.
-    pub async fn event_status(
-        &self,
-        scope: crate::desktop_journal::Scope,
-    ) -> Result<serde_json::Value, String> {
-        self.read_events(crate::desktop_api::DesktopRequest::EventStatus { scope })
-            .await
-    }
-
-    async fn read_events(
-        &self,
-        request: crate::desktop_api::DesktopRequest,
-    ) -> Result<serde_json::Value, String> {
-        let mut closing = self.closing.subscribe();
-        if *closing.borrow() {
+    fn current(&self) -> Result<Arc<Connection>, String> {
+        let state = self.lock();
+        if state.closed {
             return Err("Desktop client detached".into());
         }
-        tokio::select! {
-            biased;
-            _ = closing.changed() => Err("Desktop client detached".into()),
-            reply = self.read_events_open(request) => reply,
-        }
+        state
+            .connection
+            .clone()
+            .ok_or_else(|| "Desktop session unavailable; reconnect this window".into())
     }
 
-    async fn read_events_open(
-        &self,
-        request: crate::desktop_api::DesktopRequest,
-    ) -> Result<serde_json::Value, String> {
-        match &self.backend {
-            Backend::Embedded { backend, .. } => {
-                request.dispatch_in(backend, None).await.map_err(|e| {
-                    e.as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| e.to_string())
-                })
-            }
-            #[cfg(unix)]
-            Backend::Local(client) => {
-                let mut reader = self.journal_reader.lock().await;
-                if reader.is_none() {
-                    *reader = Some(
-                        crate::local_backend::rpc::Client::connect(client.directory())
-                            .await
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                let current = reader.as_ref().ok_or("Event reader unavailable")?;
-                match current.desktop(request).await {
-                    Ok(reply) => reply.map_err(|e| {
-                        e.as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| e.to_string())
-                    }),
-                    Err(error) => {
-                        *reader = None;
-                        Err(format!("Desktop events disconnected: {error}"))
-                    }
-                }
-            }
-        }
+    /// Whether commands and private callbacks still have a usable session.
+    pub fn usable(&self) -> bool {
+        self.current().is_ok_and(|connection| connection.usable())
     }
 
-    /// Reports event loss to the native UI. A failed session must be reconnected.
-    pub fn on_event_error(&self, report: impl Fn(String) + Send + Sync + 'static) {
-        self.events.on_error(report);
-    }
-
-    /// Starts a resource with its callback already registered. Closing the
-    /// native callback stops only that resource, using the private event link.
-    pub async fn desktop_stream(
-        &self,
-        request: impl FnOnce(String) -> crate::desktop_api::DesktopRequest,
-        callback: impl Fn(serde_json::Value) -> bool + Send + Sync + 'static,
-    ) -> crate::desktop_api::DesktopResult {
-        use crate::desktop_events::EventSource;
-        self.events
-            .start(|| async {
-                match &self.backend {
-                    Backend::Embedded { lease, .. } => {
-                        lease.session.events().map(EventSource::Embedded)
-                    }
-                    #[cfg(unix)]
-                    Backend::Local(client) => client
-                        .events()
-                        .await
-                        .map(EventSource::Local)
-                        .map_err(|e| e.to_string()),
-                }
-            })
-            .await
-            .map_err(serde_json::Value::String)?;
-        let sink = self
-            .events
-            .register(callback)
-            .map_err(serde_json::Value::String)?;
-        // Cancellation can happen before the start reply. Do not leave its
-        // native callback (or an embedded producer) alive with no caller.
-        struct Pending<'a> {
-            connection: &'a DesktopConnection,
-            sink: String,
-            active: bool,
-        }
-        impl Drop for Pending<'_> {
-            fn drop(&mut self) {
-                if self.active {
-                    self.connection.events.remove(&self.sink);
-                    match &self.connection.backend {
-                        Backend::Embedded { lease, .. } => lease.session.cancel_sink(&self.sink),
-                        #[cfg(unix)]
-                        Backend::Local(_) => {}
-                    }
-                }
-            }
-        }
-        let mut pending = Pending {
-            connection: self,
-            sink: sink.clone(),
-            active: true,
+    /// Releases this window only, including a replacement that is still opening.
+    pub async fn close(&self) -> Result<(), String> {
+        self.closing.send_replace(true);
+        let connection = {
+            let mut state = self.lock();
+            state.closed = true;
+            state.connection.clone()
         };
-        let result = self.desktop_raw(request(sink)).await;
-        pending.active = result.is_err();
-        result
-    }
-
-    /// Waits for a finite operation's result after delivering all its progress.
-    /// The startup RPC completes immediately, leaving controls such as Stop usable.
-    pub async fn desktop_task(
-        &self,
-        request: impl FnOnce(String) -> crate::desktop_api::DesktopRequest,
-        callback: impl Fn(serde_json::Value) -> Result<(), String> + Send + Sync + 'static,
-    ) -> crate::desktop_api::DesktopResult {
-        use crate::desktop_task::TaskEvent;
-        use serde_json::Value;
-        let (done, result) = tokio::sync::oneshot::channel();
-        let done = std::sync::Mutex::new(Some(done));
-        self.desktop_stream(request, move |value| {
-            let (complete, accepted) = match serde_json::from_value::<TaskEvent>(value) {
-                Ok(TaskEvent::Event(event)) => match callback(event) {
-                    Ok(()) => return true,
-                    Err(error) => (Err(Value::String(error)), false),
-                },
-                Ok(TaskEvent::Complete(result)) => (result, true),
-                Err(error) => (
-                    Err(Value::String(format!(
-                        "Invalid desktop task event: {error}"
-                    ))),
-                    false,
-                ),
-            };
-            if let Some(done) = done
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take()
-            {
-                let _ = done.send(complete);
-            }
-            accepted
-        })
-        .await?;
-        result.await.map_err(|_| {
-            Value::String(
-                self.events.failure().unwrap_or_else(|| {
-                    "Desktop task callback ended before its result arrived".into()
-                }),
-            )
-        })?
-    }
-
-    /// Runs a desktop operation and preserves its existing UI reply shape.
-    pub async fn desktop(
-        &self,
-        request: crate::desktop_api::DesktopRequest,
-    ) -> Result<serde_json::Value, String> {
-        self.desktop_raw(request)
-            .await
-            .map_err(|error| match error {
-                serde_json::Value::String(message) => message,
-                error => error.to_string(),
-            })
-    }
-
-    /// Decodes a compact binary desktop reply for a native byte response.
-    pub async fn desktop_bytes(
-        &self,
-        request: crate::desktop_api::DesktopRequest,
-    ) -> Result<Vec<u8>, String> {
-        use base64::Engine;
-        let encoded: String = serde_json::from_value(self.desktop(request).await?)
-            .map_err(|e| format!("Invalid binary desktop reply: {e}"))?;
-        base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|e| format!("Invalid binary desktop reply: {e}"))
-    }
-
-    /// Preserves structured errors for commands such as host deployment.
-    pub async fn desktop_raw(
-        &self,
-        request: crate::desktop_api::DesktopRequest,
-    ) -> crate::desktop_api::DesktopResult {
-        if let Some(error) = self.events.failure() {
-            return Err(serde_json::Value::String(error));
-        }
-        match &self.backend {
-            Backend::Embedded { backend, lease } => {
-                if lease.session.is_closed() {
-                    return Err(serde_json::Value::String(
-                        "Desktop client session ended".into(),
-                    ));
-                }
-                request.dispatch_in(backend, Some(&lease.session)).await
-            }
-            #[cfg(unix)]
-            Backend::Local(client) => client
-                .desktop(request)
-                .await
-                .map_err(|e| serde_json::Value::String(transport(e).message))?,
+        match connection {
+            Some(connection) => connection.close().await,
+            None => Ok(()),
         }
     }
 
-    /// Uses a private host on platforms awaiting IPC, or in embedded tests.
+    /// Reports private callback loss for this and subsequent sessions.
+    pub fn on_event_error(&self, report: impl Fn(String) + Send + Sync + 'static) {
+        let report: Reporter = Arc::new(report);
+        let mut state = self.lock();
+        state.report = report.clone();
+        if let Some(connection) = &state.connection {
+            connection.on_event_error(move |reason| report(reason));
+        }
+    }
+
+    /// Uses an embedded backend on platforms awaiting local IPC.
     pub fn embedded(backend: Arc<DesktopBackend>) -> Self {
-        let lease = backend.sessions.create();
-        Self {
-            backend: Backend::Embedded { backend, lease },
-            events: Default::default(),
-            closing: tokio::sync::watch::channel(false).0,
-            #[cfg(unix)]
-            journal_reader: Default::default(),
-        }
+        Self::new(Connection::embedded(backend))
     }
 
-    /// Attaches to the single local host, launching the packaged command only
-    /// when discovery is absent. Authentication or compatibility errors fail closed.
+    /// Attaches to an authenticated local host without an embedded fallback.
+    #[cfg(unix)]
+    pub async fn connect(directory: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self::new(Connection::connect(directory).await?))
+    }
+
+    /// Launches the host only when discovery is absent, then attaches this window.
     #[cfg(unix)]
     pub async fn attach(
         command: std::process::Command,
         data: &std::path::Path,
         config: &std::path::Path,
     ) -> std::io::Result<Self> {
-        let (stream, ready) = crate::local_backend::ensure_command(command, data, config).await?;
-        let directory = crate::local_backend::directory(data);
-        let client =
-            crate::local_backend::rpc::Client::from_connected(&directory, stream, ready).await?;
-        Ok(Self::local(client))
+        Ok(Self::new(Connection::attach(command, data, config).await?))
     }
 
-    /// Attaches to an existing local backend. Failure is returned to the
-    /// window; a second private backend is never initialized here.
+    /// Replaces a failed session explicitly. Only validated project registration
+    /// is restored; callers recreate subscriptions and refresh authoritative state.
     #[cfg(unix)]
-    pub async fn connect(directory: &std::path::Path) -> std::io::Result<Self> {
-        let client = crate::local_backend::rpc::Client::connect(directory).await?;
-        Ok(Self::local(client))
+    pub async fn reconnect(
+        &self,
+        command: std::process::Command,
+        data: &std::path::Path,
+        config: &std::path::Path,
+        project: Option<(String, String)>,
+    ) -> Result<(), String> {
+        self.replace(async {
+            let connection = Connection::attach(command, data, config)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some((root, project_id)) = project {
+                if let Err(error) = connection
+                    .desktop(
+                        crate::desktop_api::projects::ProjectRequest::Restore { root, project_id }
+                            .into(),
+                    )
+                    .await
+                {
+                    if let Err(cleanup) = connection.close().await {
+                        log::warn!("Could not detach rejected recovery session: {cleanup}");
+                    }
+                    return Err(error);
+                }
+            }
+            Ok(connection)
+        })
+        .await
     }
 
-    #[cfg(unix)]
-    fn local(client: crate::local_backend::rpc::Client) -> Self {
-        Self {
-            backend: Backend::Local(client),
-            events: Default::default(),
-            closing: tokio::sync::watch::channel(false).0,
-            journal_reader: Default::default(),
+    #[cfg(any(unix, test))]
+    async fn replace(
+        &self,
+        open: impl std::future::Future<Output = Result<Connection, String>>,
+    ) -> Result<(), String> {
+        let mut closing = self.closing.subscribe();
+        let recover = async {
+            let _turn = self.replacement.lock().await;
+            let old = {
+                let mut state = self.lock();
+                if state.closed {
+                    return Err("Desktop client detached".into());
+                }
+                state.connection.take()
+            };
+            if let Some(old) = old {
+                // A dead host cannot acknowledge detach. Its socket is abandoned;
+                // the new host's lease still arbitrates execution ownership.
+                if let Err(error) = old.close().await {
+                    log::warn!("Old desktop session could not acknowledge detach: {error}");
+                }
+            }
+            let connection = Arc::new(open.await?);
+            {
+                let mut state = self.lock();
+                if !state.closed {
+                    let report = state.report.clone();
+                    connection.on_event_error(move |reason| report(reason));
+                    state.connection = Some(connection.clone());
+                    return Ok(());
+                }
+            }
+            connection.close().await?;
+            Err("Desktop client detached".into())
+        };
+        if *closing.borrow() {
+            return Err("Desktop client detached".into());
+        }
+        tokio::select! {
+            biased;
+            _ = closing.changed() => Err("Desktop client detached".into()),
+            result = recover => result,
         }
     }
 
-    /// Runs a typed operation using the backend's authoritative routing.
+    /// Reads shared replay independently of command transport failures.
+    pub async fn poll_events(
+        &self,
+        scope: crate::desktop_journal::Scope,
+        cursor: Option<crate::desktop_journal::Cursor>,
+    ) -> Result<serde_json::Value, String> {
+        self.current()?.poll_events(scope, cursor).await
+    }
+    /// Reads authoritative run state for the selected scope.
+    pub async fn event_status(
+        &self,
+        scope: crate::desktop_journal::Scope,
+    ) -> Result<serde_json::Value, String> {
+        self.current()?.event_status(scope).await
+    }
+    /// Starts one private stream, pinned to its original session throughout startup.
+    pub async fn desktop_stream(
+        &self,
+        request: impl FnOnce(String) -> DesktopRequest,
+        callback: impl Fn(serde_json::Value) -> bool + Send + Sync + 'static,
+    ) -> DesktopResult {
+        self.current()
+            .map_err(serde_json::Value::String)?
+            .desktop_stream(request, callback)
+            .await
+    }
+    /// Waits for a finite task; replacement cancels its callback, never replays it.
+    pub async fn desktop_task(
+        &self,
+        request: impl FnOnce(String) -> DesktopRequest,
+        callback: impl Fn(serde_json::Value) -> Result<(), String> + Send + Sync + 'static,
+    ) -> DesktopResult {
+        self.current()
+            .map_err(serde_json::Value::String)?
+            .desktop_task(request, callback)
+            .await
+    }
+    /// Runs one desktop operation without automatic retries.
+    pub async fn desktop(&self, request: DesktopRequest) -> Result<serde_json::Value, String> {
+        self.current()?.desktop(request).await
+    }
+    /// Preserves structured service errors.
+    pub async fn desktop_raw(&self, request: DesktopRequest) -> DesktopResult {
+        self.current()
+            .map_err(serde_json::Value::String)?
+            .desktop_raw(request)
+            .await
+    }
+    /// Decodes a compact binary response.
+    pub async fn desktop_bytes(&self, request: DesktopRequest) -> Result<Vec<u8>, String> {
+        self.current()?.desktop_bytes(request).await
+    }
+    /// Routes one typed operation through the current session.
     pub async fn request(&self, request: Request) -> Result<Response, Fail> {
-        if let Some(error) = self.events.failure() {
-            return Err(Fail::new(rovik_protocol::FailCode::Unreachable, error));
-        }
-        match &self.backend {
-            Backend::Embedded { backend, lease } => {
-                if lease.session.is_closed() {
-                    return Err(Fail::new(
-                        rovik_protocol::FailCode::Unreachable,
-                        "Desktop client session ended",
-                    ));
-                }
-                backend.dispatch(request).await
-            }
-            #[cfg(unix)]
-            Backend::Local(client) => client.call(request).await.map_err(transport)?,
-        }
+        self.current().map_err(unavailable)?.request(request).await
     }
-
-    /// Runs an operation on an explicitly selected remote host.
+    /// Routes one operation to its explicitly selected host.
     pub async fn host_request(&self, host: &str, request: Request) -> Result<Response, Fail> {
-        if let Some(error) = self.events.failure() {
-            return Err(Fail::new(rovik_protocol::FailCode::Unreachable, error));
-        }
-        if host.is_empty() {
-            return Err(Fail::new(
-                rovik_protocol::FailCode::BadRequest,
-                "A remote host ID is required",
-            ));
-        }
-        match &self.backend {
-            Backend::Embedded { backend, lease } => {
-                if lease.session.is_closed() {
-                    return Err(Fail::new(
-                        rovik_protocol::FailCode::Unreachable,
-                        "Desktop client session ended",
-                    ));
-                }
-                backend.remote.host_call(host, request).await
-            }
-            #[cfg(unix)]
-            Backend::Local(client) => client.call_host(host, request).await.map_err(transport)?,
-        }
+        self.current()
+            .map_err(unavailable)?
+            .host_request(host, request)
+            .await
     }
-
     /// Converts a reply to the command's established return type.
     pub async fn call<T>(&self, request: Request) -> Result<T, String>
     where
@@ -390,11 +267,64 @@ impl DesktopConnection {
     }
 }
 
-#[cfg(unix)]
-fn transport(error: std::io::Error) -> Fail {
-    let code = match error.kind() {
-        std::io::ErrorKind::Unsupported => rovik_protocol::FailCode::Version,
-        _ => rovik_protocol::FailCode::Unreachable,
-    };
-    Fail::new(code, format!("Local backend connection failed: {error}"))
+fn unavailable(message: String) -> Fail {
+    Fail::new(rovik_protocol::FailCode::Unreachable, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unavailable_session() -> DesktopConnection {
+        DesktopConnection {
+            state: Mutex::new(State {
+                connection: None,
+                closed: false,
+                report: Arc::new(|_| {}),
+            }),
+            replacement: Default::default(),
+            closing: tokio::sync::watch::channel(false).0,
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_interrupts_recovery_and_prevents_late_publication() {
+        let connection = unavailable_session();
+        let (started, opening) = tokio::sync::oneshot::channel();
+        let recover = connection.replace(async {
+            started.send(()).unwrap();
+            std::future::pending::<Result<Connection, String>>().await
+        });
+        tokio::pin!(recover);
+        tokio::select! { _ = opening => {}, result = &mut recover => panic!("finished early: {result:?}") }
+        connection.close().await.unwrap();
+        assert!(recover.await.unwrap_err().contains("detached"));
+        assert!(connection
+            .replace(async { panic!("closed session opened") })
+            .await
+            .unwrap_err()
+            .contains("detached"));
+        assert!(!connection.usable());
+    }
+
+    #[tokio::test]
+    async fn failed_recovery_does_not_publish_a_session_or_replay_a_command() {
+        let connection = unavailable_session();
+        assert_eq!(
+            connection
+                .replace(async { Err("incompatible host".into()) })
+                .await
+                .unwrap_err(),
+            "incompatible host"
+        );
+        assert!(connection.request(Request::AgentStatus).await.is_err());
+        assert!(connection.lock().connection.is_none());
+        assert_eq!(
+            connection
+                .replace(async { Err("still unavailable".into()) })
+                .await
+                .unwrap_err(),
+            "still unavailable"
+        );
+    }
 }

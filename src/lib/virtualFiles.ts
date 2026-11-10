@@ -1,3 +1,4 @@
+import { backendGeneration, onBackendRestored } from './backendSession';
 // virtualFiles.ts
 //
 // Virtual files (src-tauri/src/vfs): files held in the app's memory that
@@ -222,10 +223,34 @@ export async function subscribeVirtualFiles(
   handler: (events: VirtualFileEvent[], dropped: number) => void,
   kinds?: (VirtualFileEventKind | 'changes' | 'all')[]
 ): Promise<() => Promise<void>> {
-  const channel = new Channel<{ events: VirtualFileEvent[]; dropped: number }>();
-  channel.onmessage = (batch) => handler(batch.events, batch.dropped);
-  const id = await invoke<number>('vfs_subscribe', { kinds: kinds ?? null, onEvents: channel });
+  let stopped = false;
+  let active: { id: number; generation: number } | undefined;
+  const subscribe = async () => {
+    const generation = backendGeneration();
+    const channel = new Channel<{ events: VirtualFileEvent[]; dropped: number }>();
+    channel.onmessage = (batch) => {
+      if (!stopped && generation === backendGeneration()) handler(batch.events, batch.dropped);
+    };
+    const id = await invoke<number>('vfs_subscribe', { kinds: kinds ?? null, onEvents: channel });
+    if (generation !== backendGeneration()) return;
+    if (stopped) await invoke('vfs_unsubscribe', { id });
+    else active = { id, generation };
+  };
+  const remove = onBackendRestored(async () => {
+    if (stopped) return;
+    await subscribe();
+    if (!stopped) handler([], 1); // The old session's events cannot be replayed.
+  });
+  try {
+    await subscribe();
+  } catch (error) {
+    remove();
+    throw error;
+  }
   return async () => {
-    await invoke<boolean>('vfs_unsubscribe', { id });
+    stopped = true;
+    remove();
+    if (active?.generation === backendGeneration())
+      await invoke('vfs_unsubscribe', { id: active.id });
   };
 }

@@ -1,3 +1,4 @@
+import { onBackendRestored } from './backendSession';
 // virtualFilesStartup.ts
 //
 // Virtual files at app start (lib/virtualFiles.ts), in the background:
@@ -141,3 +142,10 @@ export async function startVirtualFiles() {
     ],
   });
 }
+
+// A restarted host owns fresh mount state; an existing host reuses its mount.
+onBackendRestored(async () => {
+  if (onWindows()) return;
+  const status = await vfsStatus();
+  if (status.driver.installed && !status.mountpoint) await mountVfs();
+});

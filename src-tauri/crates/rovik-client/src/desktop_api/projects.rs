@@ -11,6 +11,8 @@ use std::{path::Path, sync::Arc};
 pub enum ProjectRequest {
     /// Opens and registers this client's project.
     Open { root: String },
+    /// Re-registers a previously opened folder without resolving, moving, or merging history.
+    Restore { root: String, project_id: String },
     /// Releases this client's previous folder when it closes or switches projects.
     Clear,
     /// Resolves a copied folder's history.
@@ -98,6 +100,29 @@ impl ProjectRequest {
                 guard(&opened.project.id, Some(&root), "open it here")?;
                 register(opened.project.id.clone(), root)?;
                 encode(opened)
+            }
+            Self::Restore { root, project_id } => {
+                guard(&project_id, Some(&root), "restore it here")?;
+                if projects::folder_project_id(Path::new(&root)).as_deref() != Some(&project_id) {
+                    return Err(
+                        "Project identity changed; reopen the folder before continuing".into(),
+                    );
+                }
+                let id = project_id.clone();
+                let path = std::path::PathBuf::from(&root);
+                if !backend
+                    .core
+                    .db
+                    .read(move |c| projects::chat_may_use(c, Some(&id), &path))
+                    .await?
+                {
+                    return Err(
+                        "Project folder is no longer registered; reopen it before continuing"
+                            .into(),
+                    );
+                }
+                register(project_id, root)?;
+                encode(())
             }
             Self::Clear => {
                 owner.set_project(remote.clone(), None)?;

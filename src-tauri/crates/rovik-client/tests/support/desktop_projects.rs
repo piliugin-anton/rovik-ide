@@ -28,6 +28,10 @@ pub async fn check(a: &DesktopConnection, b: DesktopConnection) {
     assert_ne!(id_a, id_b);
     for request in [
         ProjectRequest::Open { root: one.clone() },
+        ProjectRequest::Restore {
+            root: one.clone(),
+            project_id: id_a.clone(),
+        },
         ProjectRequest::Delete {
             project_id: id_a.clone(),
         },
@@ -50,6 +54,27 @@ pub async fn check(a: &DesktopConnection, b: DesktopConnection) {
         let error = b.desktop(request.into()).await.unwrap_err();
         assert!(error.contains("open in another window"), "{error}");
     }
+    // Restoration validates existing identity and never resolves a copied/moved folder.
+    a.desktop(
+        ProjectRequest::Restore {
+            root: one.clone(),
+            project_id: id_a.clone(),
+        }
+        .into(),
+    )
+    .await
+    .unwrap();
+    assert!(a
+        .desktop(
+            ProjectRequest::Restore {
+                root: one.clone(),
+                project_id: "wrong-id".into()
+            }
+            .into()
+        )
+        .await
+        .unwrap_err()
+        .contains("identity changed"));
     // Switching this window must release only its own registration.
     b.desktop(ProjectRequest::Clear.into()).await.unwrap();
     assert!(b

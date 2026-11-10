@@ -207,12 +207,12 @@ export function createFileTreeController(rootPath: () => string | null) {
     return idx === 0 ? trimmed.slice(0, 1) : trimmed.slice(0, idx);
   }
 
-  function refresh(changedPath?: string) {
+  async function refresh(changedPath?: string): Promise<void> {
     const root = rootPath();
     if (!root) return;
 
     if (!changedPath) {
-      for (const dirPath of cache().keys()) void loadDir(dirPath);
+      await Promise.all([...cache().keys()].map(loadDir));
       return;
     }
 

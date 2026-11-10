@@ -123,3 +123,28 @@ test('a handler failure forces a snapshot instead of replaying partially applied
   assert.deepEqual(cursors, [null, null]);
   assert.equal(refreshes, 1);
 });
+
+test('a replaced command session discards an old snapshot even in the same project', async () => {
+  let version = 0;
+  let calls = 0;
+  const reader = followEvents({
+    scope: () => scope,
+    version: () => version,
+    poll: async (_, cursor) => {
+      assert.equal(cursor, null);
+      return batch(++calls, true);
+    },
+    refresh: async (_, current) => {
+      if (calls === 1) {
+        version++;
+        assert.equal(current(), false);
+      } else reader.stop();
+    },
+    apply: () => assert.fail('old snapshot events applied'),
+    failed: () => assert.fail('unexpected failure'),
+    recovered: () => assert.fail('obsolete checkpoint accepted'),
+    pause: async () => {},
+  });
+  await reader.done;
+  assert.equal(calls, 2);
+});

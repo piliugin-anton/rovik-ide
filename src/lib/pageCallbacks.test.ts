@@ -79,3 +79,26 @@ test('unmount releases a subscription that finishes after disposal without repla
   assert.deepEqual(f.released, ['late']);
   assert.deepEqual(f.actions, []);
 });
+
+test('recovery waits for page subscription readiness and distinguishes failure from success', async () => {
+  let fail = true;
+  const errors: unknown[] = [];
+  const callbacks = pageCallbacks({
+    scope: () => ({ projectId: 'one', chats: [] }),
+    subscribe: async () => {
+      if (fail) throw new Error('session ended');
+      return 'ready';
+    },
+    unsubscribe: async () => {},
+    applyPorts: () => {},
+    openTab: () => {},
+    openExternal: async () => {},
+    failed: (error) => errors.push(error),
+  });
+  assert.equal(await callbacks.refresh(), false);
+  assert.equal(errors.length, 1);
+  fail = false;
+  assert.equal(await callbacks.refresh(), true);
+  callbacks.stop();
+  assert.equal(await callbacks.refresh(), false);
+});

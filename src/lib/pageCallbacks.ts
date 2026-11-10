@@ -20,7 +20,7 @@ interface Source {
   failed(error: unknown): void;
 }
 /** Scope changes invalidate queued actions immediately, including late subscription replies. */
-export function pageCallbacks(source: Source): { refresh(): void; stop(): void } {
+export function pageCallbacks(source: Source): { refresh(): Promise<boolean>; stop(): void } {
   let generation = 0;
   let stopped = false;
   let active: string | undefined;
@@ -31,14 +31,14 @@ export function pageCallbacks(source: Source): { refresh(): void; stop(): void }
   };
   return {
     refresh() {
-      if (stopped) return;
+      if (stopped) return Promise.resolve(false);
       const version = ++generation;
       const scope = source.scope();
       const key = JSON.stringify(scope);
       const current = () =>
         !stopped && generation === version && key === JSON.stringify(source.scope());
       clear();
-      void source
+      return source
         .subscribe(scope, (page) => {
           if (!current()) return;
           try {
@@ -52,9 +52,11 @@ export function pageCallbacks(source: Source): { refresh(): void; stop(): void }
         .then((id) => {
           if (current()) active = id;
           else release(id);
+          return current();
         })
         .catch((error) => {
           if (current()) source.failed(error);
+          return false;
         });
     },
     stop() {

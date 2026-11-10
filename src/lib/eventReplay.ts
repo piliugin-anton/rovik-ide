@@ -14,6 +14,8 @@ export interface EventBatch {
 }
 export interface ReplaySource {
   scope(): EventScope;
+  /** A new command session invalidates in-flight reads even if the project is unchanged. */
+  version?(): unknown;
   poll(scope: EventScope, cursor: unknown): Promise<EventBatch>;
   refresh(scope: EventScope, current: () => boolean): Promise<void>;
   apply(event: JournalEvent): void;
@@ -28,7 +30,11 @@ export function followEvents(source: ReplaySource): { stop(): void; done: Promis
     let cursor: unknown = null;
     while (!stopped) {
       const scope = source.scope();
-      const current = () => !stopped && JSON.stringify(scope) === JSON.stringify(source.scope());
+      const version = source.version?.();
+      const current = () =>
+        !stopped &&
+        version === source.version?.() &&
+        JSON.stringify(scope) === JSON.stringify(source.scope());
       try {
         const batch = await source.poll(scope, cursor);
         if (!current()) {

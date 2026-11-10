@@ -2255,8 +2255,8 @@ Windows currently uses an embedded backend.
 Agent and cloud events now reach each UI through a project-scoped replay journal.
 The read connection reconnects independently of commands, and a missed-history
 reset refreshes chats, live runs, approvals, hosts, and ports before advancing its
-cursor. Command-session reconstruction after a backend crash remains lifecycle
-work; reopening the window creates a fresh command session.
+cursor. After a command-session failure, the notification’s Reconnect action
+creates a fresh session and restores the window’s registrations and subscriptions.
 
 Git panel operations now execute in the shared desktop backend, including hooks,
 fetch/push, branches, stashes, merge/rebase, and conflict resolution. Windows keep
@@ -2308,8 +2308,12 @@ backend work continues even when the last window closes. Opening Rovik again
 reattaches to that backend. Windows currently uses an embedded backend while its
 shared transport is being implemented.
 
-After a backend crash, reopen the window to create a new command session. Rovik
-does not replay commands whose completion is uncertain. If an update reports an
+After a backend crash or lost command session, use **Reconnect** in the connection
+notification. The window keeps unsaved editor text and chat drafts, restores its
+project registration and watches, and refreshes authoritative chat/host state.
+Terminal sessions end; their shells and commands are not restarted. Language
+support restarts from the open editor models. Rovik does not replay commands whose
+completion is uncertain: check their result before retrying them. If an update reports an
 incompatible backend, let its work finish and stop the process running with
 `--desktop-backend` (SIGTERM), then reopen Rovik. Automatic backend replacement
-and UI session restoration are still being implemented.
+remains follow-up work.

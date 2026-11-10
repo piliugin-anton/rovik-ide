@@ -1,3 +1,4 @@
+import { backendGeneration, onBackendLost } from './backendSession';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { HostSummary } from './cloud';
 
@@ -13,6 +14,41 @@ export interface TerminalInfo {
   shell: string;
 }
 
+/** Ends old terminal views on recovery without relaunching their shell or commands. */
+async function terminalStream(
+  start: (channel: Channel<TerminalEvent>) => Promise<TerminalInfo>,
+  onEvent: (event: TerminalEvent) => void
+): Promise<TerminalInfo> {
+  const generation = backendGeneration();
+  let ended = false;
+  const finish = () => {
+    if (!ended) {
+      ended = true;
+      remove();
+      onEvent({ type: 'exit', code: null });
+    }
+  };
+  const remove = onBackendLost(finish);
+  const channel = new Channel<TerminalEvent>();
+  channel.onmessage = (event) => {
+    if (ended || generation !== backendGeneration()) return;
+    if (event.type === 'exit') {
+      ended = true;
+      remove();
+    }
+    onEvent(event);
+  };
+  try {
+    const result = await start(channel);
+    if (generation !== backendGeneration())
+      throw new Error('Terminal session ended during reconnect');
+    return result;
+  } catch (error) {
+    remove();
+    throw error;
+  }
+}
+
 /**
  * Spawns a shell ($SHELL on macOS/Linux, COMSPEC on Windows) on a new
  * pseudo-terminal. Output and exit arrive through `onEvent`, which is wired
@@ -24,9 +60,10 @@ export async function spawnTerminal(
   rows: number,
   onEvent: (event: TerminalEvent) => void
 ): Promise<TerminalInfo> {
-  const channel = new Channel<TerminalEvent>();
-  channel.onmessage = onEvent;
-  return invoke<TerminalInfo>('spawn_terminal', { cwd, cols, rows, onEvent: channel });
+  return terminalStream(
+    (channel) => invoke<TerminalInfo>('spawn_terminal', { cwd, cols, rows, onEvent: channel }),
+    onEvent
+  );
 }
 
 /**
@@ -42,9 +79,11 @@ export async function spawnRemoteTerminal(
   rows: number,
   onEvent: (event: TerminalEvent) => void
 ): Promise<TerminalInfo> {
-  const channel = new Channel<TerminalEvent>();
-  channel.onmessage = onEvent;
-  return invoke<TerminalInfo>('spawn_remote_terminal', { host, cols, rows, onEvent: channel });
+  return terminalStream(
+    (channel) =>
+      invoke<TerminalInfo>('spawn_remote_terminal', { host, cols, rows, onEvent: channel }),
+    onEvent
+  );
 }
 
 export async function writeToTerminal(id: string, data: string): Promise<void> {

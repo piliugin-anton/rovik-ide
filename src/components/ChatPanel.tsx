@@ -1,3 +1,4 @@
+import { onBackendRestored } from '../lib/backendSession';
 import { workloadFocus } from '../lib/workloadFocus';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -444,6 +445,7 @@ export default function ChatPanel(props: ChatProps) {
     failed: (error) => console.error('Could not update workload priority:', error),
   });
   createEffect(priority.refresh);
+  onCleanup(onBackendRestored(priority.refresh));
   onMount(() => window.addEventListener('focus', priority.refresh));
   onCleanup(() => {
     window.removeEventListener('focus', priority.refresh);

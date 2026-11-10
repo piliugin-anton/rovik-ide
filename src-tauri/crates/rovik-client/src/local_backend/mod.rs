@@ -18,7 +18,7 @@ mod unix;
 pub use unix::{connect, ensure_backend, ensure_command, Lease, Listener, Pending};
 
 /// Version of the local bootstrap protocol, independent of remote RPC.
-pub const PROTOCOL: u32 = 18;
+pub const PROTOCOL: u32 = 19;
 #[cfg(unix)]
 const MAX_HANDSHAKE: usize = 4096;
 

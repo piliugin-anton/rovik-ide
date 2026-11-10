@@ -1,3 +1,4 @@
+import { backendGeneration, onBackendRestored } from './backendSession';
 // diagnostics.ts
 //
 // Reports what the editor shows to the backend, so the agent's
@@ -85,6 +86,7 @@ async function push(uriStr: string): Promise<void> {
   // the program is that config's): its markers are stale. They are
   // recomputed, and reported, once one of its own config's files is active.
   if (!typesScopeCovers(abs)) return;
+  const generation = backendGeneration();
   const markers = markersOf(uri);
   const key = `${root}\n${JSON.stringify(markers)}`;
   if (lastSent.get(uriStr) === key) return;
@@ -94,7 +96,7 @@ async function push(uriStr: string): Promise<void> {
   } catch {
     // The backend is gone (or the project closed): markers keep working.
     // Not sent, so a later identical report isn't skipped.
-    lastSent.delete(uriStr);
+    if (generation === backendGeneration()) lastSent.delete(uriStr);
   }
 }
 
@@ -120,6 +122,10 @@ export function ensureDiagnosticsReporting(projectDir: string | null): void {
   if (projectDir) root = projectDir;
   if (!registered) {
     registered = true;
+    onBackendRestored(() => {
+      lastSent.clear();
+      ensureDiagnosticsReporting(root);
+    });
     monaco.editor.onDidChangeMarkers((uris) => {
       for (const uri of uris) pending.add(uri.toString());
       schedule();

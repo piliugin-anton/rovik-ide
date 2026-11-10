@@ -1,3 +1,4 @@
+import { backendProject, onBackendRestored } from './lib/backendSession';
 import { startPageRequests } from './lib/pageRequests';
 import { startBackendEvents } from './lib/backendEvents';
 import {
@@ -1991,6 +1992,24 @@ export default function App() {
     })
   );
   onCleanup(() => clearTimeout(tabsTimer));
+
+  onMount(() => {
+    onCleanup(backendProject(() => ({ root: rootPath(), projectId: chatStore.projectId() })));
+    onCleanup(
+      onBackendRestored(async () => {
+        const root = rootPath();
+        if (!root) return;
+        // Register path identities again without replacing open text or editor models.
+        await Promise.all(
+          openFiles()
+            .filter((file) => !file.readOnly)
+            .map((file) => getPathId(file.path))
+        );
+        tree.refresh();
+        await invoke('start_file_watch', { pathStr: root });
+      })
+    );
+  });
 
   createEffect(async () => {
     const currentPath = rootPath();

@@ -122,6 +122,14 @@ pub struct Client {
 }
 
 impl Client {
+    pub(crate) fn usable(&self) -> bool {
+        !*self.closing.borrow()
+            && self
+                .stream
+                .try_lock()
+                .map_or(true, |stream| stream.is_some())
+    }
+
     /// Discovery directory for an independent read-only event connection.
     pub(crate) fn directory(&self) -> &Path {
         &self.directory
