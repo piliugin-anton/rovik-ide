@@ -699,3 +699,11 @@ The test requires a working mount and fails rather than skipping when unavailabl
 Hosted macOS CI builds the platform path and runs the non-mounted drain tests;
 it does not install or enable macFUSE. Native mounted validation is still required
 for both macFUSE backends.
+
+The **E2E** workflow’s manual `macos-mounts` platform invokes the
+**macOS mounted backend** workflow and attempts this FSKit regression on a hosted macOS 15 runner. It installs macFUSE, requests FSKit module
+enablement, and runs the ignored mounted test explicitly. Installation,
+enablement, or mount failure fails the run; none is treated as a skipped success.
+The test log and mount/module diagnostics are uploaded as artifacts. This does
+not validate the kernel backend: macOS does not support third-party kernel
+extensions inside the hosted runner's virtual machine.

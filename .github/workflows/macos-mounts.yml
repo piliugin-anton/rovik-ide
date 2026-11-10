@@ -1,0 +1,54 @@
+# Native FSKit validation is separate from ordinary macOS CI: installing the
+# driver must never turn a skipped mount into a successful validation result.
+name: macOS mounted backend
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-mounts-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+jobs:
+  fskit:
+    name: FSKit busy mounts and saved edits
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+      - name: Install and enable macFUSE's FSKit module
+        run: |
+          sw_vers
+          brew install --cask macfuse
+          /usr/bin/pluginkit -e use -i io.macfuse.app.fsmodule.macfuse
+          /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule
+      - name: Refuse busy mounts and recover saved edits
+        env:
+          ROVIK_MOUNTED_BACKEND: '1'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
+            mounted_child_views_drain_without_losing_their_dependency_tree \
+            -- --ignored --nocapture 2>&1 | tee macos-mounts.log
+      - name: Mount diagnostics
+        if: always()
+        run: |
+          { sw_vers; mount; /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule; } > macos-mount-diagnostics.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-mount-results
+          path: macos-mount*.log

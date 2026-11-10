@@ -26,7 +26,7 @@ on:
       platform:
         description: Platform
         type: choice
-        options: [windows, macos, linux]
+        options: [windows, macos, linux, macos-mounts]
         default: windows
   push:
 
@@ -407,3 +407,8 @@ jobs:
           name: e2e-linux
           path: e2e-out
           if-no-files-found: ignore
+
+  macos-mounts:
+    name: macOS FSKit mounts
+    if: inputs.platform == 'macos-mounts'
+    uses: ./.github/workflows/macos-mounts.yml
