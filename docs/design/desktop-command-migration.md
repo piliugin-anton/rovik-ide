@@ -707,3 +707,21 @@ enablement, or mount failure fails the run; none is treated as a skipped success
 The test log and mount/module diagnostics are uploaded as artifacts. This does
 not validate the kernel backend: macOS does not support third-party kernel
 extensions inside the hosted runner's virtual machine.
+
+### Native validation findings
+
+The [hosted FSKit run](https://github.com/piliugin-anton/rovik-ide/actions/runs/42858428090)
+installed macFUSE 5.5 and enabled its FSKit module, but the test failed while
+opening its first view: `fuse_chan_fd` did not supply a device descriptor.
+No busy-unmount or saved-edit assertions ran. The current adapter feeds a device
+descriptor to fuser; macFUSE's message-channel API can also represent channels
+without one. Supporting that transport is separate remaining implementation work.
+The regression remains failing, not skipped, until a view can actually be served.
+
+The native GUI run exposed idle RPC disconnections and unordered terminal input.
+Frame deadlines now begin with the first received byte rather than socket
+readiness, and frontend terminal writes are sequenced per terminal. Queued input
+is rejected after an earlier write fails or the backend generation changes.
+The two-window project tests passed; full isolated-chat GUI validation still
+requires a working mounted backend. Native kernel-backend validation remains
+unavailable on GitHub-hosted virtual machines.

@@ -1773,11 +1773,11 @@ Design and reasoning: [`docs/design/chat-isolation-plan.md`](docs/design/chat-is
 like real files to every other program. Commands the agent runs can `cat`,
 `grep`, `sed -i` or execute them, and the app sees what they changed.
 
-| OS      | Driver  | Installed from                                      | Notes                                                                                                                                                                                              |
-| ------- | ------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | FUSE 3  | the distro's `fuse3` package, via polkit (`pkexec`) | Mounted with `fusermount3`; libfuse isn't needed to build or run.                                                                                                                                  |
-| macOS   | macFUSE | the official `.dmg` (signature checked)             | On macOS 15.4+ with macFUSE 5.1+ it uses FSKit (no kernel extension; enable it once in System Settings), mounted at `/Volumes/RovikVirtualFiles`. Older systems need the kernel extension allowed. |
-| Windows | none    | —                                                   | The agent works in WSL, whose daemon mounts them with FUSE. A chat of a project runs there; without WSL it doesn't start.                                                                          |
+| OS      | Driver  | Installed from                                      | Notes                                                                                                                                                                                                                                 |
+| ------- | ------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux   | FUSE 3  | the distro's `fuse3` package, via polkit (`pkexec`) | Mounted with `fusermount3`; libfuse isn't needed to build or run.                                                                                                                                                                     |
+| macOS   | macFUSE | the official `.dmg` (signature checked)             | Selects FSKit on macOS 15.4+ with macFUSE 5.1+, but hosted validation with macFUSE 5.5 currently fails at device-descriptor acquisition. FSKit support needs further transport work. Older systems need the kernel extension allowed. |
+| Windows | none    | —                                                   | The agent works in WSL, whose daemon mounts them with FUSE. A chat of a project runs there; without WSL it doesn't start.                                                                                                             |
 
 The app starts without the driver; only mounting needs it. At startup it
 checks in the background and either mounts the volume or offers once to

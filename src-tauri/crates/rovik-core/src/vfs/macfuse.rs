@@ -424,14 +424,24 @@ pub fn mount(
 
     // fuse_chan_fd lends the descriptor; the session gets its own copy.
     let borrowed = unsafe { (lib.chan_fd)(channel.0) };
-    let fd = if borrowed >= 0 {
-        unsafe { libc::dup(borrowed) }
-    } else {
-        -1
-    };
-    if fd < 0 {
+    if borrowed < 0 {
+        let error = std::io::Error::last_os_error();
         unmount_now(channel);
-        return Err(problem::update_macfuse(&version));
+        let backend_name = match backend {
+            Backend::FsKit => "FSKit",
+            Backend::Kext => "kernel",
+        };
+        return Err(MountProblem::failed(format!(
+            "macFUSE {version} did not expose a {backend_name} device descriptor: {error}. This build requires a device-backed channel to serve the volume. {stderr}"
+        )));
+    }
+    let fd = unsafe { libc::dup(borrowed) };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        unmount_now(channel);
+        return Err(MountProblem::failed(format!(
+            "Could not duplicate macFUSE's device descriptor: {error}"
+        )));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
 
