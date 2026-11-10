@@ -321,6 +321,19 @@ impl VfsState {
             .clone()
     }
 
+    /// Releases an unused mount without detaching open handles or forcing it.
+    /// On failure the live mount remains owned and usable.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn unmount_if_unused(&self) -> Result<(), String> {
+        let _mounting = self.mounting.lock().unwrap_or_else(|e| e.into_inner());
+        let mut mounted = self.lock();
+        if let Some(m) = mounted.as_mut() {
+            m.mount.unmount_if_unused()?;
+            mounted.take();
+        }
+        Ok(())
+    }
+
     pub fn unmount(&self) -> Result<(), String> {
         match self.lock().take() {
             Some(m) => m.mount.unmount(),

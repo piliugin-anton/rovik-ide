@@ -851,6 +851,37 @@ impl FuseMount {
         })));
     }
 
+    /// Ordinary unmount refuses open files and working directories. Do not
+    /// consume the session until the kernel has accepted that operation.
+    #[cfg(target_os = "linux")]
+    pub(super) fn unmount_if_unused(&mut self) -> Result<(), String> {
+        use std::process::Stdio;
+        if self.session.is_none() {
+            return Ok(());
+        }
+        let helper = ["fusermount3", "fusermount"]
+            .iter()
+            .find_map(|name| crate::process::find_on_path(name))
+            .ok_or("Cannot drain the virtual filesystem: install fuse3 and retry")?;
+        let status = crate::process::command(helper)
+            .args(["-u", "--"])
+            .arg(&self.mountpoint)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .status()
+            .map_err(|error| format!("Could not unmount the virtual filesystem: {error}"))?;
+        if !status.success() {
+            return Err("The virtual filesystem is still in use or could not be unmounted; close programs using it and retry".into());
+        }
+        self.vfs.set_listener(None);
+        if let Some(session) = self.session.take() {
+            session.join().map_err(|error| {
+                format!("Could not join the unmounted virtual filesystem: {error}")
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn unmount(mut self) -> Result<(), String> {
         self.unmount_inner()
     }

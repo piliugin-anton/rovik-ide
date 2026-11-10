@@ -53,6 +53,42 @@ async fn eventually(stage: &str, mut ready: impl AsyncFnMut() -> bool) {
     .unwrap_or_else(|_| panic!("mounted backend timed out: {stage}"));
 }
 
+async fn upgrade(endpoint: &Path) -> serde_json::Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn frame(stream: &mut tokio::net::UnixStream) -> serde_json::Value {
+        let len = stream.read_u32().await.unwrap();
+        assert!(len <= 4096);
+        let mut bytes = vec![0; len as usize];
+        stream.read_exact(&mut bytes).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+    let mut stream = tokio::net::UnixStream::connect(endpoint.join("control.sock"))
+        .await
+        .unwrap();
+    let hello = frame(&mut stream).await;
+    let request = serde_json::to_vec(&json!({
+        "control": 1, "boot": hello["boot"], "version": env!("CARGO_PKG_VERSION"),
+        "protocol": rovik_client::local_backend::PROTOCOL + 1
+    }))
+    .unwrap();
+    stream.write_u32(request.len() as u32).await.unwrap();
+    stream.write_all(&request).await.unwrap();
+    frame(&mut stream).await
+}
+
+async fn refusal(endpoint: &Path, reason: &str) {
+    eventually("upgrade refusal after disconnect cleanup", async || {
+        let reply = upgrade(endpoint).await;
+        let message = reply["Busy"].as_str().unwrap_or_else(|| panic!("{reply}"));
+        if message.contains("connected") || message.contains("Blocking") {
+            return false;
+        }
+        assert!(message.contains(reason), "{reply}");
+        true
+    })
+    .await;
+}
+
 async fn view(client: &DesktopConnection, chat: &str) -> PathBuf {
     let mut view = None;
     eventually("chat overlay mount", async || {
@@ -443,15 +479,77 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         std::fs::read_to_string(project.join("shared.txt")).unwrap(),
         "base"
     );
-    c.desktop(VfsRequest::Unmount.into()).await.unwrap();
+    c.close().await.unwrap();
+    refusal(&endpoint, "Virtual files").await;
     assert_eq!(
+        std::fs::read_to_string(mount.join("shared.txt")).unwrap(),
+        retained
+    );
+    let c = attach().await.unwrap();
+    c.desktop(
+        VfsRequest::Remove {
+            path: "shared.txt".into(),
+        }
+        .into(),
+    )
+    .await
+    .unwrap();
+    // Even an empty volume can still be in use by a shell's working directory
+    // or an open directory descriptor. A failed drain must preserve it.
+    let directory_handle = std::fs::File::open(&mount).unwrap();
+    c.close().await.unwrap();
+    refusal(&endpoint, "still in use").await;
+    assert_ne!(
         std::fs::metadata(&mount).unwrap().dev(),
         std::fs::metadata(root.path()).unwrap().dev()
     );
+    let c = attach().await.unwrap();
+    assert_eq!(connect(&endpoint).await.unwrap().1.boot, boot);
+    assert_eq!(
+        c.desktop(VfsRequest::Mount { mountpoint: None }.into())
+            .await
+            .unwrap(),
+        mounted
+    );
+    c.desktop(
+        VfsRequest::WriteFile {
+            path: "after-refusal.txt".into(),
+            content: "still-serving".into(),
+            encoding: None,
+            executable: None,
+        }
+        .into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(mount.join("after-refusal.txt")).unwrap(),
+        "still-serving"
+    );
+    c.desktop(
+        VfsRequest::Remove {
+            path: "after-refusal.txt".into(),
+        }
+        .into(),
+    )
+    .await
+    .unwrap();
     c.close().await.unwrap();
-    unsafe {
-        libc::kill(host.0.id() as i32, libc::SIGTERM);
-    }
+    drop(directory_handle);
+    eventually("empty unused volume drains for upgrade", async || {
+        let reply = upgrade(&endpoint).await;
+        if reply == "Retiring" {
+            return true;
+        }
+        assert!(
+            reply["Busy"].as_str().is_some_and(
+                |message| message.contains("connected") || message.contains("Blocking")
+            ),
+            "{reply}"
+        );
+        false
+    })
+    .await;
     eventually("host shutdown", async || {
         host.0.try_wait().unwrap().is_some_and(|status| {
             assert!(status.success());
@@ -459,6 +557,10 @@ pub async fn check(executable: &Path, flag: Option<&str>) {
         })
     })
     .await;
+    assert_eq!(
+        std::fs::metadata(&mount).unwrap().dev(),
+        std::fs::metadata(root.path()).unwrap().dev()
+    );
     assert!(Lease::acquire(&endpoint).unwrap().is_some());
     assert_eq!(
         std::fs::read_to_string(data.join("chats.db.running")).unwrap(),

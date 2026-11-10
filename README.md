@@ -2330,3 +2330,9 @@ Linux CI also requires a real mounted multi-client regression for both backend
 entry points. It checks chat overlay isolation, commands continuing after every
 client closes, virtual-file handles surviving reattachment, and clean shutdown.
 See [the mounted test commands](docs/design/desktop-command-migration.md#required-mounted-multi-client-isolation).
+
+An upgrade can release an empty, unused virtual-files mount on Linux. A program
+holding a file or directory open keeps that mount busy and defers replacement;
+virtual files with retained contents also defer it. Close programs using the
+volume and release its files before retrying. Chat views and remote resources
+still require separate cleanup.

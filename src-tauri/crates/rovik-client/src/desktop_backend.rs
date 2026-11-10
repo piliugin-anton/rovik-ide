@@ -224,9 +224,31 @@ impl DesktopBackend {
         (maintenance, results)
     }
 
+    /// The host must keep admission closed and producers paused until this
+    /// returns, including if the negotiating client disconnects.
+    #[cfg(unix)]
+    pub(crate) async fn prepare_replacement(&self) -> Result<(), String> {
+        if let Some(reason) = self.service_replacement_blocker() {
+            return Err(reason.into());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let core = self.core.clone();
+            // Join this work without a cancellation timeout: a detached unmount
+            // must never overlap a resumed host accepting requests.
+            tokio::task::spawn_blocking(move || core.prepare_replacement())
+                .await
+                .map_err(|error| format!("Could not drain the virtual filesystem: {error}"))?
+        }
+        #[cfg(not(target_os = "linux"))]
+        self.core
+            .replacement_blocker()
+            .map_or(Ok(()), |reason| Err(reason.into()))
+    }
+
     /// The host must stop accepting clients and hold the maintenance pause first.
     #[cfg(unix)]
-    pub(crate) fn replacement_blocker(&self) -> Option<&'static str> {
+    fn service_replacement_blocker(&self) -> Option<&'static str> {
         if crate::desktop_task::active() {
             return Some("Client operations are still finishing");
         }
@@ -236,7 +258,7 @@ impl DesktopBackend {
         if self.browser_install.active() {
             return Some("Browser installation is still running");
         }
-        self.core.replacement_blocker()
+        None
     }
 
     /// Stops local execution and flushes its persisted state before the

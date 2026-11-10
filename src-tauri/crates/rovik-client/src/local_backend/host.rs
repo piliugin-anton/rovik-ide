@@ -68,9 +68,9 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                         Ok(mut stream) => {
                             // Do not accept new RPC clients between checking the
                             // active tasks and committing to retirement.
-                            let result = tokio::time::timeout(control::TIMEOUT, async {
-                                control::write(&mut stream, &hello).await?;
-                                let candidate: control::Candidate = control::read(&mut stream).await?;
+                            let result = async {
+                                tokio::time::timeout(control::TIMEOUT, control::write(&mut stream, &hello)).await??;
+                                let candidate: control::Candidate = tokio::time::timeout(control::TIMEOUT, control::read(&mut stream)).await??;
                                 let mut pause = None;
                                 let reply = if !candidate.upgrades(&hello)? {
                                     control::Reply::Current
@@ -84,8 +84,8 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                                         match tokio::time::timeout(std::time::Duration::from_secs(1), backend.pause_producers()).await {
                                             Err(_) => control::Reply::Busy("Host maintenance or remote imports are still finishing".into()),
                                             Ok(guard) => {
-                                                if let Some(reason) = backend.replacement_blocker() {
-                                                    control::Reply::Busy(reason.into())
+                                                if let Err(reason) = backend.prepare_replacement().await {
+                                                    control::Reply::Busy(reason)
                                                 } else {
                                                     pause = Some(guard);
                                                     control::Reply::Retiring
@@ -94,14 +94,13 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 };
-                                control::write(&mut stream, &reply).await?;
+                                tokio::time::timeout(control::TIMEOUT, control::write(&mut stream, &reply)).await??;
                                 Ok::<_, std::io::Error>(pause)
-                            }).await;
+                            }.await;
                             match result {
-                                Ok(Ok(Some(guard))) => { retirement = Some(guard); break; },
-                                Ok(Ok(None)) => {},
-                                Ok(Err(error)) => eprintln!("Local backend upgrade: {error}"),
-                                Err(_) => eprintln!("Local backend upgrade negotiation timed out"),
+                                Ok(Some(guard)) => { retirement = Some(guard); break; },
+                                Ok(None) => {},
+                                Err(error) => eprintln!("Local backend upgrade: {error}"),
                             }
                         }
                         Err(error) => eprintln!("Local backend control connection: {error}"),

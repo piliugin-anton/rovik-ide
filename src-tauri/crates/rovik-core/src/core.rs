@@ -105,6 +105,25 @@ impl Core {
     /// Why an automatic host replacement must retain this core. The caller must
     /// first prevent new requests and remote producers from starting work.
     pub fn replacement_blocker(&self) -> Option<&'static str> {
+        self.replacement_blocker_inner(false)
+    }
+
+    /// Drains only an empty, unused Linux virtual volume for an upgrade.
+    /// The host must exclude clients and pause producers throughout this call.
+    /// A busy mount or any retained work leaves the existing owner in place.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_replacement(&self) -> Result<(), String> {
+        if let Some(reason) = self.replacement_blocker_inner(true) {
+            return Err(reason.into());
+        }
+        self.vfs.unmount_if_unused()?;
+        // A kernel writer could have created a file between the empty check
+        // and unmount. Keep those bytes in this host even after detachment.
+        self.replacement_blocker()
+            .map_or(Ok(()), |reason| Err(reason.into()))
+    }
+
+    fn replacement_blocker_inner(&self, drain_mount: bool) -> Option<&'static str> {
         let activity = crate::rt::activity_epoch();
         if crate::rt::has_blocking_work() {
             return Some("Blocking operations are still finishing");
@@ -131,7 +150,7 @@ impl Core {
         if crate::overlay::chats::retains_views() {
             return Some("Chat filesystem views are still open");
         }
-        if self.vfs.mountpoint().is_some() {
+        if !drain_mount && self.vfs.mountpoint().is_some() {
             return Some("The virtual filesystem is still mounted");
         }
         match self.vfs.list("") {
@@ -200,11 +219,18 @@ mod tests {
         assert_eq!(core.replacement_blocker(), None);
         let hold = crate::chat_hold::take("upgrade-held").unwrap();
         assert!(core.replacement_blocker().unwrap().contains("Chats"));
+        #[cfg(target_os = "linux")]
+        assert!(core.prepare_replacement().unwrap_err().contains("Chats"));
         drop(hold);
         core.vfs.write_unmounted("kept.txt", b"unsaved").unwrap();
         assert!(core
             .replacement_blocker()
             .unwrap()
+            .contains("Virtual files"));
+        #[cfg(target_os = "linux")]
+        assert!(core
+            .prepare_replacement()
+            .unwrap_err()
             .contains("Virtual files"));
         core.vfs.remove("kept.txt").unwrap();
         assert_eq!(core.replacement_blocker(), None);

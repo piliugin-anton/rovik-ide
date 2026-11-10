@@ -34,6 +34,8 @@ existing protocol and routing. Native window actions stay in Tauri.
    retained-work checks, serialized launchers, and ownership through shutdown.
 9. **Completed**: Required Linux mounted multi-client regression for standalone and
    packaged hosts, including isolated execution across client detachment.
+10. **Completed**: Drain empty, unused Linux virtual volumes during guarded upgrades;
+    preserve busy mounts and retained files on refusal.
 
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
@@ -41,8 +43,8 @@ pretend they are ready for IPC. Windows remains embedded until its transport is 
 
 ## Following this migration
 
-Windows named pipes; automatic draining of mounted and remote resources for
-upgrades; GUI multi-window smoke testing and macOS mounted validation. Linux
+Windows named pipes; draining chat views and remote resources for
+upgrades; macOS virtual-volume draining; GUI multi-window smoke testing and macOS mounted validation. Linux
 mounted multi-client execution is covered by the required contract below.
 
 ## Private event transport prerequisite
@@ -482,3 +484,28 @@ ROVIK_MOUNTED_BACKEND=1 cargo test -p rovik-ide --test shared_backend -- --ignor
 This validates the actual mounted backend boundary used by windows. It does not
 launch graphical windows or validate macOS's mount driver. Those smoke tests,
 Windows transport, and automatic draining of retained resources remain separate.
+
+## Draining unused Linux virtual volumes
+
+Guarded upgrades can now release an empty virtual-files mount on Linux. The host
+first excludes accepted clients, pauses maintenance and remote imports, and checks
+all non-mount blockers. Retained virtual files, chat views, remote connections,
+running work, and unread command results still defer replacement.
+
+The upgrade path uses an ordinary unmount, without lazy detachment or force.
+An open file, directory descriptor, or shell working directory keeps the mount
+busy; refusal preserves the serving session and the existing owner. Once the
+kernel accepts unmount, a second retained-work check catches files written during
+the preflight race. Those bytes remain in the old process even if the volume has
+already been unmounted.
+
+The host joins draining before resuming admission, including when the negotiating
+client disconnects. Only peer reads and writes have negotiation timeouts; a slow
+drain never authorizes a second owner or overlaps new requests. Final shutdown
+still retains the ownership lease through cleanup and the clean database marker.
+
+The required mounted contract runs this path through both executables: retained
+files refuse retirement, an empty volume with an open directory refuses without
+losing its mount, reattachment uses the same boot, and closing the handle permits
+clean retirement. Chat-view draining, remote producer draining, and macOS ordinary
+unmount remain follow-up work.
