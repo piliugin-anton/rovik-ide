@@ -255,6 +255,8 @@ impl Transport for MessageChannel {
                 }
                 offset = end;
             }
+            #[cfg(test)]
+            trace_request(&buffer[..offset]);
             Ok(offset)
         })();
         unsafe { (self.api.release)(message) };
@@ -262,6 +264,17 @@ impl Transport for MessageChannel {
     }
 
     fn send(&self, buffers: &[IoSlice<'_>]) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(header) = buffers.first().and_then(|buffer| buffer.get(..16)) {
+            if std::env::var("ROVIK_MOUNTED_BACKEND").as_deref() == Ok("1") {
+                eprintln!(
+                    "FSKit reply unique={} error={} length={}",
+                    u64::from_ne_bytes(header[8..16].try_into().unwrap()),
+                    i32::from_ne_bytes(header[4..8].try_into().unwrap()),
+                    u32::from_ne_bytes(header[..4].try_into().unwrap())
+                );
+            }
+        }
         let parts: Vec<libc::iovec> = buffers
             .iter()
             .map(|part| libc::iovec {
@@ -277,6 +290,23 @@ impl Transport for MessageChannel {
             return Err(io::Error::from_raw_os_error(libc::EIO));
         }
         Ok(())
+    }
+}
+
+// Native CI needs protocol diagnostics even when no application logger exists.
+// Headers contain identifiers/status only; file names and payloads are omitted.
+#[cfg(test)]
+fn trace_request(bytes: &[u8]) {
+    if std::env::var("ROVIK_MOUNTED_BACKEND").as_deref() == Ok("1") {
+        if let Some(header) = bytes.get(..40) {
+            eprintln!(
+                "FSKit request opcode={} unique={} uid={} length={}",
+                u32::from_ne_bytes(header[4..8].try_into().unwrap()),
+                u64::from_ne_bytes(header[8..16].try_into().unwrap()),
+                u32::from_ne_bytes(header[24..28].try_into().unwrap()),
+                u32::from_ne_bytes(header[..4].try_into().unwrap())
+            );
+        }
     }
 }
 
