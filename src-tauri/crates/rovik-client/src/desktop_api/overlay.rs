@@ -257,9 +257,7 @@ async fn overlay_sync_to_chat(
 
 async fn overlay_keep_older(backend: &DesktopBackend, dialog_id: String) -> Result<(), String> {
     let remote = &backend.remote;
-    remote.keep_older_copy(&dialog_id);
-
-    Ok(())
+    remote.keep_older_copy(&dialog_id)
 }
 
 async fn overlay_take_newer(backend: &DesktopBackend, dialog_id: String) -> Result<(), String> {

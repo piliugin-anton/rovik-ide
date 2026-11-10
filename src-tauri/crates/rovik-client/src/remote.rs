@@ -39,6 +39,7 @@ const HOSTS_WAIT: Duration = Duration::from_secs(15);
 
 mod back;
 mod bar;
+mod decisions;
 mod mcp_relay;
 mod memory;
 mod mirror;
@@ -225,6 +226,8 @@ pub trait OwedSignOuts: Send + Sync {
 
 #[derive(Default)]
 struct State {
+    decision_dir: PathBuf,
+    decision_errors: HashMap<String, String>,
     /// Each remote chat's host, and its subagents' chats': the chats the
     /// database puts on a host (`location`).
     chats: HashMap<String, String>,
@@ -304,17 +307,24 @@ impl State {
         self.last_sync.remove(chat);
         self.syncs.remove(chat);
         self.rechecks.remove(chat);
+        self.kept.remove(chat);
+        self.syncs.remove(chat);
+        self.save_decisions_logged(chat);
     }
 }
 
 impl Remote {
     pub fn new(core: Core) -> Arc<Remote> {
         let (jobs, queue) = results::channel();
+        let decision_dir = core.paths.data_dir.join("remote-decisions");
         let remote = Arc::new_cyclic(|me| Remote {
             core,
             hosts: Hosts::default(),
             me: me.clone(),
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                decision_dir,
+                ..Default::default()
+            }),
             cloud: Mutex::new(None),
             jobs,
             result_turn: Default::default(),
@@ -386,9 +396,7 @@ impl Remote {
             || !state.uploads.is_empty()
             || !state.steer_uploads.is_empty()
             || !state.backs.is_empty()
-            || !state.held.is_empty()
-            || !state.kept.is_empty()
-            || !state.rechecks.is_empty();
+            || !state.held.is_empty();
         retained.then_some("Remote chats or transfers still retain work")
     }
 
@@ -406,6 +414,7 @@ impl Remote {
     /// Keep the in-memory routing intact if a later resource refuses retirement.
     #[cfg(any(unix, test))]
     async fn verify_saved_mirrors(&self) -> Result<(), String> {
+        self.lock().checkpoint_decisions()?;
         let chats = self.lock().chats.clone();
         if chats.is_empty() {
             return Ok(());
@@ -621,6 +630,7 @@ impl Remote {
         let mut state = self.lock();
         for (chat, location) in away {
             if let Location::Host(host) = location {
+                state.load_decisions(&chat, &host)?;
                 state.chats.insert(chat, host);
             }
         }
@@ -630,9 +640,16 @@ impl Remote {
     /// The chat is on `host` from now on, with its subagents' chats: here,
     /// and in the database, queued before any write that comes after.
     pub fn place(&self, dialog_id: &str, host: &str) {
-        self.lock()
-            .chats
-            .insert(dialog_id.to_string(), host.to_string());
+        {
+            let mut state = self.lock();
+            let previous = state.chats.insert(dialog_id.to_string(), host.to_string());
+            if previous.as_deref().is_some_and(|previous| previous != host) {
+                state.kept.remove(dialog_id);
+                state.rechecks.remove(dialog_id);
+                state.syncs.remove(dialog_id);
+                state.save_decisions_logged(dialog_id);
+            }
+        }
         let (chat, host) = (dialog_id.to_string(), host.to_string());
         self.core
             .db
@@ -981,7 +998,9 @@ impl Remote {
             .await
             .map_err(internal)?;
         if matches!(request.start, StartKind::Send { .. }) {
-            self.sync_before_send(&host, &request.dialog_id).await;
+            self.sync_before_send(&host, &request.dialog_id)
+                .await
+                .map_err(internal)?;
         }
         if let Some(root) = request.root.clone().filter(|r| !r.trim().is_empty()) {
             relative_paths(&mut request, &root);

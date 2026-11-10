@@ -2271,7 +2271,7 @@ async fn persisted_idle_mirrors_survive_retirement_and_reload() {
 }
 
 #[tokio::test]
-async fn persisted_mirrors_with_live_runs_or_local_decisions_still_refuse_retirement() {
+async fn persisted_mirrors_refuse_live_runs_and_invalid_local_decisions() {
     let app = App::new();
     app.chat("saved", None, vec![]).await;
     let remote = Remote::new(app.core.clone());
@@ -2284,7 +2284,7 @@ async fn persisted_mirrors_with_live_runs_or_local_decisions_still_refuse_retire
     assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
     remote.lock().kept.clear();
     remote.lock().rechecks.insert("saved".into(), 1);
-    assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
     remote.lock().rechecks.clear();
     remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
     app.core
@@ -2325,4 +2325,100 @@ async fn ownership_changed_while_receivers_drain_refuses_retirement() {
     drop(held);
     assert!(drain.await.unwrap().unwrap_err().contains("new work"));
     assert_eq!(remote.host_of("saved").as_deref(), Some(HOST));
+}
+
+fn waiting_sync(chat: &str) -> ChatSync {
+    ChatSync {
+        dialog_id: chat.into(),
+        state: rovik_protocol::work::SyncState::Conflicts,
+        files: vec!["a.rs".into()],
+    }
+}
+
+#[tokio::test]
+async fn keep_and_recheck_decisions_survive_restart_and_reset_at_their_boundaries() {
+    let app = App::new();
+    app.chat("decisions", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("decisions", HOST);
+    let sync = waiting_sync("decisions");
+    remote.synced(sync.clone());
+    remote.keep_older_copy("decisions").unwrap();
+    {
+        let mut state = remote.lock();
+        state.rechecks.insert("decisions".into(), 2);
+        state.save_decisions("decisions").unwrap();
+    }
+    // The writer barrier and checkpoint let an upgrade preserve both choices.
+    let _pause = remote.pause_results().await;
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    assert_eq!(restored.lock().rechecks.get("decisions"), Some(&2));
+    assert!(restored.bar_sync("decisions").is_none());
+    restored.synced(sync.clone());
+    assert!(
+        restored.bar_sync("decisions").is_none(),
+        "replayed sync preserves Keep"
+    );
+    let mut next = sync;
+    next.files.push("b.rs".into());
+    restored.synced(next.clone());
+    assert_eq!(restored.bar_sync("decisions"), Some(next));
+    restored.sync_before_send(HOST, "decisions").await.unwrap();
+    let again = Remote::new(app.core.clone());
+    again.load().await.unwrap();
+    assert!(!again.lock().kept.contains("decisions"));
+    assert!(!again.lock().rechecks.contains_key("decisions"));
+}
+
+#[tokio::test]
+async fn failed_decision_saves_refuse_upgrade_and_can_be_retried_without_losing_keep() {
+    let app = App::new();
+    app.chat("decisions", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("decisions", HOST);
+    remote.synced(waiting_sync("decisions"));
+    let path = app.core.paths.data_dir.join("remote-decisions");
+    std::fs::write(&path, "not a directory").unwrap();
+    assert!(remote.keep_older_copy("decisions").is_err());
+    assert!(remote.lock().kept.contains("decisions"));
+    let _pause = remote.pause_results().await;
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("save remote decisions"));
+    std::fs::remove_file(&path).unwrap();
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    assert!(restored.lock().kept.contains("decisions"));
+    let record = std::fs::read_dir(path)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "json"))
+        .unwrap();
+    std::fs::write(record, "{broken").unwrap();
+    assert!(Remote::new(app.core.clone())
+        .load()
+        .await
+        .unwrap_err()
+        .contains("read remote decisions"));
+}
+
+#[tokio::test]
+async fn forgetting_a_chat_clears_its_saved_decisions() {
+    let app = App::new();
+    app.chat("decisions", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("decisions", HOST);
+    remote.synced(waiting_sync("decisions"));
+    remote.keep_older_copy("decisions").unwrap();
+    remote.lock().forget("decisions");
+    remote.place("decisions", HOST);
+    remote.verify_saved_mirrors().await.unwrap();
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    assert!(!restored.lock().kept.contains("decisions"));
 }

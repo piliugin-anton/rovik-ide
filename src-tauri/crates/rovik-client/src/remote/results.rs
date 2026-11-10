@@ -539,6 +539,7 @@ impl Remote {
                 let mut state = self.lock();
                 state.last_sync.remove(dialog_id);
                 state.rechecks.remove(dialog_id);
+                state.save_decisions_logged(dialog_id);
             }
             self.report(dialog_id, imported).await;
         }
@@ -569,9 +570,16 @@ impl Remote {
             self.notice(dialog_id, "warning", "This chat's changes didn't land", why);
             return;
         }
-        self.lock()
-            .rechecks
-            .insert(dialog_id.to_string(), rounds + 1);
+        let saved = {
+            let mut state = self.lock();
+            state.rechecks.insert(dialog_id.to_string(), rounds + 1);
+            state.save_decisions(dialog_id)
+        };
+        if let Err(error) = saved {
+            import::wait(dialog_id, &error);
+            self.notice(dialog_id, "warning", "The recheck could not start", &error);
+            return;
+        }
         let host = self.host_of(dialog_id).unwrap_or_default();
         let reason = match self.recheck(&host, dialog_id).await {
             Ok(synced) if synced.state == SyncState::Synced => format!(

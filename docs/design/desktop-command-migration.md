@@ -48,6 +48,9 @@ existing protocol and routing. Native window actions stay in Tauri.
 14. **Completed**: Allow persisted inactive remote mirrors through Unix replacement,
     checking ownership before and after draining without clearing live routing.
 
+15. **Completed**: Persist remote Keep/recheck decisions with checked atomic writes,
+    restart restoration, explicit failures, and upgrade checkpoints.
+
 Each phase must pass its regression tests and the repository checks before
 commit and push. Event-dependent commands must not silently lose callbacks or
 pretend they are ready for IPC. Windows remains embedded until its transport is ready.
@@ -619,3 +622,23 @@ records, routing after preparation, missing mirror records, active runs and
 local decisions, pull states, and ownership changing while receivers drain.
 Draining active remote work or persisting its remaining local decisions,
 macOS mount draining, and Windows transport remain separate.
+
+## Persisted remote decisions
+
+Each remote chat’s Keep choice and recheck count are saved in versioned records
+under the data directory’s remote-decisions folder. Hashed filenames stay within
+that folder; private atomic writes and per-record locks preserve complete records.
+Keep includes the exact sync state and host it applies to, so an identical replay
+retains the choice and a new sync clears it.
+
+Recheck increments are saved before requesting remote checks. A new message and
+successful landing save the reset; forgetting or changing a chat’s host clears
+the old choices. Keep returns a save error to its caller. Event-driven save
+failures are logged and retain the live choice for a checked upgrade retry.
+Startup reports unreadable, corrupt, or unsupported records rather than resetting
+the budget or forgetting a choice.
+
+Replacement checkpoints live decisions and retries failed writes before validating
+mirror ownership. Tests cover restoration, replay and reset boundaries, corrupt
+records, storage failure, successful retry, and forgetting a chat. Active-work
+draining is the next phase.

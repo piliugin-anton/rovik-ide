@@ -2354,4 +2354,10 @@ next maintenance refresh without changing their settings.
 Before releasing a mirrored chat connection, the backend verifies each chat’s
 saved owner and its lead’s mirror record on the database writer queue. It repeats
 the check after buffered events finish. Unsaved or inconsistent records defer
-replacement, as do active runs and local decisions that are not persisted.
+replacement, as do active runs and decisions whose persistence failed.
+
+Keep the older copy and automatic recheck counts are saved locally per remote
+chat. Replayed sync events preserve Keep; a changed sync clears it. A new message
+or successful landing resets the recheck budget. Failed saves report an error and
+defer replacement until the decision can be saved; corrupt records are reported
+during startup.
