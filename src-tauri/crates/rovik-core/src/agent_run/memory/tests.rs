@@ -1036,3 +1036,22 @@ fn a_repairs_identity_is_the_failure_and_the_files_it_applies_to() {
         "and so is a repair of another failure that changed the same files"
     );
 }
+
+#[test]
+fn plan_memories_name_the_request_and_retain_the_expanded_plan() {
+    let typed = "Implement \"Shared backend ownership\" plan.";
+    let wire = super::super::plan::implementation_request(
+        "# Shared backend ownership\n\nPreserve busy mounts.",
+        Some(".rovik/plans/backend.md"),
+        true,
+    );
+    let meta = serde_json::json!({"implementsPlan": true, "sentContent": wire});
+    let task = named_plan_task(&wire, typed, Some(&meta)).unwrap();
+    assert!(task.contains("Preserve busy mounts."));
+    assert_eq!(reflect("repo", &task, "done", &[], &[]).title, typed);
+    assert!(named_plan_task("A later request", typed, Some(&meta)).is_none());
+    assert!(named_plan_task(&wire, "", Some(&meta)).is_none());
+    assert!(named_plan_task(&wire, typed, None).is_none());
+    let ordinary = serde_json::json!({"sentContent": wire});
+    assert!(named_plan_task(&wire, typed, Some(&ordinary)).is_none());
+}

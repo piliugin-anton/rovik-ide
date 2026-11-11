@@ -601,6 +601,19 @@ fn task_query(text: &str) -> String {
         .collect()
 }
 
+// Keep the named UI request ahead of the expanded plan for durable memory.
+// Match its wire text so a Continue/Retry cannot borrow a stale message's title.
+fn named_plan_task(current: &str, typed: &str, meta: Option<&serde_json::Value>) -> Option<String> {
+    let meta = meta?;
+    if meta.get("implementsPlan")?.as_bool() != Some(true)
+        || meta.get("sentContent")?.as_str() != Some(current)
+        || typed.trim().is_empty()
+    {
+        return None;
+    }
+    Some(task_query(&format!("{}\n\n{current}", typed.trim())))
+}
+
 // Only split the current message's matching editor/reference envelope. Other
 // transports and stale sentContent keep their original retrieval text.
 fn recall_wire_parts<'a>(
@@ -1486,6 +1499,7 @@ impl super::run::Run {
             _ => self.latest_user_request().await,
         };
         let task = task_query(&text);
+        let mut named_task = None;
         let (intent, reference_context) = self
             .recent()
             .await
@@ -1499,6 +1513,7 @@ impl super::run::Run {
                     .find(|m| super::messages::is_request(m) && !m.failed)
             })
             .and_then(|message| {
+                named_task = named_plan_task(&text, &message.content, message.meta.as_ref());
                 let sent = super::run::sent_text(message.meta.as_ref());
                 recall_wire_parts(&text, &message.content, sent.as_deref())
                     .map(|(intent, prefix)| (task_query(intent), prefix.to_owned()))
@@ -1610,7 +1625,7 @@ impl super::run::Run {
                     generation,
                     repo,
                     settings_root: settings_folder,
-                    task,
+                    task: named_task.unwrap_or(task),
                     restricted: self.restricted.clone(),
                     root: self.root.clone(),
                     sealed,

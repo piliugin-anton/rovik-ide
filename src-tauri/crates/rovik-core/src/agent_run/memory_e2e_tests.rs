@@ -2134,3 +2134,52 @@ async fn memory_remember_refuses_a_claim_it_cannot_write() {
          refused: {written:?}"
     );
 }
+
+#[tokio::test]
+async fn implementing_a_named_plan_saves_its_title_in_long_term_memory() {
+    let plan = "# Shared backend ownership\n\nUpdate the notes.\n";
+    let h = harness(&[(".rovik/plans/backend.md", plan), ("notes.txt", "before\n")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({"items": [{"title": "Update notes", "status": "in_progress"}]}),
+        },
+        write("w1", "notes.txt", "after\n"),
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({"items": [{"title": "Update notes", "status": "done"}]}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let title = "Implement \"Shared backend ownership\" plan.";
+    let start = StartKind::Send {
+        message: UserMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: title.into(),
+            meta: Some(json!({
+                "mode": "agent", "implementsPlan": true,
+                "planPath": ".rovik/plans/backend.md"
+            })),
+            attachments: Vec::new(),
+        },
+    };
+    h.start(h.request(&url, start, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let memories = recent(&h);
+    assert!(
+        memories.iter().any(|memory| memory.title == title),
+        "{memories:?}"
+    );
+    assert!(!memories
+        .iter()
+        .any(|memory| memory.title.starts_with("Implement this plan")));
+    let wire = plan::implementation_request(plan, Some(".rovik/plans/backend.md"), true);
+    assert!(seen.lock().unwrap()[0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["content"].as_str() == Some(&wire)));
+}
