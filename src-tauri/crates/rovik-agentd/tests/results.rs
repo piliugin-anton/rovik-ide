@@ -289,13 +289,49 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
         .request::<Option<String>>(Request::AgentStart(Box::new(request)))
         .await
         .unwrap();
-    let (planned, outcome) = next_result(&mut heard).await;
-    assert_eq!(outcome.as_deref(), Some("done"), "the plan's run");
+    // Committing a result runs asynchronously. Later stages can end before
+    // that result arrives, so keep outcomes by stage and retain delivery's
+    // end even if it arrives before the implementation's result.
+    let mut outcomes = std::collections::BTreeMap::new();
+    let mut results = Vec::new();
+    while results.len() < 2 || !outcomes.contains_key("deliver") {
+        let next = tokio::time::timeout(Duration::from_secs(60), heard.recv()).await;
+        match next
+            .expect("the task's results and delivery")
+            .expect("the client went")
+        {
+            Incoming::Event {
+                event:
+                    Event::Agent(AgentEvent::RunEnded {
+                        stage: Some(stage),
+                        outcome,
+                        ..
+                    }),
+                ..
+            } => {
+                outcomes.insert(stage, outcome);
+            }
+            Incoming::Event {
+                event: Event::ResultReady(result),
+                ..
+            } => {
+                // Prepare, Tests and Deliver bring no result (S03, S04, S09).
+                let stage = ["plan", "implement"][results.len()];
+                assert_eq!(
+                    outcomes.get(stage),
+                    Some(&result.outcome),
+                    "the {stage} run must end before its result arrives"
+                );
+                results.push(result);
+            }
+            _ => {}
+        }
+    }
+    let planned = &results[0];
+    assert_eq!(planned.outcome, "done", "the plan's run");
     assert_eq!(planned.pending, None);
-    // The Prepare and Tests stages' runs between them are the IDE's own:
-    // they bring no result (S03, S04), so the next is the implementation's.
-    let (implemented, outcome) = next_result(&mut heard).await;
-    assert_eq!(outcome.as_deref(), Some("unverified"));
+    let implemented = &results[1];
+    assert_eq!(implemented.outcome, "unverified");
     assert_eq!(
         implemented.pending.as_deref(),
         Some("Not landed: no check ran on it, and Autopilot lands only what's checked.")
@@ -307,19 +343,6 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
     // D7: once the task is delivered, its result committed again (as a
     // move back asks for it) still waits, and says why: the delivery's own
     // run, which brings no result, doesn't make it landable.
-    loop {
-        let next = tokio::time::timeout(Duration::from_secs(60), heard.recv()).await;
-        let delivered = matches!(
-            next.expect("the delivery's run's end").expect("the client went"),
-            Incoming::Event {
-                event: Event::Agent(AgentEvent::RunEnded { stage: Some(stage), .. }),
-                ..
-            } if stage == "deliver"
-        );
-        if delivered {
-            break;
-        }
-    }
     let again: ChatResult = (setup.client)
         .request(Request::WorkResult {
             dialog_id: CHAT.into(),
