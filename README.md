@@ -276,8 +276,8 @@ Once installed, Rovik [updates itself](#updates).
 
 ### Building from source
 
-You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22
-(or 20.19 and newer), plus your system's build tools, as below.
+You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 24,
+plus your system's build tools, as below.
 
 #### Linux
 
@@ -298,8 +298,7 @@ Built packages end up in `src-tauri/target/release/bundle/`.
 #### macOS
 
 1. Install the Xcode Command Line Tools: `xcode-select --install`
-2. Install [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22
-   (or 20.19 and newer).
+2. Install [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 24.
 3. From the project folder:
 
    ```bash
@@ -315,7 +314,7 @@ Built packages end up in `src-tauri/target/release/bundle/`.
    with the **Desktop development with C++** workload.
 2. Install [Rust](https://rustup.rs) with the default
    `x86_64-pc-windows-msvc` toolchain (MinGW isn't supported).
-3. Install [Node.js](https://nodejs.org) 22 (or 20.19 and newer).
+3. Install [Node.js](https://nodejs.org) 24.
 4. From the project folder, run the same `npm` commands as on macOS.
 
 WebView2 is already part of Windows 10 and 11.

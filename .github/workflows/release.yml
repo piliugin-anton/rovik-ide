@@ -92,7 +92,7 @@ jobs:
             exit 1
           fi
       # The tags too: they say which versions are released.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN || github.token }}
@@ -138,10 +138,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         if: steps.choose.outputs.bump == 'true'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.choose.outputs.bump == 'true'
         with:
-          node-version: 22
+          node-version: 24
       - name: Set the version, and commit it
         id: commit
         if: steps.choose.outputs.version != ''
@@ -209,7 +209,7 @@ jobs:
       matrix:
         cpu: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
@@ -250,7 +250,7 @@ jobs:
             args: --config src-tauri/tauri.windows-backend.conf.json
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
       - name: Install the system's packages
@@ -264,9 +264,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Package the Windows desktop backend
@@ -297,12 +297,12 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       RELEASE: ${{ needs.version.outputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - uses: actions/download-artifact@v4

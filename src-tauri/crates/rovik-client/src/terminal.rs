@@ -57,6 +57,7 @@ pub(crate) struct Context {
     pub state: Arc<TerminalState>,
     pub owner: Arc<crate::desktop_session::Session>,
     pub sink: String,
+    #[cfg(unix)]
     pub data: std::path::PathBuf,
 }
 

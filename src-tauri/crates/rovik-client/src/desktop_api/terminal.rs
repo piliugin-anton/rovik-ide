@@ -47,6 +47,7 @@ impl TerminalRequest {
                 state: backend.terminals.clone(),
                 owner: owner.clone(),
                 sink: sink.into(),
+                #[cfg(unix)]
                 data: backend.core.db.data_dir().to_path_buf(),
             })
         };

@@ -31,6 +31,9 @@ On macOS also enable `macos-no-mount,macfuse-4-compat`, as the mounted CI workfl
 does. Its separate core tests cover the MFMount adapter, followed by an actual
 FSKit busy-mount and saved-edit regression.
 
+Unused private ABI structs for unsupported CUSE, ioctl retry vectors and retrieve
+notifications are omitted; supported request/reply layouts are unchanged.
+
 Remove this fork when upstream exposes a message transport that covers requests,
 replies, notifications, initialization and shutdown. Move the regression tests to
 that API, restore the registry dependency, and remove the workspace patch.
