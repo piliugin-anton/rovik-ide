@@ -9,8 +9,10 @@ if [[ ! $suite =~ ^[a-z]+$ || $# == 0 ]]; then
   exit 2
 fi
 
-sources=$(mktemp --suffix=.list)
-trap 'rm -f "$sources"' EXIT
+sources_dir=$(mktemp -d)
+trap 'rm -rf "$sources_dir"' EXIT
+sources=$sources_dir/ubuntu.list
+mkdir "$sources_dir/parts"
 cat > "$sources" <<SOURCES
 deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu $suite main restricted universe multiverse
 deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu $suite-updates main restricted universe multiverse
@@ -19,7 +21,7 @@ deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://security.
 SOURCES
 
 # Use the same sources for update and install, and refuse stale package indexes.
-options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
+options=(-o "Dir::Etc::sourcelist=$sources" -o "Dir::Etc::sourceparts=$sources_dir/parts"
   -o Acquire::Retries=3 -o Acquire::https::Timeout=30)
 apt-get "${options[@]}" -o APT::Update::Error-Mode=any update
 apt-get "${options[@]}" install -y "$@"

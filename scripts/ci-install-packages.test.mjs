@@ -19,7 +19,8 @@ for (const failUpdate of [false, true]) {
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const source = args.find(arg => arg.startsWith('Dir::Etc::sourcelist=')).split('=')[1];
-fs.appendFileSync(process.env.APT_TEST_LOG, JSON.stringify({args, source, text: fs.readFileSync(source, 'utf8')}) + '\\n');
+const parts = args.find(arg => arg.startsWith('Dir::Etc::sourceparts=')).split('=')[1];
+fs.appendFileSync(process.env.APT_TEST_LOG, JSON.stringify({args, source, parts: fs.readdirSync(parts), text: fs.readFileSync(source, 'utf8')}) + '\\n');
 if (args.includes('update') && process.env.APT_TEST_FAIL === '1') process.exit(100);
 `,
         { mode: 0o755 }
@@ -41,7 +42,7 @@ if (args.includes('update') && process.env.APT_TEST_FAIL === '1') process.exit(1
         assert.match(call.text, /https:\/\/security\.ubuntu\.com\/ubuntu noble-security/);
         assert.match(call.text, /signed-by=\/usr\/share\/keyrings\/ubuntu-archive-keyring.gpg/);
         assert.doesNotMatch(call.text, /azure|mirror\+|trusted=yes/);
-        assert.ok(call.args.includes('Dir::Etc::sourceparts=-'));
+        assert.deepEqual(call.parts, [], 'runner-provided third-party sources are excluded');
         assert.ok(call.args.includes('Acquire::Retries=3'));
         assert.equal(existsSync(call.source), false, 'temporary sources are cleaned up');
       }
