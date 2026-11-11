@@ -832,6 +832,39 @@ async fn revisions_listing(db: &DbState, dialog_id: &str) -> Result<String, Stri
     Ok(out.join("\n"))
 }
 
+/// Reads a context file for the editor without tool guidance or truncation.
+/// Persisted task cards and live context remain readable after a host restart.
+pub async fn read_file(
+    db: &DbState,
+    vfs: &VfsState,
+    dialog_id: &str,
+    path: &str,
+) -> Result<String, String> {
+    let path = path.trim();
+    // Unlike tool aliases, this public request accepts only the context namespace.
+    if !(path == "@context" || path.starts_with("@context/") || path.starts_with("@context\\")) {
+        return Err("Expected a path in @context/".into());
+    }
+    let (file, persisted_task) = match target(vfs, dialog_id, path)? {
+        Target::Live => (context_file(dialog_id), Some(false)),
+        Target::Other(rel) if is_task_rel(&rel) => (task_file(dialog_id), Some(true)),
+        Target::Other(rel) => (format!("{}/{rel}", context_dir(dialog_id)), None),
+        Target::Revision(number, None) => return revision_text(db, vfs, dialog_id, number).await,
+        _ => return Err("Open context revisions from the context panel".into()),
+    };
+    if let Some(text) = read_text(vfs, &file) {
+        return Ok(text);
+    }
+    if let Some(task) = persisted_task {
+        let chat = dialog_id.to_string();
+        let saved = db.read(move |conn| store::load_state(conn, &chat)).await?;
+        if let Some(text) = if task { saved.task } else { saved.rendered } {
+            return Ok(text);
+        }
+    }
+    Err(missing_file_error(vfs, dialog_id, path))
+}
+
 /// read on `@context/…`.
 pub async fn tool_read(
     db: &DbState,

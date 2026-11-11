@@ -1837,6 +1837,10 @@ agent's context is kept within the model's limit (`src/lib/contextMode.ts`):
   (`src-tauri/crates/rovik-core/src/clm/`). Requires the virtual files driver; without it, the
   chat falls back to Trimming.
 
+Links to `@context/TASK.md` and other context files open from the chat that owns
+them. Mounted local files remain editable; remote or unmounted files open as
+read-only snapshots. Saved task cards remain readable after a backend restart.
+
 How CLM mode works:
 
 - Before each request, the context is written to

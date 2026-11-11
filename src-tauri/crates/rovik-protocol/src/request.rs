@@ -203,6 +203,11 @@ pub enum Request {
     ClmListRevisions {
         dialog_id: String,
     },
+    /// Reads a context file as plain text for the editor, without a mount.
+    ClmReadFile {
+        dialog_id: String,
+        path: String,
+    },
     ClmReadRevision {
         dialog_id: String,
         number: u64,
@@ -446,6 +451,7 @@ impl Request {
             | Request::ChatOwner { dialog_id }
             | Request::ClmStatus { dialog_id }
             | Request::ClmListRevisions { dialog_id }
+            | Request::ClmReadFile { dialog_id, .. }
             | Request::ClmReadRevision { dialog_id, .. }
             | Request::WorkStatus { dialog_id }
             | Request::WorkFile { dialog_id, .. } => chat(dialog_id, Read),

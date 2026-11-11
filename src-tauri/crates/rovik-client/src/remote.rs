@@ -881,6 +881,39 @@ impl Remote {
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
+        if let Request::ClmReadFile { path, .. } = &request {
+            if !self.serves(&host, features::CONTEXT_FILES) {
+                // Older hosts already support the live context through revisions.
+                // Never send them a request variant they cannot decode.
+                let path = path.trim().replace('\\', "/");
+                if matches!(
+                    path.as_str(),
+                    "@context" | "@context/" | "@context/LIVE_CONTEXT.md"
+                ) {
+                    let client = self.client(&host)?;
+                    if let Response::ClmStatus(status) = client
+                        .call(Request::ClmStatus {
+                            dialog_id: dialog_id.into(),
+                        })
+                        .await?
+                    {
+                        if let Some(number) = status.revision {
+                            return client
+                                .call(Request::ClmReadRevision {
+                                    dialog_id: dialog_id.into(),
+                                    number,
+                                })
+                                .await;
+                        }
+                    }
+                    return Err(Fail::new(
+                        FailCode::BadRequest,
+                        "This chat has no saved context revision yet",
+                    ));
+                }
+                return Err(Fail::new(FailCode::BadRequest, format!("{} runs an older Rovik: update it to open task cards and other context files.", self.host_name(&host))));
+            }
+        }
         // What the run waits on is still answered (6.8).
         let writes = matches!(request.target(), Some((_, Access::Write)));
         if writes && self.is_moving_back(dialog_id) {

@@ -40,11 +40,24 @@ function standsAlone(call: ChatToolCall): boolean {
   return call.name === 'write' && isLiveContextPath(str(parseArgsLenient(call.arguments).path));
 }
 
+/** Keep starting, inspecting and stopping commands on distinct lines. */
+function operation(call: ChatToolCall): string {
+  const args = parseArgsLenient(call.arguments);
+  if (call.name === 'background') return str(args.action) ?? '';
+  if (call.name === 'bash') return args.background === true ? 'start' : 'run';
+  return '';
+}
+
 export function groupToolCalls(calls: readonly ChatToolCall[]): ToolRun[] {
   const runs: ToolRun[] = [];
   let open: ToolRun | null = null;
   for (const call of calls) {
-    if (open && open.name === call.name && !standsAlone(call)) {
+    if (
+      open &&
+      open.name === call.name &&
+      operation(open.calls[0]) === operation(call) &&
+      !standsAlone(call)
+    ) {
       open.calls.push(call);
       continue;
     }
@@ -118,10 +131,34 @@ export function fileName(path: string): string {
  * "FOO=1 /usr/bin/npm test && git status" → "npm".
  */
 export function commandName(command: string | undefined): string | undefined {
-  for (const token of (command ?? '').trim().split(/\s+/)) {
-    if (!token || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
-    const bare = token.replace(/^['"(]+|['");]+$/g, '');
-    return bare ? fileName(bare) : undefined;
+  // Shell words may contain adjacent quoted and unquoted segments. Never
+  // treat a word inside a quoted assignment value as the executable.
+  const words: string[] = [];
+  let word = '';
+  let quote = '';
+  let escaped = false;
+  for (const char of command ?? '') {
+    if (escaped) {
+      if (quote === '"' && !['$', '`', '"', '\\', '\n'].includes(char)) word += '\\';
+      if (char !== '\n') word += char;
+      escaped = false;
+    } else if (char === '\\' && quote !== "'") {
+      escaped = true;
+    } else if (quote) {
+      if (char === quote) quote = '';
+      else word += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (/\s/.test(char) || ';&|()'.includes(char)) {
+      if (word) words.push(word);
+      word = '';
+      if (';&|'.includes(char)) break;
+    } else word += char;
+  }
+  if (word) words.push(word);
+  for (const token of words) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+    return fileName(token);
   }
   return undefined;
 }
@@ -254,7 +291,9 @@ export function describeGroup(
       );
     case 'bash':
       return label(
-        verb('Running', 'Ran'),
+        argsList.every((a) => a.background === true)
+          ? verb('Starting', 'Started')
+          : verb('Running', 'Ran'),
         argsList.map((a) => {
           const command = commandName(str(a.command));
           return command ? { text: command, title: str(a.command) } : undefined;
@@ -262,7 +301,11 @@ export function describeGroup(
       );
     case 'background':
       return label(
-        verb('Checking on', 'Checked on'),
+        argsList.every((a) => a.action === 'stop')
+          ? verb('Stopping', 'Stopped')
+          : argsList.every((a) => a.action === 'list')
+            ? verb('Listing', 'Listed')
+            : verb('Checking on', 'Checked on'),
         argsList.map((a) => {
           const id = str(a.id);
           return id ? { text: id } : { text: 'the background tasks' };

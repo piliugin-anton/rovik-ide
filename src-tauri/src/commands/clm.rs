@@ -67,6 +67,16 @@ pub async fn clm_read_revision(
     backend.call(request).await
 }
 
+/// Reads a chat's context file from its owner even without a mounted volume.
+#[tauri::command]
+pub async fn clm_read_file(
+    backend: State<'_, DesktopConnection>,
+    dialog_id: String,
+    path: String,
+) -> Result<String, String> {
+    backend.call(Request::ClmReadFile { dialog_id, path }).await
+}
+
 /// Puts revision `number` back as the context file: it's read back like an
 /// edit before the next request.
 #[tauri::command]

@@ -1,3 +1,4 @@
+import { isContextPath } from '../lib/contextMode';
 // ToolCallGroup.tsx
 //
 // A tool call, or consecutive calls to one tool, as a single line like the
@@ -149,7 +150,9 @@ export default function ToolCallGroup(props: {
                             : item().written
                               ? { at: 'first-change' as const }
                               : {}),
-                          ...(item().written ? { dialogId: props.dialogId } : {}),
+                          ...(item().written || isContextPath(path())
+                            ? { dialogId: props.dialogId }
+                            : {}),
                         });
                       }}
                     >

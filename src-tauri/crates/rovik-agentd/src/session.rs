@@ -31,6 +31,7 @@ const FEATURES: &[&str] = &[
     features::ATTACHMENTS,
     features::PROJECTS,
     features::MEMORY_SYNC,
+    features::CONTEXT_FILES,
     features::MIRROR,
     features::HOST,
     features::CLEAN_UP,

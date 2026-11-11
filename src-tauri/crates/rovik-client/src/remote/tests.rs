@@ -2593,3 +2593,52 @@ async fn remote_runs_and_drivers_continue_and_are_restored_after_replacement() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn context_file_reads_require_support_and_keep_the_owning_chat() {
+    for supported in [false, true] {
+        let app = App::new();
+        app.chat("chat", None, Vec::new()).await;
+        let fake = Fake::default();
+        if supported {
+            fake.features
+                .lock()
+                .unwrap()
+                .push(features::CONTEXT_FILES.into());
+        }
+        let (remote, fake) = connected_to(&app, fake).await;
+        remote.place("chat", HOST);
+        let request = Request::ClmReadFile {
+            dialog_id: "chat".into(),
+            path: "@context/TASK.md".into(),
+        };
+        let result = remote.route("chat", request.clone()).await;
+        if supported {
+            assert_eq!(
+                result.unwrap(),
+                Response::Text("chat:@context/TASK.md".into())
+            );
+        } else {
+            assert!(result.unwrap_err().message.contains("update it"));
+            let live = remote
+                .route(
+                    "chat",
+                    Request::ClmReadFile {
+                        dialog_id: "chat".into(),
+                        path: "@context/LIVE_CONTEXT.md".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(live, Response::Text("chat:revision-7".into()));
+            assert!(!fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| matches!(request, Request::ClmReadFile { .. })));
+        }
+        assert_eq!(fake.requests.lock().unwrap().contains(&request), supported);
+        remote.disconnect(HOST);
+    }
+}

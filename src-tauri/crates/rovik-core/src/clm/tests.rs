@@ -533,3 +533,60 @@ fn missing_task_card_reads_as_guidance() {
         let _ = std::fs::remove_dir_all(dir);
     });
 }
+
+#[tokio::test]
+async fn editor_reads_context_files_without_a_mount_and_from_the_owning_chat() {
+    let t = crate::testing::TestCore::new();
+    let db = &t.core.db;
+    let vfs = &t.core.vfs;
+    db.write(|conn| {
+        for id in ["one", "two"] {
+            create_dialog(
+                conn,
+                &NewDialog {
+                    id: id.into(),
+                    title: id.into(),
+                    created_at: 1,
+                    updated_at: 1,
+                    project_id: None,
+                },
+            )?;
+        }
+        let state = store::State {
+            task: Some("Saved task".into()),
+            rendered: Some("Saved context".into()),
+            ..Default::default()
+        };
+        store::save_state(conn, "one", &state)
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        read_file(db, vfs, "one", "@context/TASK.md").await.unwrap(),
+        "Saved task"
+    );
+    assert_eq!(
+        read_file(db, vfs, "one", "@context").await.unwrap(),
+        "Saved context"
+    );
+    let full = "Current task\n".repeat(3000);
+    vfs.write_unmounted(&task_file("one"), full.as_bytes())
+        .unwrap();
+    vfs.write_unmounted(&task_file("two"), b"Other chat")
+        .unwrap();
+    assert_eq!(
+        read_file(db, vfs, "one", "@context/task").await.unwrap(),
+        full
+    );
+    assert_eq!(
+        read_file(db, vfs, "two", "@context/TASK.md").await.unwrap(),
+        "Other chat"
+    );
+    for path in [
+        "@context/../two/TASK.md",
+        "@context-other/TASK.md",
+        "/etc/passwd",
+    ] {
+        assert!(read_file(db, vfs, "one", path).await.is_err(), "{path}");
+    }
+}

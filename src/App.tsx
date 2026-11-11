@@ -124,8 +124,7 @@ import {
 import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
-import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
-import { isLiveContextPath } from './lib/contextDoc';
+import { contextRealPath, isContextPath, readContextFile } from './lib/contextMode';
 import { chatStore } from './lib/chatStore';
 import { overlayFile } from './lib/overlay';
 import { notify } from './lib/notifications';
@@ -140,7 +139,7 @@ import { startWsl } from './lib/wslStartup';
 import { startUpdates } from './lib/updates';
 import { startHostUpdates } from './lib/hostUpdates';
 import { onShowChat } from './lib/agentRuns';
-import { cloud, hostName } from './lib/cloud';
+import { cloud } from './lib/cloud';
 import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
@@ -711,8 +710,19 @@ export default function App() {
       const rel = toRelativePath(toAbsolutePath(path, root), root);
       if (await openChatVersion(request.dialogId, rel, request)) return;
     }
-    const abs = await resolveOpenPath(path, root);
-    if (!abs && (await openRemoteContext(path, request))) return;
+    let abs: string | null;
+    if (isContextPath(path)) {
+      const dialogId = request.dialogId ?? chatStore.state.activeId;
+      if (!dialogId) return;
+      // Keep local mounted files editable. A remote mount belongs to its host;
+      // missing mounts use an owner-routed text snapshot instead.
+      const mounted = await contextRealPath(dialogId, path);
+      if (mounted && (await pathExists(mounted))) abs = mounted;
+      else {
+        await openContextFile(path, { ...request, dialogId });
+        return;
+      }
+    } else abs = await resolveOpenPath(path, root);
     if (!abs) {
       notify({
         kind: 'warning',
@@ -881,27 +891,27 @@ export default function App() {
     );
     return true;
   }
-  /**
-   * A remote chat's context file, read-only from its latest revision: the
-   * folder it's in is on the server (U04). False when `path` isn't that
-   * file, or the chat isn't remote.
-   */
-  async function openRemoteContext(path: string, request: OpenInEditor): Promise<boolean> {
-    const chat = chatStore.state.active;
-    if (!chat?.place || !isLiveContextPath(path)) return false;
-    const text = await remoteContextText(chat.id).catch(() => null);
-    if (text === null) return false;
-    await openComparison(
-      `context:${chat.id}`,
-      {
-        title: `LIVE_CONTEXT.md (on ${hostName(chat.place.host, cloud.hosts)})`,
-        fileName: 'LIVE_CONTEXT.md',
-        before: text,
-        after: text,
-      },
-      request
-    );
-    return true;
+  /** Context links name their originating chat, independent of the selected chat. */
+  async function openContextFile(path: string, request: OpenInEditor): Promise<void> {
+    const dialogId = request.dialogId ?? chatStore.state.activeId;
+    if (!dialogId) return;
+    try {
+      const text = await readContextFile(dialogId, path);
+      const name =
+        path === '@context' ? 'LIVE_CONTEXT.md' : path.split(/[\\/]/).pop() || 'LIVE_CONTEXT.md';
+      await openComparison(
+        `context:${dialogId}:${path}`,
+        { title: name, fileName: name, before: text, after: text },
+        request
+      );
+    } catch (error) {
+      notify({
+        kind: 'warning',
+        title: `Can't open ${path}`,
+        message: String(error),
+        timeout: 8_000,
+      });
+    }
   }
   /**
    * The file a path from the chat names: relative to the project, absolute,
@@ -918,6 +928,14 @@ export default function App() {
   // Which paths mentioned in the chat are files in this project (or the
   // agent's context folder).
   setProjectFileResolver(async (path) => {
+    if (isContextPath(path)) {
+      const dialogId = chatStore.state.activeId;
+      if (!dialogId) return null;
+      return readContextFile(dialogId, path).then(
+        () => path,
+        () => null
+      );
+    }
     const abs = await resolveOpenPath(path, rootPath());
     if (!abs || !(await pathExists(abs))) return null;
     return (await dirEntryCount(abs, 1)) === null ? abs : null; // a file, not a folder
@@ -2373,7 +2391,9 @@ export default function App() {
                 readOnlyMessage={
                   openFiles().find((f) => f.path === path)?.commit
                     ? 'Committed version — read-only.'
-                    : 'Stashed preview — read-only. Pop the stash to edit.'
+                    : path.startsWith('context:')
+                      ? 'Context snapshot — read-only. Reopen the file to refresh it.'
+                      : 'Stashed preview — read-only. Pop the stash to edit.'
                 }
               />
             )}

@@ -123,6 +123,11 @@ export async function contextRealPath(dialogId: string, path: string): Promise<s
   return [dir, ...parts].join(sep);
 }
 
+/** Reads the owning chat's context text without relying on a local mount. */
+export function readContextFile(dialogId: string, path: string): Promise<string> {
+  return invoke<string>('clm_read_file', { dialogId, path });
+}
+
 /**
  * A remote chat's context file as it is now: its latest revision. The volume
  * it lives on is the server's, so it's read, not opened (U04). Null when the

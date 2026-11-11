@@ -839,6 +839,10 @@ fn every_request_round_trips() {
             Request::ClmListRevisions {
                 dialog_id: "d".into(),
             },
+            Request::ClmReadFile {
+                dialog_id: "d".into(),
+                path: "@context/TASK.md".into(),
+            },
             Request::ClmReadRevision {
                 dialog_id: "d".into(),
                 number: 2,
@@ -2112,4 +2116,16 @@ fn upper_reasoning_efforts_round_trip_without_aliasing() {
         assert_eq!(effort.level(), level);
         assert_eq!(serde_json::to_value(effort).unwrap(), serde_json::json!(level));
     }
+}
+
+#[test]
+fn context_file_reads_are_routed_to_the_owning_chat() {
+    assert_eq!(
+        Request::ClmReadFile {
+            dialog_id: "source-chat".into(),
+            path: "@context/TASK.md".into()
+        }
+        .target(),
+        Some((crate::Target::Chat("source-chat"), crate::Access::Read))
+    );
 }

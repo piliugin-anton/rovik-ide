@@ -448,6 +448,7 @@ pub fn run() {
             commands::clm::clm_reset,
             commands::clm::clm_list_revisions,
             commands::clm::clm_read_revision,
+            commands::clm::clm_read_file,
             commands::clm::clm_restore_revision,
             commands::clm::clm_tool_read,
             commands::clm::clm_tool_edit,
