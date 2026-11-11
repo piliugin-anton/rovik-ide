@@ -327,13 +327,11 @@ export default function App() {
       !restoringProject() &&
       !tabsComing() &&
       currentProject() !== undefined &&
-      !tree.loading() &&
-      !loadingChats()
+      !tree.loading()
     ) {
       setOpeningProject(false);
     }
   });
-  const projectLoading = () => openingProject() || loadingChats();
 
   const displayRows = createMemo<TreeRow[]>(() => {
     const rows = tree.rows();
@@ -2195,7 +2193,7 @@ export default function App() {
             >
               AI Chat
               <Show
-                when={chatStore.hasAnyRunning()}
+                when={loadingChats() || chatStore.hasAnyRunning()}
                 fallback={
                   <Show when={chatStore.hasAnyUnread()}>
                     <span
@@ -2208,8 +2206,8 @@ export default function App() {
               >
                 <span
                   class="sidebar-tab-spinner"
-                  title="The agent is working"
-                  aria-label="The agent is working"
+                  title={loadingChats() ? 'Loading chats' : 'The agent is working'}
+                  aria-label={loadingChats() ? 'Loading chats' : 'The agent is working'}
                   role="status"
                 />
               </Show>
@@ -2453,7 +2451,7 @@ export default function App() {
           onDelete={handleDeleteFile}
         />
       </Show>
-      <Show when={projectLoading()}>
+      <Show when={openingProject()}>
         <div
           class="project-loading-overlay"
           role="status"

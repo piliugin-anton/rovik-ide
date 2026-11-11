@@ -11,7 +11,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-test('switching an open project covers the window until folders and existing chats are ready', async (t) => {
+test('project loading covers the window but chat loading stays inside the AI Chat tab', async (t) => {
   for (const name of ['offsetHeight', 'clientHeight', 'offsetWidth', 'clientWidth'] as const) {
     t.mock.getter(HTMLElement.prototype, name, () => 400);
   }
@@ -95,6 +95,13 @@ test('switching an open project covers the window until folders and existing cha
     identity.resolve({ project: project('next'), suggestion: null });
     await flush();
     assert.ok(overlay(), 'the project identity alone is not enough');
+    folders.resolve([]);
+    await flush();
+    assert.equal(overlay(), null, 'chat loading does not cover the window');
+    assert.equal(root.querySelector('.chat-loading')?.textContent, 'Loading...');
+    assert.ok(root.querySelector('.chat-loading .sidebar-tab-spinner'));
+    assert.ok(root.querySelector('.sidebar-tabs [aria-label="Loading chats"]'));
+    assert.ok(root.querySelector('.chat-panel.loading-history'), 'only the loader is shown');
     chats.resolve({
       items: [
         { id: 'saved-chat', title: 'Existing chat', createdAt: 1, updatedAt: 1, messageCount: 1 },
@@ -102,13 +109,14 @@ test('switching an open project covers the window until folders and existing cha
       nextCursor: null,
     });
     await flush();
-    assert.ok(overlay(), 'the selected transcript is still loading');
+    assert.equal(overlay(), null);
+    assert.ok(root.querySelector('.chat-loading'), 'the selected transcript is still loading');
     messages.resolve({ messages: [], hasOlder: false, hasNewer: false });
     await flush();
-    assert.ok(overlay(), 'folder restoration is still loading');
-    folders.resolve([]);
-    await flush();
-    assert.equal(overlay(), null, 'all parts of the project are ready');
+    assert.equal(overlay(), null);
+    assert.equal(root.querySelector('.chat-loading'), null);
+    assert.equal(root.querySelector('.chat-panel.loading-history'), null);
+    assert.equal(root.querySelector('.sidebar-tabs [aria-label="Loading chats"]'), null);
 
     await open('history-error');
     assert.equal(overlay(), null, 'a chat load failure releases the overlay');

@@ -50,7 +50,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   files change on disk.
 - The startup spinner stays visible until the project, restored tabs and
   expanded folders have finished loading. Switching projects shows a dimmed
-  loading overlay until its tabs, folders and visible chat history are ready.
+  loading overlay until its tabs and folders are ready. Chat history loads within
+  the AI Chat panel, with a spinner in its tab and a centered loading message.
 - Browser tabs: a page a dev server on a cloud host opens shows in a tab
   of the editor, hot reload and all, with an address bar for any http or
   https page (see [Servers and pages on a cloud

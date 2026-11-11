@@ -4520,7 +4520,18 @@ export default function ChatPanel(props: ChatProps) {
    */
 
   return (
-    <div class="chat-panel">
+    <div
+      class="chat-panel"
+      classList={{ 'loading-history': loadingHistory() }}
+      aria-busy={loadingHistory()}
+    >
+      {/* Keep the composer mounted so its draft can restore while history loads. */}
+      <Show when={loadingHistory()}>
+        <div class="chat-loading" role="status" aria-live="polite">
+          <span class="sidebar-tab-spinner" aria-hidden="true" />
+          <span>Loading...</span>
+        </div>
+      </Show>
       <div class="chat-header">
         <button
           class="chat-history-button"
