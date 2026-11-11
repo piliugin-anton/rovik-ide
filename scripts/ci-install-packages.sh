@@ -9,15 +9,31 @@ if [[ ! $suite =~ ^[a-z]+$ || $# == 0 ]]; then
   exit 2
 fi
 
+# Fail over before APT's per-index retries if Ubuntu's DNS is unavailable.
+# Every source still requires Ubuntu's archive signing key below.
+reachable() {
+  curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 \
+    --retry 1 --output /dev/null "$1/dists/$2/InRelease"
+}
+archive=https://archive.ubuntu.com/ubuntu
+security=https://security.ubuntu.com/ubuntu
+if ! reachable "$archive" "$suite" || ! reachable "$security" "$suite-security"; then
+  echo 'Ubuntu repositories unavailable; trying the kernel.org Ubuntu mirror.' >&2
+  archive=https://mirrors.edge.kernel.org/ubuntu
+  security=$archive
+  reachable "$archive" "$suite"
+  reachable "$security" "$suite-security"
+fi
+
 sources_dir=$(mktemp -d)
 trap 'rm -rf "$sources_dir"' EXIT
 sources=$sources_dir/ubuntu.list
 mkdir "$sources_dir/parts"
 cat > "$sources" <<SOURCES
-deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu $suite main restricted universe multiverse
-deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu $suite-updates main restricted universe multiverse
-deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu $suite-backports main restricted universe multiverse
-deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://security.ubuntu.com/ubuntu $suite-security main restricted universe multiverse
+deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $archive $suite main restricted universe multiverse
+deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $archive $suite-updates main restricted universe multiverse
+deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $archive $suite-backports main restricted universe multiverse
+deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $security $suite-security main restricted universe multiverse
 SOURCES
 
 # Use the same sources for update and install, and refuse stale package indexes.

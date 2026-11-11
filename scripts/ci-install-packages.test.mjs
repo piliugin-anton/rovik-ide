@@ -8,8 +8,12 @@ import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('./ci-install-packages.sh', import.meta.url));
 
-for (const failUpdate of [false, true]) {
-  test(`Ubuntu packages use signed official sources and ${failUpdate ? 'stop on an index failure' : 'retain those sources for installation'}`, () => {
+for (const { failUpdate, fallback } of [
+  { failUpdate: false, fallback: false },
+  { failUpdate: true, fallback: false },
+  { failUpdate: false, fallback: true },
+]) {
+  test(`Ubuntu packages ${fallback ? 'fall back to a signed mirror' : 'use official sources'} and ${failUpdate ? 'stop on an index failure' : 'retain those sources for installation'}`, () => {
     const dir = mkdtempSync(join(tmpdir(), 'rovik-apt-test-'));
     const log = join(dir, 'calls.jsonl');
     try {
@@ -25,6 +29,13 @@ if (args.includes('update') && process.env.APT_TEST_FAIL === '1') process.exit(1
 `,
         { mode: 0o755 }
       );
+      writeFileSync(
+        join(dir, 'curl'),
+        `#!/usr/bin/env node
+process.exit(process.env.APT_TEST_FALLBACK === '1' && process.argv.at(-1).includes('.ubuntu.com/') ? 6 : 0);
+`,
+        { mode: 0o755 }
+      );
       const result = spawnSync('bash', [script, 'noble', 'bubblewrap', 'build-essential'], {
         encoding: 'utf8',
         env: {
@@ -32,14 +43,20 @@ if (args.includes('update') && process.env.APT_TEST_FAIL === '1') process.exit(1
           PATH: `${dir}:${process.env.PATH}`,
           APT_TEST_LOG: log,
           APT_TEST_FAIL: failUpdate ? '1' : '0',
+          APT_TEST_FALLBACK: fallback ? '1' : '0',
         },
       });
       assert.equal(result.status, failUpdate ? 100 : 0, result.stderr);
       const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(calls.length, failUpdate ? 1 : 2);
       for (const call of calls) {
-        assert.match(call.text, /https:\/\/archive\.ubuntu\.com\/ubuntu noble-updates/);
-        assert.match(call.text, /https:\/\/security\.ubuntu\.com\/ubuntu noble-security/);
+        if (fallback) {
+          assert.match(call.text, /https:\/\/mirrors\.edge\.kernel\.org\/ubuntu noble-updates/);
+          assert.match(call.text, /https:\/\/mirrors\.edge\.kernel\.org\/ubuntu noble-security/);
+        } else {
+          assert.match(call.text, /https:\/\/archive\.ubuntu\.com\/ubuntu noble-updates/);
+          assert.match(call.text, /https:\/\/security\.ubuntu\.com\/ubuntu noble-security/);
+        }
         assert.match(call.text, /signed-by=\/usr\/share\/keyrings\/ubuntu-archive-keyring.gpg/);
         assert.doesNotMatch(call.text, /azure|mirror\+|trusted=yes/);
         assert.deepEqual(call.parts, [], 'runner-provided third-party sources are excluded');
