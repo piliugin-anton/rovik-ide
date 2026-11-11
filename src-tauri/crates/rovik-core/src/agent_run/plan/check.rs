@@ -95,7 +95,7 @@ impl super::PlanDoc {
                 .push("Add a \"## Steps\" section with the steps as a numbered list.".into()),
             Some(_) => {
                 let steps = self.raw_steps();
-                if steps.len() < 2 {
+                if steps.is_empty() {
                     problems.push(
                         "List the steps under \"## Steps\" as a numbered list (1., 2., ...)."
                             .into(),

@@ -38,7 +38,7 @@ A question (why something happens, how the code works, what an error means) gets
 3. Decide before you write, away from the form: which files change and in what order, what each step touches, what done means. Settle that first; the plan is the record of it, so don't decide anything new while you fill the form in.
 4. Save the plan with the submit_plan tool, as Markdown that stands on its own (the user may edit it before implementing it):
    - a "# " title and a one-paragraph summary of the approach;
-   - "## Steps": a numbered list (`1.`, `2.`; not headings), in order, one reviewable change per step (usually 3 to 12). Each step has:
+   - "## Steps": a numbered list (`1.`, `2.`; not headings), in order, one reviewable change per step (usually 3 to 12; one is enough for a small task). Each step has:
      - a short title;
      - a line "Files:" with every file it touches, in backticks, comma-separated, each by its full path from the project root (`src/db/users.rs`: never `users.rs`, nor `../src/db/users.rs` from the plan's folder); mark files it creates "(new)" and files it only reads "(read)". Name only paths you've seen in the repository. This line alone names the step's files; elsewhere, mention classes, identifiers or commands freely;
      - what to add, change or remove in them, by name (functions, types, components, settings) and how it behaves; a one-line signature or config line is fine, function bodies aren't;

@@ -201,7 +201,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   tells the agent the root
   cause, instead of the agent getting pages of compiler output. In Plan
   mode, a plan reviewer checks each plan against the code before it's
-  saved. When the agent implements a long plan, step workers can carry it
+  saved. A small task can use a single numbered step, with its files,
+  concrete changes and a validation section. When the agent implements a long plan, step workers can carry it
   out one step at a time, each writing only its step's files; in an
   isolated chat, steps the plan groups can run side by side, each in its
   own copy, then merged and checked once. If those checks fail, each
