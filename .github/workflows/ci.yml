@@ -245,6 +245,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Historical evaluation tasks retain their original lockfiles. npm 11's
+      # stricter validation rejects those fixtures before their tests can run.
+      - name: Use the evaluation fixtures' package manager
+        run: npm install --global npm@10.9.9
       - name: The evaluation's dry run
         run: node scripts/eval/eval.mjs dry-run
 
