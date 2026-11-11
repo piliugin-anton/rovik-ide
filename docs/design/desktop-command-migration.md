@@ -931,3 +931,20 @@ uses these same contracts.
 
 Native multiwindow UI and WSL execution validation, installer upgrade-in-place
 coverage with an active retained backend, and safe retained-image cleanup remain.
+
+### Phase 24: Installer continuity and retained-image cleanup
+
+Windows installer CI now reapplies the NSIS bundle using `/UPDATE` while a
+retained backend has a live session and saved composer draft. RPC must remain
+usable throughout installation; the boot and draft must remain unchanged, and
+upgrade negotiation must still refuse the connected client. After detachment,
+the contract requires retirement, released ownership, a new boot, and the same
+saved draft. This is an installer continuity test, distinct from the monotonic
+version/protocol negotiation contracts.
+
+After a new standalone backend reports readiness, its launcher cleans verified
+obsolete images while retaining the launch lease. Cleanup recognizes only the
+content-addressed filename format and verifies bytes before deleting. The
+current image, unknown files, links, and damaged images are preserved. Windows
+sharing/access refusals defer deletion, preserving images still held by a live
+process. Cleanup failure is reported without terminating the ready backend.

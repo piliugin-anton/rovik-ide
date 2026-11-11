@@ -101,6 +101,8 @@ async fn ensure_prepared(
     command.stdin(std::process::Stdio::null());
     rovik_core::process::own_session(&mut command);
     rovik_core::process::close_inherited(&mut command);
+    #[cfg(windows)]
+    let image = std::path::PathBuf::from(command.get_program());
     let mut child = command.spawn()?;
     let (exited, mut exit) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
@@ -118,7 +120,18 @@ async fn ensure_prepared(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match connect(&directory).await {
-                Ok(connected) => return Ok(connected),
+                Ok(connected) => {
+                    #[cfg(windows)]
+                    {
+                        let images = directory.join("images");
+                        if image.parent() == Some(images.as_path()) {
+                            if let Err(error) = super::image::cleanup(&images, &image) {
+                                log::warn!("Could not clean obsolete backend images: {error}");
+                            }
+                        }
+                    }
+                    return Ok(connected);
+                },
                 Err(e)
                     if matches!(
                         e.kind(),

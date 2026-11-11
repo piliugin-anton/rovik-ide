@@ -168,8 +168,12 @@ jobs:
             if (!(Test-Path $env:ROVIK_PACKAGED_BACKEND)) { throw 'Installer omitted the desktop backend' }
             cargo test --manifest-path src-tauri/Cargo.toml -p rovik-client --test windows_backend
             if ($LASTEXITCODE -ne 0) { throw 'Installed backend lifecycle tests failed' }
+            $env:ROVIK_TEST_INSTALLER = $bundles[0].FullName
+            cargo test --manifest-path src-tauri/Cargo.toml -p rovik-client --test windows_backend installer_preserves_a_busy_backend_and_saved_edits -- --ignored
+            if ($LASTEXITCODE -ne 0) { throw 'Upgrade-in-place did not preserve the busy backend' }
           } finally {
             Remove-Item Env:ROVIK_PACKAGED_BACKEND
+            Remove-Item Env:ROVIK_TEST_INSTALLER -ErrorAction SilentlyContinue
             $uninstall = Join-Path $install 'uninstall.exe'
             if (Test-Path $uninstall) {
               $result = Start-Process $uninstall -ArgumentList '/S' -Wait -PassThru

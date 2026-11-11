@@ -160,7 +160,7 @@ async fn installing_a_new_source_preserves_the_running_backend_image() {
     assert_ne!(ready.boot, next.boot);
     assert_eq!(
         std::fs::read_dir(endpoint.join("images")).unwrap().count(),
-        2
+        1
     );
     std::fs::remove_file(source).unwrap();
     drop(stream);
@@ -173,4 +173,144 @@ mod desktop_standalone;
 #[tokio::test]
 async fn standalone_ui_sessions_recover_without_an_embedded_fallback() {
     desktop_standalone::check(&executable()).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a built NSIS installer and disposable installation"]
+async fn installer_preserves_a_busy_backend_and_saved_edits() {
+    use rovik_client::{
+        desktop_api::chat::ChatRequest,
+        desktop_connection::DesktopConnection,
+        local_backend::{
+            connect,
+            control::{negotiate, Reply},
+            PROTOCOL,
+        },
+    };
+    use std::os::windows::process::CommandExt;
+    let installer =
+        PathBuf::from(std::env::var_os("ROVIK_TEST_INSTALLER").expect("NSIS installer required"));
+    let installed = PathBuf::from(
+        std::env::var_os("ROVIK_PACKAGED_BACKEND").expect("installed backend required"),
+    );
+    let install_dir = installed.parent().unwrap().parent().unwrap();
+    assert!(installer.is_absolute() && installer.is_file());
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let config = root.path().join("config");
+    let window = DesktopConnection::attach_backend(&installed, &data, &config)
+        .await
+        .unwrap();
+    let endpoint = directory(&data);
+    let (stream, first) = connect(&endpoint).await.unwrap();
+    let host = desktop_attach::desktop_host::Host::peer(&stream);
+    window
+        .desktop(
+            ChatRequest::CreateDialog {
+                id: "upgrade".into(),
+                title: "Preserved".into(),
+                created_at: 1,
+                updated_at: 1,
+                project_id: None,
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    window
+        .desktop(
+            ChatRequest::SaveComposerDraft {
+                dialog_id: "upgrade".into(),
+                content: "unfinished saved edit".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let read = || ChatRequest::GetComposerDraft {
+        dialog_id: "upgrade".into(),
+    };
+    let saved = window.desktop(read().into()).await.unwrap();
+    assert!(matches!(
+        negotiate(&endpoint, env!("CARGO_PKG_VERSION"), PROTOCOL + 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .1,
+        Reply::Busy(_)
+    ));
+    // NSIS requires /D to be the final, unquoted argument, including spaces.
+    // No shell is involved. Use the updater's /UPDATE behavior without /R.
+    let mut command = rovik_core::process::command(installer);
+    command
+        .args(["/S", "/UPDATE"])
+        .raw_arg(format!("/D={}", install_dir.display()));
+    let child = command.spawn().unwrap();
+    let mut installer = Daemon(child);
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            if let Some(status) = installer.0.try_wait().unwrap() {
+                assert!(status.success(), "NSIS update failed: {status}");
+                break;
+            }
+            // The retained backend must remain usable throughout installation.
+            window
+                .request(rovik_protocol::Request::AgentStatus)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(installed.is_file());
+    assert_eq!(connect(&endpoint).await.unwrap().1.boot, first.boot);
+    assert_eq!(window.desktop(read().into()).await.unwrap(), saved);
+    assert!(matches!(
+        negotiate(&endpoint, env!("CARGO_PKG_VERSION"), PROTOCOL + 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .1,
+        Reply::Busy(_)
+    ));
+    window.close().await.unwrap();
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match negotiate(&endpoint, env!("CARGO_PKG_VERSION"), PROTOCOL + 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+            {
+                Reply::Retiring => break,
+                Reply::Busy(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Reply::Current => panic!("upgrade was not negotiated"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if Lease::acquire(&endpoint).unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(host);
+    let next = DesktopConnection::attach_backend(&installed, &data, &config)
+        .await
+        .unwrap();
+    let (stream, ready) = connect(&endpoint).await.unwrap();
+    let host = desktop_attach::desktop_host::Host::peer(&stream);
+    assert_ne!(ready.boot, first.boot);
+    assert_eq!(next.desktop(read().into()).await.unwrap(), saved);
+    next.close().await.unwrap();
+    drop(stream);
+    drop(host);
 }
