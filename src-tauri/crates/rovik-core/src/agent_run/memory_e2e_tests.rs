@@ -2176,7 +2176,32 @@ async fn implementing_a_named_plan_saves_its_title_in_long_term_memory() {
     assert!(!memories
         .iter()
         .any(|memory| memory.title.starts_with("Implement this plan")));
-    let wire = plan::implementation_request(plan, Some(".rovik/plans/backend.md"), true);
+    let episode = memories
+        .iter()
+        .find(|memory| memory.title == title)
+        .unwrap();
+    assert!(episode
+        .files
+        .contains(&".rovik/plans/backend.md".to_string()));
+    assert!(episode
+        .content
+        .contains("\nPlan: .rovik/plans/backend.md\n"));
+    assert!(episode.content.contains(&format!(
+        "Plan fingerprint (SHA-256): {}",
+        plan::plan_fingerprint(plan)
+    )));
+    assert!(!episode
+        .content
+        .contains(&h.project.to_string_lossy().to_string()));
+    assert!(!episode
+        .content
+        .lines()
+        .find(|line| line.starts_with("Changed:"))
+        .unwrap()
+        .contains("backend.md"));
+    let file = h.project.join(".rovik").join("plans").join("backend.md");
+    let shown = plan::relative_plan_path(&file.to_string_lossy(), h.project.to_str());
+    let wire = plan::implementation_request(plan, Some(&shown), true);
     assert!(seen.lock().unwrap()[0]["messages"]
         .as_array()
         .unwrap()

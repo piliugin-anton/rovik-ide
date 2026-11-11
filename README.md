@@ -1315,7 +1315,10 @@ written into your repository. The store is the `verified-code-memory` crate in
 `src-tauri/crates/verified-code-memory`.
 
 Plan implementation memories use the named plan request as their title, rather
-than the generic instruction sent with the expanded plan.
+than the generic instruction sent with the expanded plan. They also retain the
+project-relative plan path and its implementation-time SHA-256 fingerprint. The
+plan is included among the memory’s associated files, separately from the files
+the run changed.
 
 A chat's run uses it at four points:
 

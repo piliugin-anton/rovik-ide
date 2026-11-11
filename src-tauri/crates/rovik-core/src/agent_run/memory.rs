@@ -65,6 +65,7 @@ pub(super) struct RunMemory {
     settings_root: String,
     /// The request, as retrieval matches it.
     task: String,
+    plan: Option<PlanReference>,
     /// What the run recalled, as the store has it now.
     ///
     /// Records enter it only after [`Self::admits`] (through [`Self::admit`]):
@@ -343,6 +344,7 @@ impl RunMemory {
             repo: self.repo.clone(),
             settings_root: self.settings_root.clone(),
             task: self.task.clone(),
+            plan: self.plan.clone(),
             observed_files: self.observed_files.clone(),
             generation: self.generation,
             claims_written: self.claims_written,
@@ -379,6 +381,7 @@ impl RunMemory {
             repo: carry.repo,
             settings_root: carry.settings_root,
             task: carry.task,
+            plan: carry.plan,
             observed_files: carry.observed_files,
             recalled: carry.recalled,
             context: String::new(),
@@ -432,6 +435,7 @@ pub(super) struct MemoryCarry {
     pub(super) repo: String,
     pub(super) settings_root: String,
     pub(super) task: String,
+    plan: Option<PlanReference>,
     pub(super) observed_files: HashSet<String>,
     pub(super) generation: i64,
     pub(super) claims_written: usize,
@@ -599,6 +603,60 @@ fn task_query(text: &str) -> String {
         .chain(std::iter::once(&'\n'))
         .chain(chars[chars.len() - tail..].iter())
         .collect()
+}
+
+/// The saved plan version implemented by this run, independent of host paths.
+#[derive(Clone, Debug, PartialEq)]
+struct PlanReference {
+    path: String,
+    fingerprint: String,
+}
+
+impl PlanReference {
+    fn from_request(current: &str, typed: &str, meta: Option<&serde_json::Value>) -> Option<Self> {
+        let meta = meta?;
+        if meta
+            .get("sentContent")
+            .and_then(|value| value.as_str())
+            .unwrap_or(typed)
+            != current
+        {
+            return None;
+        }
+        if meta.get("implementsPlan")?.as_bool() != Some(true) {
+            return None;
+        }
+        let original = meta.get("planPath")?.as_str()?.replace('\\', "/");
+        let path = super::plan::plan_key(&original);
+        // Retain a reference even if the plan was moved or deleted after the run.
+        // Never persist a host's absolute path or a path outside the plans folder.
+        if !(original == path || original.ends_with(&format!("/{path}")))
+            || !Path::new(&path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            || path.chars().any(char::is_control)
+        {
+            return None;
+        }
+        let fingerprint = meta.get("planFingerprint")?.as_str()?;
+        if fingerprint.len() != 64 || !fingerprint.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(Self {
+            path,
+            fingerprint: fingerprint.to_string(),
+        })
+    }
+
+    fn attach(&self, memory: &mut NewMemory) {
+        memory.content.push_str(&format!(
+            "\nPlan: {}\nPlan fingerprint (SHA-256): {}",
+            self.path, self.fingerprint
+        ));
+        if !memory.files.contains(&self.path) {
+            memory.files.push(self.path.clone());
+        }
+    }
 }
 
 // Keep the named UI request ahead of the expanded plan for durable memory.
@@ -1500,6 +1558,7 @@ impl super::run::Run {
         };
         let task = task_query(&text);
         let mut named_task = None;
+        let mut plan = None;
         let (intent, reference_context) = self
             .recent()
             .await
@@ -1514,6 +1573,7 @@ impl super::run::Run {
             })
             .and_then(|message| {
                 named_task = named_plan_task(&text, &message.content, message.meta.as_ref());
+                plan = PlanReference::from_request(&text, &message.content, message.meta.as_ref());
                 let sent = super::run::sent_text(message.meta.as_ref());
                 recall_wire_parts(&text, &message.content, sent.as_deref())
                     .map(|(intent, prefix)| (task_query(intent), prefix.to_owned()))
@@ -1626,6 +1686,7 @@ impl super::run::Run {
                     repo,
                     settings_root: settings_folder,
                     task: named_task.unwrap_or(task),
+                    plan,
                     restricted: self.restricted.clone(),
                     root: self.root.clone(),
                     sealed,
@@ -1813,6 +1874,31 @@ impl super::run::Run {
             return;
         }
         let (repo, task) = (self.memory.repo.clone(), self.memory.task.clone());
+        let mut plan = self.memory.plan.clone();
+        // A checklist may have associated a natural-language request with a
+        // saved plan after initial recall. Use only that same request's evidence.
+        if plan.is_none() {
+            let text = match self.current_user_content.as_deref() {
+                Some(text) => text.to_string(),
+                None => self.latest_user_request().await,
+            };
+            match self.recent().await {
+                Ok(rows) => {
+                    if let Some(message) = rows
+                        .iter()
+                        .rev()
+                        .find(|m| super::messages::is_request(m) && !m.failed)
+                    {
+                        plan = PlanReference::from_request(
+                            &text,
+                            &message.content,
+                            message.meta.as_ref(),
+                        );
+                    }
+                }
+                Err(error) => eprintln!("memory: plan reference unavailable: {error}"),
+            }
+        }
         let chat = self.dialog_id.clone();
         let recalled = self.memory.recalled.clone();
         let failures = self.memory.failures.clone();
@@ -1831,6 +1917,7 @@ impl super::run::Run {
                 repo: &repo,
                 chat: &chat,
                 task: &task,
+                plan: plan.as_ref(),
                 outcome: &outcome,
                 files: &files,
                 results: &results,
@@ -1989,6 +2076,7 @@ struct Ending<'a> {
     chat: &'a str,
     /// The request, as its reflection's title.
     task: &'a str,
+    plan: Option<&'a PlanReference>,
     outcome: &'a str,
     files: &'a [String],
     results: &'a [CheckResult],
@@ -2013,6 +2101,9 @@ fn keep_reflection(end: &Ending<'_>) -> Option<Uuid> {
     let mut reflection = reflect(repo, task, outcome, files, results)
         .with_tags([chat_tag(chat)])
         .with_source_kind(SourceKind::GeneratedDeduction);
+    if let Some(plan) = end.plan {
+        plan.attach(&mut reflection);
+    }
     // The same run says the same thing however often its end is replayed: the
     // identity is the claim itself, so a second pass finds it and writes
     // nothing.
