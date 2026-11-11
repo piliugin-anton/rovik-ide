@@ -935,7 +935,8 @@ coverage with an active retained backend, and safe retained-image cleanup remain
 ### Phase 24: Installer continuity and retained-image cleanup
 
 Windows installer CI now reapplies the NSIS bundle using `/UPDATE` while a
-retained backend has a live session and saved composer draft. RPC must remain
+retained backend has a live session and saved composer draft. A modified
+installation resource must be replaced, so a no-op installer cannot pass. RPC must remain
 usable throughout installation; the boot and draft must remain unchanged, and
 upgrade negotiation must still refuse the connected client. After detachment,
 the contract requires retirement, released ownership, a new boot, and the same
@@ -953,8 +954,9 @@ process. Cleanup failure is reported without terminating the ready backend.
 
 The frontend now offers the shared backend's explicit Reconnect action on
 Windows, matching native attachment. Recovery invalidates old handles while
-keeping editor models and drafts. A Windows-specific frontend regression covers
-the reconnect action and native session call.
+keeping editor models and drafts. Recovery uses the resolved open folder
+identity even before the lazy chat panel has mounted. Frontend regressions cover
+this Files-only window and the Windows reconnect action and native session call.
 
 The E2E workflow's `windows-backend` option requires installed resources and runs
 actual multiple-window ownership, detach continuity, forced crash, unsaved editor

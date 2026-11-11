@@ -75,14 +75,20 @@ jobs:
       - name: Build the standalone Windows backend
         run: npm run package:windows-backend
       - name: Build the app and its installers
-        run: npx tauri build --config src-tauri/tauri.windows-backend.conf.json --config scripts/e2e/shared-backend.tauri.conf.json
+        shell: pwsh
+        run: |
+          Remove-Item src-tauri/target/release/bundle -Recurse -Force -ErrorAction SilentlyContinue
+          npx tauri build --config src-tauri/tauri.windows-backend.conf.json --config scripts/e2e/shared-backend.tauri.conf.json
       - name: Install it (NSIS, silently)
         shell: pwsh
         run: |
-          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $bundles = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($bundles.Count -ne 1) { throw 'Expected exactly one freshly built NSIS installer' }
+          $setup = $bundles[0]
           Get-ChildItem src-tauri/target/release/bundle/msi, src-tauri/target/release/bundle/nsis |
             ForEach-Object { "{0,12:N0}  {1}" -f $_.Length, $_.Name }
-          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          $installed = Start-Process $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "Installer failed: $($installed.ExitCode)" }
           $exe = Get-ChildItem "$env:LOCALAPPDATA\Rovik IDE\*.exe" -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
           if (-not $exe) {

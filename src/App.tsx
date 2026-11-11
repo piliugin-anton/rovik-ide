@@ -1994,7 +1994,10 @@ export default function App() {
   onCleanup(() => clearTimeout(tabsTimer));
 
   onMount(() => {
-    onCleanup(backendProject(() => ({ root: rootPath(), projectId: chatStore.projectId() })));
+    // The chat panel is lazy: its store may never have selected this project.
+    onCleanup(
+      backendProject(() => ({ root: rootPath(), projectId: currentProject()?.id ?? null }))
+    );
     onCleanup(
       onBackendRestored(async () => {
         const root = rootPath();

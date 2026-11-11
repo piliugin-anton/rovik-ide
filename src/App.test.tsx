@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import App from './App';
+import { reconnectBackend } from './lib/backendSession';
+import { chatStore } from './lib/chatStore';
 
 test('startup keeps the splash until the project and expanded folders have loaded', async (t) => {
   // happy-dom has no layout; give the virtual file tree a visible viewport.
@@ -14,6 +16,7 @@ test('startup keeps the splash until the project and expanded folders have loade
   const project = new Promise<unknown>((resolve) => (openProject = resolve));
   const folder = new Promise<unknown>((resolve) => (readFolder = resolve));
   const commands: string[] = [];
+  let recoveryProject: unknown;
   (window as any).__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: 'main' } },
     transformCallback: () => 0,
@@ -21,6 +24,9 @@ test('startup keeps the splash until the project and expanded folders have loade
     invoke: async (cmd: string, args: any) => {
       commands.push(cmd);
       switch (cmd) {
+        case 'desktop_reconnect':
+          recoveryProject = args;
+          throw new Error('native reconnect boundary');
         case 'plugin:event|listen':
           return 0;
         case 'plugin:event|unlisten':
@@ -84,6 +90,13 @@ test('startup keeps the splash until the project and expanded folders have loade
     await flush();
     assert.equal(splash.classList.contains('done'), true);
     assert.equal(root.querySelector('.project-switcher-name')?.textContent, 'Demo');
+    await t.test('recovery uses the open folder before the chat panel has mounted', async () => {
+      assert.equal(chatStore.projectId(), null, 'no chat project was selected');
+      // Stop at the native boundary: this regression verifies the UI's identity;
+      // the platform acceptance tests exercise the real replacement and restore.
+      await assert.rejects(reconnectBackend(), /native reconnect boundary/);
+      assert.deepEqual(recoveryProject, { root: '/p', projectId: 'p' });
+    });
   } finally {
     dispose();
     root.remove();

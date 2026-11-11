@@ -187,7 +187,7 @@ async fn installer_preserves_a_busy_backend_and_saved_edits() {
             PROTOCOL,
         },
     };
-    use std::os::windows::process::CommandExt;
+    use std::{io::Write, os::windows::process::CommandExt};
     let installer =
         PathBuf::from(std::env::var_os("ROVIK_TEST_INSTALLER").expect("NSIS installer required"));
     let installed = PathBuf::from(
@@ -239,6 +239,15 @@ async fn installer_preserves_a_busy_backend_and_saved_edits() {
             .1,
         Reply::Busy(_)
     ));
+    // Require an actual resource replacement even when reapplying this version.
+    // A valid PE overlay changes the installation copy, never the running image.
+    let installed_len = std::fs::metadata(&installed).unwrap().len();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&installed)
+        .unwrap()
+        .write_all(b"installer replacement fixture")
+        .unwrap();
     // NSIS requires /D to be the final, unquoted argument, including spaces.
     // No shell is involved. Use the updater's /UPDATE behavior without /R.
     let mut command = rovik_core::process::command(installer);
@@ -263,7 +272,11 @@ async fn installer_preserves_a_busy_backend_and_saved_edits() {
     })
     .await
     .unwrap();
-    assert!(installed.is_file());
+    assert_eq!(
+        std::fs::metadata(&installed).unwrap().len(),
+        installed_len,
+        "NSIS must replace the modified installation resource"
+    );
     assert_eq!(connect(&endpoint).await.unwrap().1.boot, first.boot);
     assert_eq!(window.desktop(read().into()).await.unwrap(), saved);
     assert!(matches!(

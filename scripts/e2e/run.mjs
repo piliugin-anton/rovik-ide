@@ -397,6 +397,23 @@ const MOD = PLATFORM === 'darwin' ? Keys.META : Keys.CTRL;
 
 /** A leftover instance would take the new launch (single instance) and the session would hang. */
 function killApp() {
+  if (REQUIRE_SHARED_BACKEND) {
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `
+      $ErrorActionPreference = 'Stop'
+      Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -eq $env:E2E_UI_APP -or $_.ExecutablePath -eq $env:E2E_UI_SECOND_APP
+      } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
+    `,
+      ],
+      { env: { ...process.env, E2E_UI_APP: APP, E2E_UI_SECOND_APP: SECOND_APP }, timeout: 30_000 }
+    );
+    return;
+  }
   // By the launched binary's name: an installed build's may differ. An
   // AppImage's is the binary inside it.
   const name = APPIMAGE ? 'rovik-ide' : basename(APP) || 'rovik-ide';
@@ -458,14 +475,15 @@ if (!window.__e2e) {
     ce(...a);
   };
   window.alert = (m) => { window.__e2e.alerts.push(String(m)); push('alert', m); };
-  const seen = new WeakSet();
+  const seen = new WeakMap();
   new MutationObserver(() => {
     for (const n of document.querySelectorAll('.notification')) {
-      if (seen.has(n)) continue;
-      seen.add(n);
-      window.__e2e.notifications.push(n.innerText.replace(/\\n+/g, ' | '));
+      const text = n.innerText.replace(/\\n+/g, ' | ');
+      if (seen.get(n) === text) continue;
+      seen.set(n, text);
+      window.__e2e.notifications.push(text);
     }
-  }).observe(document.body, { childList: true, subtree: true });
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 return true;`;
 
@@ -1116,6 +1134,23 @@ async function run() {
             'this window is still on demo'
           );
           assert(askedToFront(sideLog) > 1, 'the window on side asked to the front again');
+          if (REQUIRE_SHARED_BACKEND) {
+            // WM_CLOSE exercises the UI's normal detach/exit path, not just
+            // process death. The finally block still cleans up a failed close.
+            execFileSync(
+              'powershell.exe',
+              [
+                '-NoProfile',
+                '-Command',
+                `
+              $window = Get-Process -Id $env:E2E_UI_PID -ErrorAction Stop
+              if (-not $window.CloseMainWindow()) { throw 'The second UI has no closable window' }
+            `,
+              ],
+              { env: { ...process.env, E2E_UI_PID: String(second.pid) } }
+            );
+            assert((await exited(second, 15_000)) === 0, 'the second UI closes cleanly');
+          }
         } finally {
           second.kill();
           await exited(second, 15_000).catch(() => {});
@@ -1254,6 +1289,7 @@ async function run() {
           'unsaved editor text survives'
         );
         assert((await tabs()).includes('main.ts •'), 'editor remains unsaved');
+        await click('.monaco-editor .view-lines');
         await keys([MOD, 's']);
         await waitFor(
           () =>
