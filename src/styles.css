@@ -82,6 +82,30 @@ body {
   overflow: hidden;
 }
 
+/* Covers the window while a project's tabs, folders and chats are restored.
+   Confirmation dialogs and error notifications remain above it. */
+.project-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgb(0 0 0 / 50%);
+  color: #fff;
+  font-size: 16px;
+  cursor: progress;
+}
+
+.project-loading-overlay .sidebar-tab-spinner {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-color: currentColor;
+  border-top-color: transparent;
+}
+
 /* Sidebar */
 
 .sidebar {

@@ -166,6 +166,9 @@ export default function App() {
   /** The project whose tabs are being opened again: until they are, the
    *  tabs shown aren't kept as its (showWithTabs). */
   const [tabsComing, setTabsComing] = createSignal<string | null>(null);
+  const [openingProject, setOpeningProject] = createSignal(true);
+  const [preparingProject, setPreparingProject] = createSignal(false);
+  const [loadingChats, setLoadingChats] = createSignal(false);
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -314,6 +317,23 @@ export default function App() {
       dismissBootSplash();
     }
   });
+
+  // Only project transitions wait for folder reads; expanding a folder later
+  // keeps its existing inline loader instead of covering the whole window.
+  createEffect(() => {
+    if (
+      openingProject() &&
+      !preparingProject() &&
+      !restoringProject() &&
+      !tabsComing() &&
+      currentProject() !== undefined &&
+      !tree.loading() &&
+      !loadingChats()
+    ) {
+      setOpeningProject(false);
+    }
+  });
+  const projectLoading = () => openingProject() || loadingChats();
 
   const displayRows = createMemo<TreeRow[]>(() => {
     const rows = tree.rows();
@@ -495,26 +515,34 @@ export default function App() {
 
   /** Opens a project folder: Files, Chat and Git switch to it. */
   async function openProjectAt(folder: string) {
-    if (folder === rootPath()) return;
-    // Open in another window (or a copy sharing its chats): that one comes
-    // to the front instead (lib/instances.ts).
-    if (!(await checkProject(folder))) return;
-    if (!(await settleUnsavedTabs('project'))) return;
-    // Chosen meanwhile (the dialog was open), or the same one again.
-    if (folder === rootPath()) return;
-    // Its tabs as the window that had it last left them, this one or
-    // another (checked above: none has it now).
-    const session = await savedProjectSession(folder);
-    // Claimed elsewhere since the check, if it came to that.
-    if (!(await claimProject(folder))) return;
-    // The project left keeps its tabs for coming back to it.
-    void keepTabsNow();
-    for (const m of monaco.editor.getModels()) m.dispose();
-    // The old project's change marks; its tabs close below.
-    for (const { absPath } of markedFiles()) clearGitBase(absPath);
-    setSelectedFileIds(new Set<string>());
-    setLastSelectedId(null);
-    await showWithTabs(folder, session);
+    if (preparingProject() || folder === rootPath()) return;
+    batch(() => {
+      setPreparingProject(true);
+      setOpeningProject(true);
+    });
+    try {
+      // Open in another window (or a copy sharing its chats): that one comes
+      // to the front instead (lib/instances.ts).
+      if (!(await checkProject(folder))) return;
+      if (!(await settleUnsavedTabs('project'))) return;
+      // Chosen meanwhile (the dialog was open), or the same one again.
+      if (folder === rootPath()) return;
+      // Its tabs as the window that had it last left them, this one or
+      // another (checked above: none has it now).
+      const session = await savedProjectSession(folder);
+      // Claimed elsewhere since the check, if it came to that.
+      if (!(await claimProject(folder))) return;
+      // The project left keeps its tabs for coming back to it.
+      void keepTabsNow();
+      for (const m of monaco.editor.getModels()) m.dispose();
+      // The old project's change marks; its tabs close below.
+      for (const { absPath } of markedFiles()) clearGitBase(absPath);
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
+      await showWithTabs(folder, session);
+    } finally {
+      setPreparingProject(false);
+    }
   }
 
   /** `folder` becomes the project shown, its tabs as they were left, if kept. */
@@ -2290,6 +2318,7 @@ export default function App() {
           >
             <ChatPanel
               rootPath={rootPath}
+              onLoadingChange={setLoadingChats}
               activeFileContext={activeFileContext}
               files={tree.files}
               projectId={() => {
@@ -2423,6 +2452,17 @@ export default function App() {
           onPaste={handlePasteFile}
           onDelete={handleDeleteFile}
         />
+      </Show>
+      <Show when={projectLoading()}>
+        <div
+          class="project-loading-overlay"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading project"
+        >
+          <span class="sidebar-tab-spinner" aria-hidden="true" />
+          <span>Loading...</span>
+        </div>
       </Show>
       <ConfirmDialogHost />
       <NewBranchDialogHost />

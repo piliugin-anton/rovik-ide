@@ -49,7 +49,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
 - The startup spinner stays visible until the project, restored tabs and
-  expanded folders have finished loading.
+  expanded folders have finished loading. Switching projects shows a dimmed
+  loading overlay until its tabs, folders and visible chat history are ready.
 - Browser tabs: a page a dev server on a cloud host opens shows in a tab
   of the editor, hot reload and all, with an address bar for any http or
   https page (see [Servers and pages on a cloud

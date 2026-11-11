@@ -274,6 +274,8 @@ const usageCache = new Map<string, ContextUsage>();
 const clmBudgetCache = new Map<string, number | null>();
 
 interface ChatProps {
+  /** Includes the chat list, active transcript and composer restoration. */
+  onLoadingChange?: (loading: boolean) => void;
   rootPath: Accessor<string | null>;
   activeFileContext: Accessor<ActiveFileContext | null>;
   files: Accessor<TreeRow[]>;
@@ -338,6 +340,8 @@ export default function ChatPanel(props: ChatProps) {
     return store.state.list.items.some((d) => d.id !== active && store.state.unread[d.id]);
   });
   const [loadingHistory, setLoadingHistory] = createSignal(true);
+  createEffect(() => props.onLoadingChange?.(loadingHistory()));
+  onCleanup(() => props.onLoadingChange?.(false));
   /** Set when the chat database couldn't be read at startup. */
   const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
   /** A search hit to scroll to in the open chat. */
@@ -1090,10 +1094,10 @@ export default function ChatPanel(props: ChatProps) {
     // What's typed stays the chat's it was typed in (as when another chat
     // is picked): the input is cleared for the project's own chat.
     const prevId = activeDialogId();
-    if (prevId) await flushComposerDom(prevId);
-    resetComposerState();
     setLoadingHistory(true);
     try {
+      if (prevId) await flushComposerDom(prevId);
+      resetComposerState();
       await store.switchProject(id);
       if (isMounted && props.projectId() === id) {
         await openNewestChat();
