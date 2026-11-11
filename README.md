@@ -52,6 +52,7 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   expanded folders have finished loading. Switching projects shows a dimmed
   loading overlay until its tabs and folders are ready. Chat history loads within
   the AI Chat panel, with a spinner in its tab and a centered loading message.
+  Returning to a cached chat shows it immediately without a loading indicator.
 - Browser tabs: a page a dev server on a cloud host opens shows in a tab
   of the editor, hot reload and all, with an address bar for any http or
   https page (see [Servers and pages on a cloud

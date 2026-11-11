@@ -18,6 +18,8 @@ test('project loading covers the window but chat loading stays inside the AI Cha
   installTauri([]);
   const tauri = (window as any).__TAURI_INTERNALS__;
   const fallback = tauri.invoke;
+  let settingsPause: ReturnType<typeof deferred> | undefined;
+  let historyReads = 0;
   const identity = deferred();
   const folders = deferred();
   const chats = deferred();
@@ -27,6 +29,9 @@ test('project loading covers the window but chat loading stays inside the AI Cha
   tauri.unregisterCallback = () => {};
   tauri.invoke = async (cmd: string, args: any) => {
     switch (cmd) {
+      case 'load_ai_settings':
+        if (settingsPause) return settingsPause.promise;
+        break;
       case 'vfs_status':
       case 'sandbox_status':
       case 'browser_status':
@@ -55,10 +60,12 @@ test('project loading covers the window but chat loading stays inside the AI Cha
       case 'get_path_id':
         return args.path;
       case 'chat_list_dialogs':
+        historyReads++;
         if (args.projectId === 'next') return chats.promise;
         if (args.projectId === 'history-error') throw new Error('Chats unavailable');
         break;
       case 'chat_get_messages':
+        historyReads++;
         return messages.promise;
       case 'read_editorconfigs':
       case 'hosts_summaries':
@@ -111,12 +118,56 @@ test('project loading covers the window but chat loading stays inside the AI Cha
     await flush();
     assert.equal(overlay(), null);
     assert.ok(root.querySelector('.chat-loading'), 'the selected transcript is still loading');
-    messages.resolve({ messages: [], hasOlder: false, hasNewer: false });
+    messages.resolve({
+      messages: [
+        {
+          id: 'saved-message',
+          dialogId: 'saved-chat',
+          seq: 1,
+          role: 'assistant',
+          content: 'Cached conversation',
+          attachments: [],
+          createdAt: 1,
+          finalized: true,
+        },
+      ],
+      hasOlder: false,
+      hasNewer: false,
+    });
     await flush();
     assert.equal(overlay(), null);
     assert.equal(root.querySelector('.chat-loading'), null);
     assert.equal(root.querySelector('.chat-panel.loading-history'), null);
     assert.equal(root.querySelector('.sidebar-tabs [aria-label="Loading chats"]'), null);
+
+    await t.test(
+      'returning to cached chats shows them immediately while settings initialize',
+      async () => {
+        const selectTab = (label: string) =>
+          [...root.querySelectorAll<HTMLButtonElement>('.sidebar-tabs button')]
+            .find((button) => button.textContent?.includes(label))!
+            .click();
+        selectTab('Files');
+        await flush();
+        const readsBefore = historyReads;
+        settingsPause = deferred();
+        selectTab('AI Chat');
+        assert.equal(root.querySelector('.chat-loading'), null, 'no initial loading flash');
+        await flush();
+        assert.equal(root.querySelector('.chat-loading'), null, 'settings are still pending');
+        assert.equal(root.querySelector('.chat-panel.loading-history'), null);
+        assert.equal(root.querySelector('.sidebar-tabs [aria-label="Loading chats"]'), null);
+        assert.equal(overlay(), null);
+        assert.match(root.textContent ?? '', /Cached conversation/);
+        assert.equal(root.querySelector('.chat-title')?.textContent, 'Existing chat');
+        assert.equal(historyReads, readsBefore, 'history stays cached');
+        settingsPause.resolve(await fallback('load_ai_settings', {}));
+        settingsPause = undefined;
+        await flush();
+        assert.equal(historyReads, readsBefore, 'initialization does not refetch history');
+        assert.equal(root.querySelector('.chat-loading'), null);
+      }
+    );
 
     await open('history-error');
     assert.equal(overlay(), null, 'a chat load failure releases the overlay');

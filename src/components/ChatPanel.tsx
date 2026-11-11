@@ -340,7 +340,19 @@ export default function ChatPanel(props: ChatProps) {
     return store.state.list.items.some((d) => d.id !== active && store.state.unread[d.id]);
   });
   const [loadingHistory, setLoadingHistory] = createSignal(true);
-  createEffect(() => props.onLoadingChange?.(loadingHistory()));
+  const mountedProject = props.projectId();
+  // A remounted panel can show its cached transcript while settings and drafts
+  // initialize. Keep loadingHistory's action guards until that work finishes.
+  const [restoringCachedHistory, setRestoringCachedHistory] = createSignal(
+    mountedProject !== undefined &&
+      mountedProject === store.projectId() &&
+      store.state.list.loaded &&
+      !!store.state.activeId &&
+      !!store.state.open[store.state.activeId]
+  );
+  const showHistoryLoading = () =>
+    loadingHistory() && (!restoringCachedHistory() || props.projectId() !== mountedProject);
+  createEffect(() => props.onLoadingChange?.(showHistoryLoading()));
   onCleanup(() => props.onLoadingChange?.(false));
   /** Set when the chat database couldn't be read at startup. */
   const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
@@ -1036,6 +1048,7 @@ export default function ChatPanel(props: ChatProps) {
     } finally {
       if (isMounted) {
         setLoadingHistory(false);
+        setRestoringCachedHistory(false);
         // Another folder was opened while the chats loaded: its project.
         await catchUpWithProject();
       }
@@ -4522,11 +4535,11 @@ export default function ChatPanel(props: ChatProps) {
   return (
     <div
       class="chat-panel"
-      classList={{ 'loading-history': loadingHistory() }}
-      aria-busy={loadingHistory()}
+      classList={{ 'loading-history': showHistoryLoading() }}
+      aria-busy={showHistoryLoading()}
     >
       {/* Keep the composer mounted so its draft can restore while history loads. */}
-      <Show when={loadingHistory()}>
+      <Show when={showHistoryLoading()}>
         <div class="chat-loading" role="status" aria-live="polite">
           <span class="sidebar-tab-spinner" aria-hidden="true" />
           <span>Loading...</span>
@@ -4590,7 +4603,7 @@ export default function ChatPanel(props: ChatProps) {
             query={historyQuery()}
             onQueryChange={setHistoryQuery}
             noMatches={!!searchQuery().trim() && searchRows()?.length === 0}
-            loading={loadingHistory() || (store.state.list.loading && !store.state.list.loaded)}
+            loading={showHistoryLoading() || (store.state.list.loading && !store.state.list.loaded)}
             unreadIds={store.state.unread}
             runningIds={runningListIds()}
             waitingIds={waitingIds()}
