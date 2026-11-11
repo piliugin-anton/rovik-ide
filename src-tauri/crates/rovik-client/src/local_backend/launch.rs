@@ -118,7 +118,7 @@ async fn ensure_prepared(
     #[cfg(windows)]
     let image = std::path::PathBuf::from(command.get_program());
     let mut child = command.spawn()?;
-    let (exited, mut exit) = tokio::sync::oneshot::channel();
+    let (exited, exit) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let result = child.wait();
         match &result {
@@ -130,48 +130,137 @@ async fn ensure_prepared(
         }
         let _ = exited.send(result);
     });
-    let mut launcher_done = false;
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match connect(&directory).await {
-                Ok(connected) => {
-                    #[cfg(windows)]
-                    {
-                        let images = directory.join("images");
-                        if image.parent() == Some(images.as_path()) {
-                            if let Err(error) = super::image::cleanup(&images, &image) {
-                                log::warn!("Could not clean obsolete backend images: {error}");
-                            }
-                        }
-                    }
-                    return Ok(connected);
-                },
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                    ) => {}
-                Err(e) => return Err(e),
-            }
-            tokio::select! {
-                result = &mut exit, if !launcher_done => {
-                    launcher_done = true;
-                    match result {
-                        Ok(Ok(status)) if status.success() => {}, // A competing launcher won.
-                        Ok(Ok(status)) => return Err(io::Error::other(format!("Local backend launcher exited with {status}"))),
-                        Ok(Err(error)) => return Err(error),
-                        Err(error) => return Err(io::Error::other(error)),
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {},
-            }
-        }
-    })
+    let connected = tokio::time::timeout(
+        Duration::from_secs(30),
+        wait_ready(|| connect(&directory), exit, Duration::from_millis(50)),
+    )
     .await
     .map_err(|_| {
         io::Error::new(
             io::ErrorKind::TimedOut,
             "Local backend did not become ready within 30 seconds",
         )
-    })?
+    })??;
+    #[cfg(windows)]
+    {
+        let images = directory.join("images");
+        if image.parent() == Some(images.as_path()) {
+            if let Err(error) = super::image::cleanup(&images, &image) {
+                log::warn!("Could not clean obsolete backend images: {error}");
+            }
+        }
+    }
+    Ok(connected)
+}
+
+// Only after spawning: an exposed pipe can time out while the new host is busy.
+// Retry within the caller's startup budget, without preparing or spawning again.
+// Discovery above still fails closed on timeouts from an existing owner.
+async fn wait_ready<T, F, Fut>(
+    mut connect: F,
+    mut exit: tokio::sync::oneshot::Receiver<io::Result<std::process::ExitStatus>>,
+    poll: Duration,
+) -> io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = io::Result<T>>,
+{
+    let mut launcher_done = false;
+    loop {
+        match connect().await {
+            Ok(connected) => return Ok(connected),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => return Err(e),
+        }
+        tokio::select! {
+            result = &mut exit, if !launcher_done => {
+                launcher_done = true;
+                match result {
+                    Ok(Ok(status)) if status.success() => {}, // A competing launcher won.
+                    Ok(Ok(status)) => return Err(io::Error::other(format!("Local backend launcher exited with {status}"))),
+                    Ok(Err(error)) => return Err(error),
+                    Err(error) => return Err(io::Error::other(error)),
+                }
+            }
+            _ = tokio::time::sleep(poll) => {},
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[tokio::test]
+    async fn a_slow_new_host_can_become_ready_after_a_handshake_timeout() {
+        let (_sender, exit) = tokio::sync::oneshot::channel();
+        let calls = Cell::new(0);
+        let result = wait_ready(
+            || {
+                let attempt = calls.get();
+                calls.set(attempt + 1);
+                async move {
+                    match attempt {
+                        0 => Err(io::Error::from(io::ErrorKind::NotFound)),
+                        1 => Err(io::Error::from(io::ErrorKind::TimedOut)),
+                        2 => Err(io::Error::from(io::ErrorKind::ConnectionRefused)),
+                        _ => Ok("ready"),
+                    }
+                }
+            },
+            exit,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, "ready");
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_retry_authentication_or_protocol_failures() {
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Unsupported,
+            io::ErrorKind::InvalidData,
+        ] {
+            let (_sender, exit) = tokio::sync::oneshot::channel();
+            let calls = Cell::new(0);
+            let error = wait_ready(
+                || {
+                    calls.set(calls.get() + 1);
+                    async move { Err::<(), _>(io::Error::from(kind)) }
+                },
+                exit,
+                Duration::ZERO,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(calls.get(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_launcher_failure_is_reported_even_after_a_handshake_timeout() {
+        let (sender, exit) = tokio::sync::oneshot::channel();
+        sender
+            .send(Err(io::Error::other("launcher failed")))
+            .unwrap();
+        let error = wait_ready(
+            || async { Err::<(), _>(io::Error::from(io::ErrorKind::TimedOut)) },
+            exit,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "launcher failed");
+    }
 }

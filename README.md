@@ -1659,6 +1659,9 @@ private readiness socket. The packaged app hosts it in `--desktop-backend` mode;
 `local_backend::ensure_backend` negotiates safe upgrades and attaches to the host,
 or starts that binary and waits for initialization. The handshake identifies the protocol,
 backend boot, and client session; the daemon retains ownership through shutdown.
+A newly launched backend retries transient readiness timeouts within its existing
+30-second startup budget. Authentication and protocol errors still stop startup.
+
 The shared backend writes its standard output and diagnostics to `backend.log`
 in its private backend directory under the app data directory. Its output handles
 remain valid after the launching window or `tauri dev` process exits.
