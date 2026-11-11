@@ -19,7 +19,7 @@
 // the file has, reconciled with the providers. While the file can't be
 // read (P5.7), the store holds defaults and saves nothing: the dialog says
 // so and offers to read it again.
-import { createEffect, createSignal, on } from 'solid-js';
+import { createEffect, createSignal, on, onCleanup } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from './permissions';
 import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './subagentSettings';
@@ -32,6 +32,7 @@ import {
   type PersistedAiSettings,
 } from './aiSettings';
 import { aiSettingsRevision, notifyAiSettingsSaved } from './appSettings';
+import { onBackendRestored } from './backendSession';
 
 const [providers, setProviders] = createSignal<Provider[]>([]);
 const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
@@ -162,9 +163,11 @@ export function aiSettingsSaved(): Promise<void> {
  * Reads the settings again whenever the revision says they were saved by
  * someone else: another window, as this one comes to the front
  * (rereadAiSettingsOnFocus). The store's own saves bump it too, and are
- * skipped: it has what it wrote. Call once, within a component.
+ * skipped: it has what it wrote. Reconnection also reloads a failed read.
+ * Call once, within a component.
  */
 export function followAiSettingsRevision(): void {
+  onCleanup(onBackendRestored(reloadAiSettings));
   createEffect(
     on(
       aiSettingsRevision,

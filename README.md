@@ -2314,6 +2314,8 @@ shared transport is being implemented.
 After a backend crash or lost command session, use **Reconnect** in the connection
 notification. The window keeps unsaved editor text and chat drafts, restores its
 project registration and watches, and refreshes authoritative chat/host state.
+Connectors and other AI settings reload from saved state after reconnection,
+including when their earlier load failed.
 Terminal sessions end; their shells and commands are not restarted. Language
 support restarts from the open editor models. Rovik does not replay commands whose
 completion is uncertain: check their result before retrying them.
