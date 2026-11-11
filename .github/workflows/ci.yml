@@ -148,6 +148,15 @@ jobs:
           cargo nextest run --workspace --profile ci
           --test-threads ${{ matrix.threads }} ${{ matrix.args }}
           -E "${{ matrix.filter || 'all()' }}"
+      - name: Parse the strict WSL acceptance script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$env:GITHUB_WORKSPACE/scripts/e2e/wsl-backend.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
       - name: Package and install the Windows backend
         if: runner.os == 'Windows'
         run: |

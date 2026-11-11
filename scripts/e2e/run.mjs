@@ -6,7 +6,7 @@
 //
 //   node scripts/e2e/run.mjs --app <binary> --out <dir> [--driver webdriver|bridge]
 //        [--tauri-driver <path>] [--native-driver <path>] [--only <regex>]
-//        [--second-app <binary>] [--require-isolation]
+//        [--second-app <binary>] [--require-isolation] [--require-shared-backend] [--profile-id <id>]
 //
 // webdriver (Linux, Windows): starts tauri-driver, which starts the app
 // through WebKitWebDriver or msedgedriver. bridge (macOS, where WKWebView
@@ -42,6 +42,8 @@ const DEMO = join(PROJECTS, 'demo');
 const MODEL_PORT = Number(args['model-port'] ?? 18080);
 const ONLY = args.only ? new RegExp(args.only, 'i') : null;
 const REQUIRE_ISOLATION = Boolean(args['require-isolation']);
+const REQUIRE_SHARED_BACKEND = Boolean(args['require-shared-backend']);
+const PROFILE_ID = args['profile-id'] ?? 'rovik-ide';
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
 const APP = resolve(args.app ?? '');
 const APPIMAGE = /\.AppImage$/i.test(APP);
@@ -53,6 +55,52 @@ const SECOND_APP = args['second-app']
   : DRIVER === 'webdriver'
     ? APP
     : null;
+
+// The acceptance builds have a distinct Tauri identifier. Windows known-folder
+// APIs ignore APPDATA overrides, so isolation must be part of both app builds.
+if (REQUIRE_SHARED_BACKEND) {
+  if (PLATFORM !== 'win32' || !SECOND_APP || PROFILE_ID !== 'rovik-ide-e2e')
+    throw new Error(
+      '--require-shared-backend requires Windows, a second app, and --profile-id rovik-ide-e2e'
+    );
+}
+
+function sharedBackendProcesses(stop = false) {
+  assert(REQUIRE_SHARED_BACKEND, 'backend process checks require an isolated profile');
+  const result = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-Command',
+      `
+    $ErrorActionPreference = 'Stop'
+    $hosts = @(Get-CimInstance Win32_Process | Where-Object {
+      $_.ExecutablePath -and
+      [IO.Path]::GetDirectoryName($_.ExecutablePath) -eq $env:E2E_BACKEND_IMAGES -and
+      [IO.Path]::GetFileName($_.ExecutablePath) -match '^rovik-backend-[0-9a-f]{64}\\.exe$'
+    })
+    ${stop ? '$hosts | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }' : ''}
+    ConvertTo-Json -Compress -InputObject @($hosts | ForEach-Object { $_.ProcessId })
+  `,
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        E2E_BACKEND_IMAGES: join(process.env.APPDATA, PROFILE_ID, 'desktop-backend', 'images'),
+      },
+    }
+  );
+  return JSON.parse(result);
+}
+
+async function backendEpoch() {
+  const batch = await d.exec(`return window.__TAURI_INTERNALS__.invoke('desktop_poll_events', {
+    scope: { projectId: null, chats: [] }, cursor: null
+  });`);
+  assert(typeof batch.cursor.epoch === 'string', 'backend returned an incarnation');
+  return batch.cursor.epoch;
+}
 
 // The app's looks for a new version (src-tauri/src/updates.rs) go to a port
 // nothing listens on, in every Rovik the run starts (each takes this
@@ -217,7 +265,7 @@ function heldBy(pid) {
       : PLATFORM === 'win32'
         ? process.env.APPDATA
         : join(WORK, 'app', 'data');
-  const claims = join(data, 'rovik-ide', 'open-projects');
+  const claims = join(data, PROFILE_ID, 'open-projects');
   if (!existsSync(claims)) return [];
   return readdirSync(claims)
     .filter((file) => file.endsWith('.json'))
@@ -1019,6 +1067,10 @@ async function run() {
     await step(
       'instances: another project opens in a window of its own, and only there',
       async () => {
+        const epoch = REQUIRE_SHARED_BACKEND ? await backendEpoch() : null;
+        const owners = REQUIRE_SHARED_BACKEND ? sharedBackendProcesses() : [];
+        if (REQUIRE_SHARED_BACKEND)
+          assert(owners.length === 1, 'exactly one backend before opening another window');
         const side = join(PROJECTS, 'side');
         write(join(side, 'side.txt'), 'a project of its own\n');
         const sideLog = join(OUT, 'app-side.log');
@@ -1027,6 +1079,16 @@ async function run() {
         assert(second.exitCode === null, `the window on side ended: ${second.exitCode}`);
         moveAside(second.pid);
         try {
+          if (REQUIRE_SHARED_BACKEND) {
+            assert(
+              JSON.stringify(sharedBackendProcesses()) === JSON.stringify(owners),
+              'both UI windows share one backend process'
+            );
+            assert(
+              (await backendEpoch()) === epoch,
+              'opening another window preserves the backend'
+            );
+          }
           // A third on it: the second comes to the front, and the third ends.
           const third = launchRovik([side], 'third-on-side');
           assert((await exited(third, 60_000)) === 0, 'the third Rovik ended');
@@ -1058,6 +1120,16 @@ async function run() {
           second.kill();
           await exited(second, 15_000).catch(() => {});
           await focusDrivenProject();
+        }
+        if (REQUIRE_SHARED_BACKEND) {
+          assert(
+            (await backendEpoch()) === epoch,
+            'closing another window preserves RPC and backend incarnation'
+          );
+          assert(
+            JSON.stringify(sharedBackendProcesses()) === JSON.stringify(owners),
+            'closing another window preserves the owner'
+          );
         }
       }
     );
@@ -1139,6 +1211,60 @@ async function run() {
       'main.ts in the editor'
     );
   });
+
+  if (REQUIRE_SHARED_BACKEND) {
+    await step(
+      'shared backend: reconnect after a crash preserves unsaved editor text',
+      async () => {
+        const epoch = await backendEpoch();
+        await click('.monaco-editor .view-lines');
+        await keys([MOD, Keys.END]);
+        await keys(Keys.ENTER);
+        await typeKeys('// unsaved across backend crash');
+        await waitFor(
+          async () => (await tabs()).includes('main.ts •'),
+          'unsaved text before crash'
+        );
+        assert(
+          !readFileSync(join(DEMO, 'src', 'main.ts'), 'utf8').includes(
+            'unsaved across backend crash'
+          ),
+          'text has not been saved'
+        );
+        assert(sharedBackendProcesses(true).length === 1, 'terminated exactly the test backend');
+        await waitFor(
+          async () => (await d.bodyText()).includes('Backend connection interrupted'),
+          'backend failure notice',
+          30_000
+        );
+        await click(await buttonByText('Reconnect'));
+        await waitFor(
+          () => d.exec("return window.__TAURI_INTERNALS__.invoke('desktop_session_usable');"),
+          'a usable replacement session',
+          30_000
+        );
+        assert((await backendEpoch()) !== epoch, 'reconnect started a new backend incarnation');
+        assert(sharedBackendProcesses().length === 1, 'reconnect has exactly one owner');
+        assert(
+          (await panelText('.project-switcher-name')).includes('demo'),
+          'project remains open'
+        );
+        assert(
+          (await panelText('.monaco-editor .view-lines')).includes('unsaved across backend crash'),
+          'unsaved editor text survives'
+        );
+        assert((await tabs()).includes('main.ts •'), 'editor remains unsaved');
+        await keys([MOD, 's']);
+        await waitFor(
+          () =>
+            readFileSync(join(DEMO, 'src', 'main.ts'), 'utf8').includes(
+              'unsaved across backend crash'
+            ),
+          'recovered editor can save through RPC'
+        );
+      }
+    );
+  }
 
   await step('editor: type, see it unsaved, save to disk', async () => {
     await click('.monaco-editor .view-lines');
@@ -2728,7 +2854,27 @@ async function main() {
       await d?.close();
     } catch {}
     for (const c of children) c.kill();
+    if (REQUIRE_SHARED_BACKEND) {
+      try {
+        sharedBackendProcesses(true);
+      } catch (error) {
+        report.runnerError = String(error);
+      }
+    }
   }
+  if (REQUIRE_SHARED_BACKEND && report.steps[0]?.ok) {
+    for (const prefix of [
+      'project: open',
+      'instances: another project',
+      'tree: expand',
+      'shared backend:',
+      'restart:',
+    ]) {
+      if (!report.steps.some((step) => step.name.startsWith(prefix)))
+        report.runnerError = `Required shared-backend scenario was not run: ${prefix}`;
+    }
+  }
+  writeReport();
   const failed = report.steps.filter((s) => !s.ok && !s.optional);
   log(`${report.steps.length - failed.length}/${report.steps.length} steps passed`);
   console.log(readFileSync(join(OUT, 'report.md'), 'utf8'));

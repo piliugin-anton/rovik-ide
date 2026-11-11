@@ -26,7 +26,7 @@ on:
       platform:
         description: Platform
         type: choice
-        options: [windows, macos, linux, macos-mounts]
+        options: [windows, windows-backend, macos, linux, macos-mounts]
         default: windows
   push:
 
@@ -43,7 +43,7 @@ env:
 jobs:
   windows:
     name: Windows
-    if: inputs.platform == 'windows' || startsWith(github.event.head_commit.message, '[e2e windows]')
+    if: inputs.platform == 'windows' || inputs.platform == 'windows-backend' || startsWith(github.event.head_commit.message, '[e2e windows]')
     # Per job: a push that runs nothing doesn't cancel a run under way.
     concurrency:
       group: e2e-windows-${{ github.ref }}
@@ -72,8 +72,10 @@ jobs:
       # on a developer's machine (without it npx fetches an unrelated "tsc"
       # package, the check fails and the agent's changes don't land).
       - run: npm install -g typescript
+      - name: Build the standalone Windows backend
+        run: npm run package:windows-backend
       - name: Build the app and its installers
-        run: npx tauri build
+        run: npx tauri build --config src-tauri/tauri.windows-backend.conf.json --config scripts/e2e/shared-backend.tauri.conf.json
       - name: Install it (NSIS, silently)
         shell: pwsh
         run: |
@@ -84,8 +86,10 @@ jobs:
           $exe = Get-ChildItem "$env:LOCALAPPDATA\Rovik IDE\*.exe" -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
           if (-not $exe) {
-            "Not found where the installer puts it; testing the build's own binary."
-            $exe = Get-Item src-tauri/target/release/rovik-ide.exe
+            throw "The installed application was not found"
+          }
+          if (-not (Test-Path (Join-Path $exe.DirectoryName "backend/rovik-desktopd.exe"))) {
+            throw "The installer omitted the standalone backend"
           }
           "Installed: $($exe.FullName)"
           "APP=$($exe.FullName)" >> $env:GITHUB_ENV
@@ -158,8 +162,11 @@ jobs:
         shell: pwsh
         run: |
           $command = "& '$((Get-Command node).Source)' '$env:GITHUB_WORKSPACE\scripts\e2e\run.mjs'" +
-            " --app '$env:APP' --out '$env:GITHUB_WORKSPACE\e2e-out'" +
+            " --app '$env:APP' --profile-id rovik-ide-e2e --out '$env:GITHUB_WORKSPACE\e2e-out'" +
             " --native-driver '$env:MSEDGEDRIVER' --tauri-driver '$((Get-Command tauri-driver).Source)'"
+          if ('${{ inputs.platform }}' -eq 'windows-backend') {
+            $command += " --require-shared-backend --only '^(launch:|empty state:|project: open|instances:|tree: expand|shared backend:|editor: type|restart:)'"
+          }
           if (Get-Command gsudo -ErrorAction SilentlyContinue) {
             $script = "$env:GITHUB_WORKSPACE\as-user-run.ps1"
             "$command; exit `$LASTEXITCODE" | Set-Content $script
@@ -187,12 +194,19 @@ jobs:
       # bridge instead, as on macOS (a build of its own).
       - name: Build it with the end-to-end bridge
         if: steps.webdriver.outputs.launch_failed == 'true'
-        run: npx tauri build --no-bundle --config scripts/e2e/bridge.tauri.conf.json
+        run: npx tauri build --no-bundle --config src-tauri/tauri.windows-backend.conf.json --config scripts/e2e/shared-backend.tauri.conf.json --config scripts/e2e/bridge.tauri.conf.json
       - name: Run the scenarios through the bridge
         id: bridge
         if: steps.webdriver.outputs.launch_failed == 'true'
         continue-on-error: true
-        run: node scripts/e2e/run.mjs --driver bridge --app src-tauri/target/release/rovik-ide.exe --out e2e-bridge
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ('${{ inputs.platform }}' -eq 'windows-backend') {
+            $extra = @('--require-shared-backend', '--only', '^(launch:|empty state:|project: open|instances:|tree: expand|shared backend:|editor: type|restart:)')
+          }
+          node scripts/e2e/run.mjs --driver bridge --app src-tauri/target/release/rovik-ide.exe --second-app "$env:APP" --profile-id rovik-ide-e2e --out e2e-bridge @extra
+          exit $LASTEXITCODE
       - name: Logs of the bridge run
         if: steps.bridge.outcome == 'failure'
         shell: bash

@@ -1,4 +1,3 @@
-import { onWindows } from './wsl';
 import { invoke } from '@tauri-apps/api/core';
 import { createSignal } from 'solid-js';
 import { sessionRecovery } from './sessionRecovery';
@@ -40,8 +39,6 @@ export function onBackendRestored(callback: () => void | Promise<void>): () => v
 /** Reconnects this window explicitly, coalescing concurrent requests. */
 export const reconnectBackend = sessionRecovery({
   context: () => {
-    if (typeof navigator !== 'undefined' && onWindows())
-      throw new Error('Reopen this window to restart its embedded backend');
     const project = context();
     if (!!project.root !== !!project.projectId)
       throw new Error('Wait for the project to finish opening before reconnecting');
@@ -68,15 +65,6 @@ export const reconnectBackend = sessionRecovery({
 /** Offers an explicit reconnect; uncertain commands and terminal jobs are never replayed. */
 export function reportBackendFailure(error: unknown): void {
   if (busy()) return;
-  if (typeof navigator !== 'undefined' && onWindows()) {
-    notify({
-      id: 'backend-session',
-      kind: 'error',
-      title: 'Backend connection interrupted',
-      message: `Reopen this window to restart its embedded backend. ${String(error)}`,
-    });
-    return;
-  }
   notify({
     id: 'backend-session',
     kind: 'error',

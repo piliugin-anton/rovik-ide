@@ -948,3 +948,24 @@ content-addressed filename format and verifies bytes before deleting. The
 current image, unknown files, links, and damaged images are preserved. Windows
 sharing/access refusals defer deletion, preserving images still held by a live
 process. Cleanup failure is reported without terminating the ready backend.
+
+### Phase 25: Windows UI recovery and platform acceptance
+
+The frontend now offers the shared backend's explicit Reconnect action on
+Windows, matching native attachment. Recovery invalidates old handles while
+keeping editor models and drafts. A Windows-specific frontend regression covers
+the reconnect action and native session call.
+
+The E2E workflow's `windows-backend` option requires installed resources and runs
+actual multiple-window ownership, detach continuity, forced crash, unsaved editor
+recovery, RPC save, and restart checks. It uses an isolated profile and only
+terminates retained images in that profile. Bridge fallback launches the shipped
+unmodified second app. The ordinary full Windows suite remains available.
+
+`scripts/e2e/wsl-backend.ps1` provides strict WSL2 acceptance: existing Linux mount
+and remote execution contracts followed by authenticated native Windows process
+transport sessions to a private Linux daemon with working virtual files. Missing
+WSL2 or FUSE fails instead of skipping. Full Windows UI chat execution on a
+configured WSL host and native macOS mount acceptance still require suitable
+hardware; hosted compilation and transport checks are not evidence of those
+mounted paths working.

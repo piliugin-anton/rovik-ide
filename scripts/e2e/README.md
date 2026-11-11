@@ -66,6 +66,33 @@ Where it doesn't, the bridge (below) drives a Windows build too. On Windows
 a chat of a project runs in WSL, which the CI runner can't run (no nested
 virtualization): the scenarios that start one there need a real machine.
 
+The `windows-backend` workflow option runs the required shared-backend UI
+acceptance separately from the full Windows suite. It requires the installed
+backend resource, uses a separate `rovik-ide-e2e` application profile, checks that opening and
+closing another UI preserves the backend process and journal incarnation, and
+crashes only that profile's backend. Reconnect must preserve unsaved editor text,
+restore project registration, and save through the replacement session. Locally,
+build both apps with `shared-backend.tauri.conf.json`, pass
+`--require-shared-backend --profile-id rovik-ide-e2e`, and provide a shipped
+`--second-app` for bridge runs. Windows known-folder APIs ignore `APPDATA`
+overrides; the separate Tauri identifier provides the isolation.
+
+WSL acceptance needs Windows with WSL2, FUSE, bubblewrap, Rust, the Linux build
+dependencies, and a clean Linux checkout at the Windows checkout's revision:
+
+```powershell
+pwsh scripts/e2e/wsl-backend.ps1 -Distro Ubuntu -LinuxCheckout /home/me/rovik-ide
+```
+
+This fails when a prerequisite is missing. It runs the existing mounted
+execution/draining and remote-agent contracts inside WSL, then authenticates two
+native Windows clients over the real WSL process transport to a disposable Linux
+daemon. That daemon must report working virtual files; detaching one client must
+leave the other usable. The harness stops its own daemon and removes its private
+data. It does not install packages or use the user's ordinary daemon. This is
+transport plus Linux execution coverage; it does not replace the full Windows UI
+chat scenario on a configured WSL host. Hosted CI alone cannot validate WSL mounts.
+
 ## macOS
 
 WKWebView has no WebDriver, so the app is built with an in-page bridge

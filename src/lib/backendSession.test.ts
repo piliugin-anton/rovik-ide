@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reconnectBackend, onBackendLost } from './backendSession';
+import { reconnectBackend, onBackendLost, reportBackendFailure } from './backendSession';
 import { spawnTerminal, writeToTerminal, type TerminalEvent } from './terminal';
 import { subscribeVirtualFiles } from './virtualFiles';
+import { notifications, dismiss } from './notifications';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let backend: (command: string, args: any) => Promise<any>;
@@ -116,7 +117,7 @@ test('a failed view callback cannot prevent native session cleanup', async () =>
   }
 });
 
-test('embedded Windows recovery cannot invalidate live handles or invoke Unix attachment', async () => {
+test('Windows offers shared backend recovery and invalidates old session handles', async () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   let lost = false;
   const remove = onBackendLost(() => {
@@ -126,12 +127,21 @@ test('embedded Windows recovery cannot invalidate live handles or invoke Unix at
     configurable: true,
     value: { platform: 'Win32' },
   });
-  backend = async () => assert.fail('embedded backend cannot be replaced');
+  let attached = false;
+  backend = async (command) => {
+    assert.equal(command, 'desktop_reconnect');
+    attached = true;
+  };
   try {
-    await assert.rejects(reconnectBackend(), /embedded backend/);
-    assert.equal(lost, false);
+    reportBackendFailure(new Error('connection closed'));
+    const notice = notifications().find((item) => item.id === 'backend-session');
+    assert.equal(notice?.actions?.[0].label, 'Reconnect');
+    await reconnectBackend();
+    assert.equal(lost, true);
+    assert.equal(attached, true);
   } finally {
     remove();
+    dismiss('backend-session');
     if (original) Object.defineProperty(globalThis, 'navigator', original);
     else Reflect.deleteProperty(globalThis, 'navigator');
   }
