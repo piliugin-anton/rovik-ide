@@ -159,3 +159,74 @@ pub async fn check(executable: &Path) {
     .await
     .unwrap();
 }
+
+/// A dev launcher can close its output without disconnecting the remaining window.
+pub async fn check_launcher(executable: &Path, flag: Option<&str>) {
+    use rovik_client::{
+        desktop_api::settings::SettingsRequest, desktop_connection::DesktopConnection,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let config = root.path().join("config");
+    desktop_secrets::seed_secrets(&config);
+    let settings = serde_json::json!({"version": 2, "providers": [{
+        "id": "saved-connector", "name": "My Codex", "connector": "codex",
+        "baseUrl": "codex://", "apiKey": "", "models": [], "stream": true
+    }]});
+    std::fs::write(config.join("ai-settings.json"), settings.to_string()).unwrap();
+
+    // Tauri dev captures the first app's stderr, then closes the reader when
+    // that app exits. A separate process session alone cannot detach this pipe.
+    let (output, writer) = std::io::pipe().unwrap();
+    let mut command = std::process::Command::new(executable);
+    if let Some(flag) = flag {
+        command.arg(flag);
+    }
+    command.env_remove("ROVIK_LOG_FILE");
+    command.stdout(writer.try_clone().unwrap()).stderr(writer);
+    let first = DesktopConnection::attach(command, &data, &config)
+        .await
+        .unwrap();
+    let endpoint = directory(&data);
+    let (stream, ready) = connect(&endpoint).await.unwrap();
+    let host = desktop_host::Host::peer(&stream);
+    drop(stream);
+    let second = DesktopConnection::connect(&endpoint).await.unwrap();
+    assert!(second.usable());
+    first.close().await.unwrap();
+    drop(first);
+    drop(output);
+
+    // A refused control request produces a host diagnostic. With inherited
+    // stderr its logging panics after the development launcher has exited.
+    assert!(negotiate(
+        &endpoint,
+        "invalid-version",
+        rovik_client::local_backend::PROTOCOL
+    )
+    .await
+    .is_err());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        second
+            .request(rovik_protocol::Request::AgentStatus)
+            .await
+            .unwrap();
+        let loaded = second
+            .desktop(SettingsRequest::LoadAi.into())
+            .await
+            .unwrap();
+        let loaded: serde_json::Value = serde_json::from_str(loaded.as_str().unwrap()).unwrap();
+        assert_eq!(
+            loaded, settings,
+            "the remaining window can still load its connectors"
+        );
+        assert_eq!(connect(&endpoint).await.unwrap().1.boot, ready.boot);
+        second.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+    #[cfg(any(target_os = "linux", windows))]
+    host.crash();
+    #[cfg(not(any(target_os = "linux", windows)))]
+    drop(host);
+}

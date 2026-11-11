@@ -1653,6 +1653,9 @@ private readiness socket. The packaged app hosts it in `--desktop-backend` mode;
 `local_backend::ensure_backend` negotiates safe upgrades and attaches to the host,
 or starts that binary and waits for initialization. The handshake identifies the protocol,
 backend boot, and client session; the daemon retains ownership through shutdown.
+The shared backend writes its standard output and diagnostics to `backend.log`
+in its private backend directory under the app data directory. Its output handles
+remain valid after the launching window or `tauri dev` process exits.
 The Unix endpoint also serves bounded typed request/reply calls through
 `local_backend::rpc::Client`. Requests route by their chat or message identity;
 run start, steering, deletion, and configuration use the existing remote-routing

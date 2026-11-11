@@ -503,3 +503,12 @@ mod desktop_standalone;
 async fn standalone_ui_sessions_recover_without_an_embedded_fallback() {
     desktop_standalone::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
 }
+
+#[tokio::test]
+async fn closing_the_development_launchers_output_keeps_other_windows_connected() {
+    desktop_upgrade::check_launcher(
+        std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd")),
+        None,
+    )
+    .await;
+}

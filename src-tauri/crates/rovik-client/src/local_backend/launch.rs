@@ -98,7 +98,21 @@ async fn ensure_prepared(
     super::host::wait_for_legacy_windows(data).await?;
     let mut command = prepare()?;
     command.arg("--data").arg(data).arg("--config").arg(config);
-    command.stdin(std::process::Stdio::null());
+    // A dev launcher closes its captured output pipes with the first window.
+    // The shared host must own independent handles, including for diagnostics.
+    let log_path = directory.join("backend.log");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let output = options.open(&log_path)?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(output.try_clone()?)
+        .stderr(output);
     rovik_core::process::own_session(&mut command);
     rovik_core::process::close_inherited(&mut command);
     #[cfg(windows)]

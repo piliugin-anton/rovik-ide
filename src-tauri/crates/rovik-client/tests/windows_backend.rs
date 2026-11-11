@@ -327,3 +327,8 @@ async fn installer_preserves_a_busy_backend_and_saved_edits() {
     drop(stream);
     drop(host);
 }
+
+#[tokio::test]
+async fn closing_the_development_launchers_output_keeps_other_windows_connected() {
+    desktop_upgrade::check_launcher(&executable(), None).await;
+}
