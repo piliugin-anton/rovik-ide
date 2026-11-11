@@ -968,6 +968,24 @@ unmodified second app. The ordinary full Windows suite remains available.
 and remote execution contracts followed by authenticated native Windows process
 transport sessions to a private Linux daemon with working virtual files. Missing
 WSL2 or FUSE fails instead of skipping. Full Windows UI chat execution on a
-configured WSL host and native macOS mount acceptance still require suitable
+configured WSL host and macOS kernel-backend mount acceptance still require suitable
 hardware; hosted compilation and transport checks are not evidence of those
 mounted paths working.
+
+The [native Windows UI run on `cfbec76`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42934688855)
+passed all nine required scenarios through WebDriver using the installed app.
+Two project windows shared one retained backend; normal closure of the second
+preserved the first's RPC connection and backend incarnation. A forced backend
+crash preserved unsaved editor text, explicit reconnect restored the Files-only
+window, saving succeeded through the replacement session, and application restart
+restored the project and tabs. The earlier FSKit mounted and GUI acceptance
+results remain recorded above. Kernel-backend validation remains unavailable on
+hosted virtual machines.
+
+The [full CI run on `cfbec76`](https://github.com/piliugin-anton/rovik-ide/actions/runs/42934697967)
+passed on Linux, Linux with Landlock, macOS, and Windows. Its explicit NSIS update
+contract replaced the modified installation resource while the retained backend
+remained usable, preserved the saved draft, refused retirement while connected,
+and recovered the draft after clean retirement and replacement. The WSL
+acceptance harness is compiled and its PowerShell syntax is checked in CI; its
+real WSL2 execution and mount checks remain unrun without a compatible host.
