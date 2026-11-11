@@ -1422,3 +1422,57 @@ fn the_saved_and_sent_proxies_on_the_loopback_are_this_computers() {
     }));
     assert_eq!(saved_here(&net.lock()), vec![3128, 1080, 8888]);
 }
+
+#[tokio::test]
+async fn native_client_settings_keep_proxy_authentication_and_local_bypass() {
+    let (proxy_port, heads) = http_proxy("through backend settings").await;
+    let net = Net::default();
+    net.save(
+        through(vec![proxy(
+            "p",
+            ProxyKind::Http,
+            "127.0.0.1",
+            proxy_port,
+            Some("alice"),
+        )]),
+        &passwords(&[("p", Some("snapshot-secret"))]),
+    )
+    .unwrap();
+    net.current().await;
+    let settings = effective(&net.lock());
+    assert!(!format!("{settings:?}").contains("snapshot-secret"));
+    let encoded = serde_json::to_vec(&settings).unwrap();
+    let settings: ClientSettings = serde_json::from_slice(&encoded).unwrap();
+    let client = settings
+        .configure(reqwest::Client::builder())
+        .build()
+        .unwrap();
+    assert_eq!(
+        client
+            .get("http://release.invalid/latest.json")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "through backend settings"
+    );
+    assert_eq!(
+        header(&heads.lock().unwrap()[0], "proxy-authorization"),
+        Some(tunnel::basic("alice", "snapshot-secret").as_str())
+    );
+    let (port, _) = server("local").await;
+    assert_eq!(
+        client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "local"
+    );
+    assert_eq!(heads.lock().unwrap().len(), 1);
+}

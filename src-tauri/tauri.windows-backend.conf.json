@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "binaries/rovik-desktopd.exe": "backend/rovik-desktopd.exe"
+    }
+  }
+}

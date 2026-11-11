@@ -123,8 +123,20 @@ export function barChanged(event: CloudEvent, dialogId: string | null | undefine
 
 /** Calls `handler` with each cloud event, until the function it returns is called. */
 export function onCloudEvent(handler: (event: CloudEvent) => void): () => void {
+  journalListeners.add(handler);
   const listening = listen<CloudEvent>('cloud-event', (e) => handler(e.payload));
-  return () => void listening.then((stop) => stop());
+  return () => {
+    journalListeners.delete(handler);
+    void listening.then((stop) => stop());
+  };
+}
+
+const journalListeners = new Set<(event: CloudEvent) => void>();
+
+/** Journal delivery reaches both shared state and component cloud-event subscribers. */
+export function handleBackendCloud(event: CloudEvent) {
+  track(event);
+  for (const handler of [...journalListeners]) handler(event);
 }
 
 /** A host as the chats show it: its name, and its connection once deployed. */
@@ -534,4 +546,22 @@ const BACK_STEPS: Record<string, string> = {
 export function moveStepLabel(move: MoveProgress): string {
   const steps = move.direction === 'there' ? THERE_STEPS : BACK_STEPS;
   return steps[move.step] ?? move.step;
+}
+
+/** Restore cloud state after missed events, clearing completed transfers and stale ports. */
+export async function recoverCloud(current: () => boolean = () => true): Promise<void> {
+  const [hosts, ports] = await Promise.all([hostSummaries(), forwardedPorts()]);
+  if (!current()) return;
+  setCloud(
+    produce((s) => {
+      s.hosts = hosts;
+      s.ports = ports;
+      s.moves = {};
+      s.uploads = {};
+      s.caughtUp = {};
+    })
+  );
+  // The caller separately restores run state; avoid a competing asynchronous status seed.
+  for (const host of hosts)
+    if (host.caughtUp && host.state === 'ready') setCloud('caughtUp', host.id, true);
 }

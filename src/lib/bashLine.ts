@@ -2,7 +2,7 @@
 // garbles a line taller than the terminal: holding Backspace through a long
 // paste blanked the row the caret moved up to (from 5.3 on, the rows that
 // had scrolled off the top didn't come back). Its start file in a terminal
-// here, on a cloud host or in WSL (src-tauri/src/terminal/bash.sh), binds
+// here, on a cloud host or in WSL (src-tauri/crates/rovik-client/src/terminal/bash.sh), binds
 // two keys: one puts the line on one row that scrolls sideways, the other
 // puts it there if it's too tall and lets it wrap if it fits. The terminal
 // sends the first before a paste that may not fit and before it gets

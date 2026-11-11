@@ -1,11 +1,15 @@
-use crate::filesystem::WatcherState;
+// Tauri checks Send for service futures containing nested HTTP client types.
+#![recursion_limit = "256"]
+
 use crate::instances::Instances;
-use rovik_client::hosts_page::HostsPage;
-use rovik_client::provider_keys::ProviderKeys;
-use rovik_client::secrets::{SecretError, SecretName, SecretStore};
-use rovik_client::Remote;
+#[cfg(not(any(unix, windows)))]
+use rovik_client::desktop_backend::DesktopBackend;
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
-use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
+use rovik_core::{process, rt};
+#[cfg(not(any(unix, windows)))]
+use rovik_core::{EventSink, Paths};
+#[cfg(not(any(unix, windows)))]
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -19,7 +23,6 @@ mod lsp;
 mod open_url;
 mod pinned_browser;
 mod project_files;
-mod remote_chats;
 mod shared_state;
 mod terminal;
 mod typings;
@@ -28,6 +31,27 @@ mod util;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The same packaged executable hosts the daemon without constructing Tauri
+    // or a webview. This also keeps AppImage libraries mounted independently.
+    #[cfg(unix)]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(
+            rovik_client::local_backend::host::HOST_FLAG,
+        ))
+    {
+        log_to_file();
+        init_log();
+        process::adopt_login_shell_path();
+        rovik_core::overlay::confine::require();
+        let result = rovik_client::local_backend::host::paths(std::env::args_os().skip(2))
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+            .and_then(|paths| rt::block_on(rovik_client::local_backend::host::serve(paths)));
+        if let Err(error) = result {
+            eprintln!("Local backend: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // The agent's commands run sandboxed or not at all: on Windows, in WSL.
     rovik_core::overlay::confine::require();
     log_to_file();
@@ -42,10 +66,6 @@ pub fn run() {
         // plugin's, which the window has no permission for.
         .plugin(updates::plugin())
         .manage(updates::Updates::default())
-        .manage(terminal::terminals())
-        .manage(lsp::servers())
-        .manage(chat_request::ChatRequests::default())
-        .manage(WatcherState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;
@@ -76,140 +96,76 @@ pub fn run() {
                 folder,
                 new_window: std::env::args().any(|a| a == NEW_WINDOW),
             });
-            // What only one process at a time can have (the virtual files'
-            // folder, ssh's sockets): each has its own, by its slot. And the
-            // chats each is at work on, which the others leave be.
-            rovik_core::os_lock::take_slot(&data.join("slots"));
-            rovik_core::chat_hold::init(data.join("chats-at-work"));
-            // The providers' API keys, in the keychain or the encrypted
-            // file in its place, out of ai-settings.json (H06).
-            let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
-            // Settings → Network (rovik_core::net) before anything connects:
-            // its file beside the AI settings, the proxies' passwords in the
-            // keychain, each read once a route that signs in to it is used.
-            let store = secrets.clone();
-            rovik_core::net::init(
-                config.join("network-settings.json"),
-                Arc::new(move |proxy: &str| {
-                    let name = SecretName::ProxyPassword {
-                        proxy: proxy.to_string(),
-                    };
-                    match store.get(&name) {
-                        Ok(password) => Ok(Some(password)),
-                        Err(SecretError::Missing(_)) => Ok(None),
-                        Err(e) => Err(e.to_string()),
-                    }
-                }),
-            );
-            app.manage(secrets.clone());
-            let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets.clone());
-            app.manage(Arc::new(keys));
-            let paths = Paths::new(data.clone(), config.clone());
-            let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
-            // Settings → MCP servers: a server's secret values, in the
-            // keychain, read as it starts (docs/design/mcp-plan.md, Q02).
-            let store = secrets.clone();
-            core.mcp
-                .set_secrets(Arc::new(move |server: &str, key: &str| {
-                    let name = SecretName::McpValue {
-                        server: server.to_string(),
-                        key: key.to_string(),
-                    };
-                    match store.get(&name) {
-                        Ok(value) => Ok(Some(value.0.clone())),
-                        Err(SecretError::Missing(_)) => Ok(None),
-                        Err(e) => Err(e.to_string()),
-                    }
-                }));
-            // Their sign-ins made here, refreshed here (mcp-plan-2.md, Q14).
-            let grants = rovik_client::mcp_sign_in::KeychainGrants(secrets.clone());
-            core.mcp.set_grants(Arc::new(grants));
-            // Chats on hosts (6.1): their requests go to the host, and its
-            // events come back through the core's sink.
-            let remote = Remote::new(core.clone());
+            #[cfg(unix)]
+            let connection = {
+                // Native slots position windows only. Execution slots belong to
+                // the daemon and must not change as more UIs attach.
+                rovik_core::os_lock::take_slot(&data.join("window-slots"));
+                let mut command = rovik_command().map_err(std::io::Error::other)?;
+                command.arg(rovik_client::local_backend::host::HOST_FLAG);
+                command.stderr(std::process::Stdio::inherit());
+                rt::block_on(DesktopConnection::attach(command, &data, &config))?
+            };
+            #[cfg(windows)]
+            let connection = {
+                rovik_core::os_lock::take_slot(&data.join("window-slots"));
+                let executable = windows_backend_path(app.handle())?;
+                rt::block_on(DesktopConnection::attach_backend(
+                    &executable,
+                    &data,
+                    &config,
+                ))?
+            };
+            #[cfg(not(any(unix, windows)))]
+            let connection = {
+                let backend = Arc::new(rt::block_on(DesktopBackend::open(
+                    Paths::new(data.clone(), config.clone()),
+                    Arc::new(WindowEvents),
+                    Arc::new(|_| {}),
+                    env!("CARGO_PKG_VERSION"),
+                ))?);
+                backend
+                    .remote
+                    .use_embedded_ownership(app.state::<Instances>().ownership());
+                backend.start_services()?;
+                let connection = DesktopConnection::embedded(backend.clone());
+                app.manage(EmbeddedHost(backend));
+                connection
+            };
             let window = app.handle().clone();
-            remote.on_cloud(Arc::new(move |event| {
-                if let Err(e) = window.emit(CLOUD_EVENT, &event) {
-                    eprintln!("cloud: could not send an event: {e}");
+            connection.on_event_error(move |message| {
+                let notice = AgentEvent::Notice {
+                    dialog_id: None,
+                    kind: "error".into(),
+                    title: "Desktop backend disconnected".into(),
+                    message,
+                };
+                if let Err(error) = window.emit(EVENT, notice) {
+                    log::error!("Could not report desktop event loss: {error}");
                 }
-            }));
-            // The chats the database puts on hosts go there from the start.
-            if let Err(e) = rt::block_on(remote.load()) {
-                eprintln!("cloud: the chats on hosts couldn't be read: {e}");
-            }
-            // Settings → Cloud hosts (U01), and the hosts deployed there,
-            // connected from the start.
-            let hosts = Arc::new(HostsPage::new(
-                config,
-                data.join("ssh"),
-                secrets,
-                remote.clone(),
-                env!("CARGO_PKG_VERSION"),
-            ));
-            app.manage(hosts.clone());
-            app.manage(core.clone());
-            app.manage(remote.clone());
-            // A project is open in one window (instances.rs): its remote
-            // chats' results, rows and events are that window's.
-            let windows = app.handle().clone();
-            remote.on_open_elsewhere(Arc::new(move |project| {
-                windows
-                    .try_state::<Instances>()
-                    .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
-            }));
-            // A page a remote chat's command opens on its team server opens
-            // here, through a forwarded port (D20): in a browser tab of the
-            // editor when one can show it (an http page), else in the
-            // default browser.
-            let window = app.handle().clone();
-            remote.on_open_page(Arc::new(move |page| {
-                if page.in_tab {
-                    window
-                        .emit(PAGE_EVENT, page.address)
-                        .map_err(|e| e.to_string())
-                } else {
-                    open_url::open(page.address)
-                }
-            }));
-            // Another window may change the hosts' settings: their policies
-            // are read again before one goes to a host.
-            let page = Arc::downgrade(&hosts);
-            remote.on_refresh(Arc::new(move || {
-                if let Some(hosts) = page.upgrade() {
-                    hosts.follow_policies();
-                }
-            }));
-            // The MCP sign-outs owed to hosts that were away are kept with
-            // their settings (mcp-plan-2.md, Q14).
-            remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
-            // A project left for another while its chats were at work stays
-            // this window's until they're done (instances.rs).
-            let handle = app.handle().clone();
-            let following = hosts.clone();
-            rt::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    // The hosts another window added, deployed, changed or
-                    // removed: this window's connections follow.
-                    let hosts = following.clone();
-                    let _ = rt::spawn_blocking(move || hosts.follow()).await;
-                    let instances = handle.state::<Instances>();
-                    let mut still = Vec::new();
-                    for project in instances.left_at_work() {
-                        if at_work_in(&core, project.clone()).await {
-                            still.push(project);
+            });
+            app.manage(connection);
+            // Embedded windows retain claims while their private core is busy.
+            // Shared-mode focus claims follow only the visible project.
+            #[cfg(not(any(unix, windows)))]
+            {
+                let handle = app.handle().clone();
+                rt::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let instances = handle.state::<Instances>();
+                        let mut still = Vec::new();
+                        for project in instances.left_at_work() {
+                            if at_work_in(&handle.state::<DesktopConnection>(), project.clone())
+                                .await
+                            {
+                                still.push(project);
+                            }
                         }
+                        instances.let_go_done(|p| still.contains(p));
                     }
-                    instances.let_go_done(|p| still.contains(p));
-                }
-            });
-            // Off the main thread: connecting reads the hosts' tokens from
-            // the keychain, which may take a moment or ask the user, and
-            // the window comes first.
-            rt::spawn_blocking(move || {
-                remote_chats::from_env(&remote);
-                hosts.connect_all();
-            });
+                });
+            }
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
             // which a config can't. Pasting an image into the chat input
@@ -237,13 +193,18 @@ pub fn run() {
         // Screenshots: chat-attachment://localhost/<sha256> (Windows:
         // http://chat-attachment.localhost/<sha256>).
         .register_asynchronous_uri_scheme_protocol("chat-attachment", |ctx, request, responder| {
-            let core = ctx.app_handle().state::<Core>().inner().clone();
+            let app = ctx.app_handle().clone();
             let path = request.uri().path().to_string();
-            rt::spawn_blocking(move || {
-                responder.respond(attachment_response(core.db.data_dir(), &path));
+            rt::spawn(async move {
+                responder
+                    .respond(attachment_response(&app.state::<DesktopConnection>(), path).await);
             });
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_session_usable,
+            desktop_reconnect,
+            desktop_poll_events,
+            desktop_event_status,
             terminal::spawn_terminal,
             terminal::spawn_remote_terminal,
             terminal::write_to_terminal,
@@ -412,6 +373,8 @@ pub fn run() {
             commands::agent::connector_probe,
             commands::agent::connector_setup,
             commands::agent::connector_commands,
+            commands::pages::desktop_pages_subscribe,
+            commands::pages::desktop_pages_unsubscribe,
             commands::browser::web_search,
             commands::browser::browse_url,
             commands::browser::browser_screenshot,
@@ -485,6 +448,7 @@ pub fn run() {
             commands::clm::clm_reset,
             commands::clm::clm_list_revisions,
             commands::clm::clm_read_revision,
+            commands::clm::clm_read_file,
             commands::clm::clm_restore_revision,
             commands::clm::clm_tool_read,
             commands::clm::clm_tool_edit,
@@ -509,27 +473,26 @@ pub fn run() {
         });
 }
 
-/// What the app does as it ends: its terminals closed, the core done with
-/// the project's chats, then the project let go of, for another window or
-/// the next start, and what the terminals left running ended. Also before
-/// an update's installer ends the process at once (Windows), on a thread
-/// off the runtime's.
+// Only embedded mode owns a host lifetime. A shared-mode window manages
+// DesktopConnection alone and must never shut down the daemon on exit.
+#[cfg(not(any(unix, windows)))]
+struct EmbeddedHost(Arc<DesktopBackend>);
+
+/// Detaches the client, shuts down a private embedded host if present, and
+/// releases native focus claims. Also used before Windows installer exit.
 fn before_exit(app: &tauri::AppHandle) {
-    // First, so that what they left running is ended while the core shuts
-    // down (terminal.rs).
-    let terminals = app.try_state::<terminal::TerminalState>();
-    if let Some(terminals) = &terminals {
-        terminals.end_all();
+    if let Some(connection) = app.try_state::<DesktopConnection>() {
+        if let Err(error) = rt::block_on(connection.close()) {
+            log::error!("Could not detach desktop client: {error}");
+        }
     }
-    if let Some(core) = app.try_state::<Core>() {
-        rt::block_on(core.shutdown());
+    #[cfg(not(any(unix, windows)))]
+    if let Some(host) = app.try_state::<EmbeddedHost>() {
+        rt::block_on(host.0.shutdown());
     }
-    // Only once the core is done with the project's chats.
+    // Continuing shared work belongs to the host, not this window's focus claims.
     if let Some(instances) = app.try_state::<Instances>() {
         instances.release();
-    }
-    if let Some(terminals) = terminals {
-        terminals.wait_ended();
     }
 }
 
@@ -571,18 +534,27 @@ struct Startup {
 /// without a project (the last one is open in this one).
 const NEW_WINDOW: &str = "--new-window";
 
-/// Whether this process is at work on a chat of the project `project`
+/// Whether the backend is at work on a chat of the project `project`
 /// (None: of the chats without a project): a run, Autopilot's driver, a
 /// stage waiting out a rate limit (rovik_core::chat_hold).
-async fn at_work_in(core: &Core, project: Option<String>) -> bool {
-    let held = rovik_core::chat_hold::held_here();
-    if held.is_empty() {
-        return false;
-    }
-    core.db
-        .read(move |c| chat_db::projects::has_lead_chat(c, &held, project.as_deref()))
+#[cfg(not(any(unix, windows)))]
+async fn at_work_in(backend: &DesktopConnection, project: Option<String>) -> bool {
+    use rovik_client::desktop_api::projects::ProjectRequest;
+    match backend
+        .desktop(
+            ProjectRequest::AtWorkIn {
+                project_id: project,
+            }
+            .into(),
+        )
         .await
-        .unwrap_or(false)
+    {
+        Ok(value) if value.is_boolean() => value.as_bool().unwrap_or(true),
+        result => {
+            log::warn!("Could not check project execution leases: {result:?}");
+            true
+        }
+    }
 }
 
 /// The first argument that's a folder: others (macOS's `-psn_…`, a
@@ -621,26 +593,36 @@ fn startup_info(startup: tauri::State<'_, Startup>) -> StartupInfo {
 /// Claims a project for this window before it opens (instances.rs; no
 /// `path`: the chats without a project): when another window has it, or a
 /// copy of it sharing its chats, it isn't opened here, and that window is
-/// asked to come to the front (`focus_other`). The project open here stays
-/// this window's while its chats are at work.
+/// asked to come to the front (`focus_other`). Shared hosts keep execution
+/// independently; only embedded windows retain claims for unfinished chats.
 #[tauri::command]
 async fn project_claim(
     app: tauri::AppHandle,
-    core: tauri::State<'_, Core>,
+    backend: tauri::State<'_, DesktopConnection>,
     path: Option<String>,
     focus_other: bool,
 ) -> Result<instances::Claim, String> {
+    #[cfg(not(any(unix, windows)))]
     let open = app.state::<Instances>().open_project();
+    #[cfg(not(any(unix, windows)))]
     let keep_open = match open {
-        Some(project) => at_work_in(&core, project).await,
+        Some(project) => at_work_in(&backend, project).await,
         None => false,
     };
-    rt::spawn_blocking(move || {
+    #[cfg(any(unix, windows))]
+    let keep_open = false;
+    let claim = rt::spawn_blocking(move || {
         let path = path.as_deref().map(std::path::Path::new);
         app.state::<Instances>().claim(path, focus_other, keep_open)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    if claim.claimed {
+        backend
+            .desktop(rovik_client::desktop_api::projects::ProjectRequest::Clear.into())
+            .await?;
+    }
+    Ok(claim)
 }
 
 /// Whether another window has a project open (instances.rs), without
@@ -692,6 +674,15 @@ fn new_window() -> Result<(), String> {
 /// files (process::close_inherited): this AppImage's mount goes once this
 /// process ends.
 fn another_rovik() -> Result<std::process::Command, String> {
+    let mut cmd = rovik_command()?;
+    process::own_session(&mut cmd);
+    process::close_inherited(&mut cmd);
+    Ok(cmd)
+}
+
+// Execution environment shared by UI and headless launches. Their launcher
+// installs session and descriptor hooks exactly once before spawning.
+fn rovik_command() -> Result<std::process::Command, String> {
     use std::process::Stdio;
     let mut cmd = match std::env::var_os("APPIMAGE") {
         Some(image) => process::command(image),
@@ -707,41 +698,48 @@ fn another_rovik() -> Result<std::process::Command, String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    process::own_session(&mut cmd);
-    process::close_inherited(&mut cmd);
     Ok(cmd)
 }
 
 /// `chat-attachment://localhost/<sha256>`'s response: the attachment, or 404.
-fn attachment_response(
-    data_dir: &std::path::Path,
-    uri_path: &str,
+async fn attachment_response(
+    backend: &DesktopConnection,
+    path: String,
 ) -> tauri::http::Response<Vec<u8>> {
+    use rovik_client::desktop_api::chat::{Attachment, ChatRequest};
     use tauri::http::Response;
-    let not_found = || {
-        Response::builder()
+    let response = backend
+        .desktop(ChatRequest::ReadAttachment { path }.into())
+        .await
+        .and_then(|value| {
+            serde_json::from_value::<Option<Attachment>>(value).map_err(|e| e.to_string())
+        });
+    match response {
+        Ok(Some(attachment)) => Response::builder()
+            .status(200)
+            .header("Content-Type", attachment.mime)
+            .header("Cache-Control", "public, max-age=31536000, immutable")
+            .body(attachment.bytes)
+            .unwrap_or_else(|error| {
+                log::warn!("Could not build chat attachment response: {error}");
+                Response::builder()
+                    .status(503)
+                    .body(Vec::new())
+                    .expect("static response")
+            }),
+        Ok(None) => Response::builder()
             .status(404)
             .body(Vec::new())
-            .expect("static response")
-    };
-    match chat_db::attachments::read(data_dir, uri_path) {
-        Some((mime, bytes)) => Response::builder()
-            .status(200)
-            .header("Content-Type", mime)
-            // Content-addressed: the bytes for an id never change.
-            .header("Cache-Control", "public, max-age=31536000, immutable")
-            .body(bytes)
-            .unwrap_or_else(|_| not_found()),
-        None => not_found(),
+            .expect("static response"),
+        Err(error) => {
+            log::warn!("Could not read chat attachment: {error}");
+            Response::builder()
+                .status(503)
+                .body(Vec::new())
+                .expect("static response")
+        }
     }
 }
-
-/// The hosts' own events, apart from the chats': connections and transfers.
-const CLOUD_EVENT: &str = "cloud-event";
-
-/// A page for a browser tab of the editor to open (D20,
-/// src/lib/browserTabs.ts): its address at the port forwarded here.
-const PAGE_EVENT: &str = "open-page";
 
 /// The `log` crate's messages (rovik-client's, mostly) on stderr, where
 /// the app's own go. `ROVIK_LOG` sets the level (error, warn, info, debug,
@@ -808,13 +806,93 @@ fn init_log() {
     }
 }
 
-/// The core's events, to every window (src/lib/agentRuns.ts listens).
-struct WindowEvents(tauri::AppHandle);
-
+/// Shared events are read through the journal after the UI is ready.
+#[cfg(not(any(unix, windows)))]
+struct WindowEvents;
+#[cfg(not(any(unix, windows)))]
 impl EventSink for WindowEvents {
-    fn agent(&self, event: &AgentEvent) {
-        if let Err(e) = self.0.emit(EVENT, event) {
-            eprintln!("agent: could not send an event: {e}");
+    fn agent(&self, _: &AgentEvent) {}
+}
+
+/// Read-only event transport uses its own connection and bounded replay cursor.
+#[tauri::command]
+async fn desktop_poll_events(
+    backend: tauri::State<'_, DesktopConnection>,
+    scope: rovik_client::desktop_journal::Scope,
+    cursor: Option<rovik_client::desktop_journal::Cursor>,
+) -> Result<serde_json::Value, String> {
+    backend.poll_events(scope, cursor).await
+}
+
+/// Authoritative run state for the same UI scope as shared event replay.
+#[tauri::command]
+async fn desktop_event_status(
+    backend: tauri::State<'_, DesktopConnection>,
+    scope: rovik_client::desktop_journal::Scope,
+) -> Result<serde_json::Value, String> {
+    backend.event_status(scope).await
+}
+
+/// Session health is separate from the independently reconnectable journal reader.
+#[tauri::command]
+fn desktop_session_usable(backend: tauri::State<'_, DesktopConnection>) -> bool {
+    backend.usable()
+}
+
+/// Recreates only this window's session; accepted mutations are never replayed.
+#[tauri::command]
+async fn desktop_reconnect(
+    app: tauri::AppHandle,
+    backend: tauri::State<'_, DesktopConnection>,
+    root: Option<String>,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    #[cfg(any(unix, windows))]
+    {
+        let project = match (root, project_id) {
+            (Some(root), Some(id)) => Some((root, id)),
+            (None, None) => None,
+            _ => return Err("Wait for the project to finish opening before reconnecting".into()),
+        };
+        let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let config = app.path().app_config_dir().map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            let mut command = rovik_command()?;
+            command.arg(rovik_client::local_backend::host::HOST_FLAG);
+            command.stderr(std::process::Stdio::inherit());
+            backend.reconnect(command, &data, &config, project).await
+        }
+        #[cfg(windows)]
+        {
+            let executable = windows_backend_path(&app).map_err(|e| e.to_string())?;
+            backend
+                .reconnect_backend(&executable, &data, &config, project)
+                .await
         }
     }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (app, backend, root, project_id);
+        Err("Restart this window to recover its embedded backend".into())
+    }
+}
+
+/// Release resources are authoritative; development builds can use Cargo's sibling binary.
+#[cfg(windows)]
+fn windows_backend_path(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let packaged = app
+        .path()
+        .resource_dir()?
+        .join("backend/rovik-desktopd.exe");
+    if cfg!(debug_assertions) && !packaged.is_file() {
+        let executable = std::env::current_exe()?;
+        let directory = executable
+            .parent()
+            .ok_or("Cannot locate the development backend directory")?;
+        return Ok(directory.join("rovik-desktopd.exe"));
+    }
+    Ok(packaged)
 }

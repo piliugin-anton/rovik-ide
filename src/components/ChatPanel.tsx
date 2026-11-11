@@ -1,3 +1,5 @@
+import { onBackendRestored } from '../lib/backendSession';
+import { workloadFocus } from '../lib/workloadFocus';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Accessor,
@@ -272,6 +274,8 @@ const usageCache = new Map<string, ContextUsage>();
 const clmBudgetCache = new Map<string, number | null>();
 
 interface ChatProps {
+  /** Includes the chat list, active transcript and composer restoration. */
+  onLoadingChange?: (loading: boolean) => void;
   rootPath: Accessor<string | null>;
   activeFileContext: Accessor<ActiveFileContext | null>;
   files: Accessor<TreeRow[]>;
@@ -336,6 +340,20 @@ export default function ChatPanel(props: ChatProps) {
     return store.state.list.items.some((d) => d.id !== active && store.state.unread[d.id]);
   });
   const [loadingHistory, setLoadingHistory] = createSignal(true);
+  const mountedProject = props.projectId();
+  // A remounted panel can show its cached transcript while settings and drafts
+  // initialize. Keep loadingHistory's action guards until that work finishes.
+  const [restoringCachedHistory, setRestoringCachedHistory] = createSignal(
+    mountedProject !== undefined &&
+      mountedProject === store.projectId() &&
+      store.state.list.loaded &&
+      !!store.state.activeId &&
+      !!store.state.open[store.state.activeId]
+  );
+  const showHistoryLoading = () =>
+    loadingHistory() && (!restoringCachedHistory() || props.projectId() !== mountedProject);
+  createEffect(() => props.onLoadingChange?.(showHistoryLoading()));
+  onCleanup(() => props.onLoadingChange?.(false));
   /** Set when the chat database couldn't be read at startup. */
   const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
   /** A search hit to scroll to in the open chat. */
@@ -435,11 +453,19 @@ export default function ChatPanel(props: ChatProps) {
     setOwnModeChat(open && worksOnItsOwn(open.place, cloud.hosts) ? open.id : null);
   });
   onCleanup(() => setOwnModeChat(null));
-  // The chat on screen goes first in the queue for heavy work (builds,
-  // tests) when several chats want the CPU at once (src-tauri/src/workload).
-  createEffect(() => {
-    const id = store.state.chatVisible ? (activeDialogId() ?? null) : null;
-    void invoke('workload_focus', { dialogId: id }).catch(() => {});
+  // Visible selections belong to this window. Returning to it promotes its
+  // chat again; disposal releases only this window's selection.
+  const priority = workloadFocus({
+    chat: () => (store.state.chatVisible ? (activeDialogId() ?? null) : null),
+    send: (dialogId) => invoke('workload_focus', { dialogId }),
+    failed: (error) => console.error('Could not update workload priority:', error),
+  });
+  createEffect(priority.refresh);
+  onCleanup(onBackendRestored(priority.refresh));
+  onMount(() => window.addEventListener('focus', priority.refresh));
+  onCleanup(() => {
+    window.removeEventListener('focus', priority.refresh);
+    priority.stop();
   });
 
   // The Settings dialog lives in App (gear next to the project selector).
@@ -1022,6 +1048,7 @@ export default function ChatPanel(props: ChatProps) {
     } finally {
       if (isMounted) {
         setLoadingHistory(false);
+        setRestoringCachedHistory(false);
         // Another folder was opened while the chats loaded: its project.
         await catchUpWithProject();
       }
@@ -1080,10 +1107,10 @@ export default function ChatPanel(props: ChatProps) {
     // What's typed stays the chat's it was typed in (as when another chat
     // is picked): the input is cleared for the project's own chat.
     const prevId = activeDialogId();
-    if (prevId) await flushComposerDom(prevId);
-    resetComposerState();
     setLoadingHistory(true);
     try {
+      if (prevId) await flushComposerDom(prevId);
+      resetComposerState();
       await store.switchProject(id);
       if (isMounted && props.projectId() === id) {
         await openNewestChat();
@@ -4506,7 +4533,18 @@ export default function ChatPanel(props: ChatProps) {
    */
 
   return (
-    <div class="chat-panel">
+    <div
+      class="chat-panel"
+      classList={{ 'loading-history': showHistoryLoading() }}
+      aria-busy={showHistoryLoading()}
+    >
+      {/* Keep the composer mounted so its draft can restore while history loads. */}
+      <Show when={showHistoryLoading()}>
+        <div class="chat-loading" role="status" aria-live="polite">
+          <span class="sidebar-tab-spinner" aria-hidden="true" />
+          <span>Loading...</span>
+        </div>
+      </Show>
       <div class="chat-header">
         <button
           class="chat-history-button"
@@ -4565,7 +4603,7 @@ export default function ChatPanel(props: ChatProps) {
             query={historyQuery()}
             onQueryChange={setHistoryQuery}
             noMatches={!!searchQuery().trim() && searchRows()?.length === 0}
-            loading={loadingHistory() || (store.state.list.loading && !store.state.list.loaded)}
+            loading={showHistoryLoading() || (store.state.list.loading && !store.state.list.loaded)}
             unreadIds={store.state.unread}
             runningIds={runningListIds()}
             waitingIds={waitingIds()}

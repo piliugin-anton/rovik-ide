@@ -1757,3 +1757,27 @@ mod second_review {
             .is_empty());
     }
 }
+
+#[test]
+fn a_failed_checked_save_keeps_changes_for_a_later_successful_save() {
+    let d = setup(&[("a.txt", "base")]);
+    let o = overlay(&d);
+    write_all(&o, "a.txt", "first");
+    o.save_checked().unwrap();
+    let manifest = d.store().join("manifest.json");
+    fs::rename(&manifest, d.store().join("saved.json")).unwrap();
+    fs::create_dir(&manifest).unwrap();
+    write_all(&o, "a.txt", "after the failure");
+    assert!(o.save_checked().is_err());
+    assert_eq!(read_all(&o, "a.txt"), "after the failure");
+    assert_eq!(
+        fs::read_to_string(d.project().join("a.txt")).unwrap(),
+        "base"
+    );
+    fs::remove_dir(&manifest).unwrap();
+    // The ordinary background-save path must still see the failed write
+    // as dirty; it should not need another edit to retry.
+    o.flush();
+    drop(o);
+    assert_eq!(read_all(&overlay(&d), "a.txt"), "after the failure");
+}

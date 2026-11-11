@@ -1895,8 +1895,6 @@ dependencies = [
 [[package]]
 name = "fuser"
 version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b82b6597d216503555ead6b358f341ef748869bf5c6fbae6a0cb9dd231baecfd"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -5211,6 +5209,7 @@ dependencies = [
  "argon2",
  "base64 0.23.1",
  "chacha20poly1305",
+ "dirs",
  "flate2",
  "futures-util",
  "getrandom 0.4.3",
@@ -5218,20 +5217,31 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "ignore",
  "keyring",
+ "libc",
  "log",
+ "notify",
+ "openssl-sys",
+ "portable-pty",
+ "regex",
  "reqwest",
  "rovik-core",
  "rovik-protocol",
  "rusqlite",
  "russh",
+ "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "trash",
  "uuid",
+ "windows",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -5357,16 +5367,10 @@ dependencies = [
 name = "rovik-ide"
 version = "0.2.14"
 dependencies = [
- "flate2",
  "futures-util",
- "git2",
  "ignore",
  "libc",
  "log",
- "notify",
- "openssl-sys",
- "portable-pty",
- "regex",
  "reqwest",
  "rovik-client",
  "rovik-core",
@@ -5379,11 +5383,10 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "tokio",
  "trash",
  "uuid",
- "windows",
- "zip",
 ]
 
 [[package]]

@@ -143,9 +143,14 @@ fn a_paused_run_keeps_its_task_and_observed_file_cache() {
     let store = SharedMemoryStore::open_in_memory().unwrap();
     let mut memory = run_with(store, Vec::new());
     memory.task = "Inspect the scheduler".into();
+    memory.plan = Some(PlanReference {
+        path: ".rovik/plans/scheduler.md".into(),
+        fingerprint: super::super::plan::plan_fingerprint("# Scheduler"),
+    });
     memory.observed_files.insert("src/scheduler.rs".into());
     let carry = memory.carry().unwrap();
     assert_eq!(carry.task, memory.task);
+    assert_eq!(carry.plan, memory.plan);
     assert_eq!(carry.observed_files, memory.observed_files);
 }
 
@@ -1035,4 +1040,100 @@ fn a_repairs_identity_is_the_failure_and_the_files_it_applies_to() {
         )),
         "and so is a repair of another failure that changed the same files"
     );
+}
+
+#[test]
+fn plan_memories_name_the_request_and_retain_the_expanded_plan() {
+    let typed = "Implement \"Shared backend ownership\" plan.";
+    let wire = super::super::plan::implementation_request(
+        "# Shared backend ownership\n\nPreserve busy mounts.",
+        Some(".rovik/plans/backend.md"),
+        true,
+    );
+    let meta = serde_json::json!({"implementsPlan": true, "sentContent": wire});
+    let task = named_plan_task(&wire, typed, Some(&meta)).unwrap();
+    assert!(task.contains("Preserve busy mounts."));
+    assert_eq!(reflect("repo", &task, "done", &[], &[]).title, typed);
+    assert!(named_plan_task("A later request", typed, Some(&meta)).is_none());
+    assert!(named_plan_task(&wire, "", Some(&meta)).is_none());
+    assert!(named_plan_task(&wire, typed, None).is_none());
+    let ordinary = serde_json::json!({"sentContent": wire});
+    assert!(named_plan_task(&wire, typed, Some(&ordinary)).is_none());
+}
+
+#[test]
+fn plan_references_are_portable_and_require_the_current_requests_evidence() {
+    let fingerprint = super::super::plan::plan_fingerprint("# Shared backend ownership");
+    for path in [
+        ".rovik/plans/backend.md",
+        "/project/.rovik/plans/backend.md",
+        r"C:\project\.rovik\plans\backend.md",
+    ] {
+        let mut meta = serde_json::json!({
+            "implementsPlan": true, "planPath": path,
+            "planFingerprint": fingerprint, "sentContent": "expanded plan"
+        });
+        let reference =
+            PlanReference::from_request("expanded plan", "Implement it", Some(&meta)).unwrap();
+        assert_eq!(reference.path, ".rovik/plans/backend.md");
+        assert_eq!(reference.fingerprint, fingerprint);
+        assert!(
+            PlanReference::from_request("later request", "Implement it", Some(&meta)).is_none()
+        );
+        meta.as_object_mut().unwrap().remove("sentContent");
+        assert!(PlanReference::from_request("Implement it", "Implement it", Some(&meta)).is_some());
+        meta["planFingerprint"] = serde_json::json!("invalid");
+        assert!(PlanReference::from_request("Implement it", "Implement it", Some(&meta)).is_none());
+    }
+    for path in [
+        "/private/secret.md",
+        ".rovik/plans/../secret.md",
+        ".rovik/plans/nested/p.md",
+        ".rovik/plans/p\n.md",
+    ] {
+        let meta = serde_json::json!({"implementsPlan": true, "planPath": path, "planFingerprint": fingerprint});
+        assert!(PlanReference::from_request("Implement it", "Implement it", Some(&meta)).is_none());
+    }
+    let uppercase = serde_json::json!({"implementsPlan": true, "planPath": ".rovik/plans/p.MD", "planFingerprint": fingerprint});
+    assert_eq!(
+        PlanReference::from_request("Implement it", "Implement it", Some(&uppercase))
+            .unwrap()
+            .path,
+        ".rovik/plans/p.MD"
+    );
+    let unmarked =
+        serde_json::json!({"planPath": ".rovik/plans/p.md", "planFingerprint": fingerprint});
+    assert!(PlanReference::from_request("Read it", "Read it", Some(&unmarked)).is_none());
+    let old = serde_json::json!({"implementsPlan": true, "planPath": ".rovik/plans/p.md"});
+    assert!(PlanReference::from_request("Implement it", "Implement it", Some(&old)).is_none());
+}
+
+#[test]
+fn a_plan_reference_is_searchable_without_claiming_the_plan_was_changed() {
+    let reference = PlanReference {
+        path: ".rovik/plans/backend.md".into(),
+        fingerprint: super::super::plan::plan_fingerprint("# Shared backend ownership"),
+    };
+    let mut episode = reflect(
+        "repo",
+        "Implement backend",
+        "done",
+        &["src/main.rs".into()],
+        &[],
+    );
+    reference.attach(&mut episode);
+    assert!(episode
+        .content
+        .contains("Changed: src/main.rs\nPlan: .rovik/plans/backend.md"));
+    assert!(episode.content.contains(&format!(
+        "Plan fingerprint (SHA-256): {}",
+        reference.fingerprint
+    )));
+    assert_eq!(
+        episode.files,
+        vec!["src/main.rs", ".rovik/plans/backend.md"]
+    );
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    store.remember(episode).unwrap();
+    assert_eq!(store.list("repo", "backend.md").unwrap().len(), 1);
 }

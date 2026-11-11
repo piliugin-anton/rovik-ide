@@ -1,36 +1,30 @@
-//! Heavy commands' slots (workload): which chat comes first, how many run at
-//! once, and what runs now.
-
-use super::answer;
-use rovik_client::Remote;
-use rovik_core::workload::{self, WorkloadStatus};
-use rovik_protocol::Request;
-use std::sync::Arc;
+//! UI adapters for the backend's shared workload queue.
+use rovik_client::{desktop_api::workload::WorkloadRequest, desktop_connection::DesktopConnection};
+use serde_json::Value;
 use tauri::State;
 
-/// The chat the user is looking at: its commands come first, here and on
-/// every connected host.
+/// Promotes this client's visible chat, or releases its selection.
 #[tauri::command]
 pub async fn workload_focus(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: Option<String>,
-) -> Result<(), String> {
-    answer(
-        remote
-            .everywhere(Request::WorkloadFocus { dialog_id })
-            .await,
-    )
+) -> Result<Value, String> {
+    backend
+        .desktop(WorkloadRequest::Focus { dialog_id }.into())
+        .await
 }
-
-/// `None`: auto. A number: that many slots, as the user set it; kept for
-/// the next start.
+/// Persists the backend's shared limit; None restores automatic sizing.
 #[tauri::command]
-pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
-    workload::workload_set_slots(slots)
+pub async fn workload_set_slots(
+    backend: State<'_, DesktopConnection>,
+    slots: Option<usize>,
+) -> Result<Value, String> {
+    backend
+        .desktop(WorkloadRequest::SetSlots { slots }.into())
+        .await
 }
-
-/// For Settings → Heavy commands.
+/// Reads the same queue used by backend execution and terminals.
 #[tauri::command]
-pub fn workload_status() -> WorkloadStatus {
-    workload::workload_status()
+pub async fn workload_status(backend: State<'_, DesktopConnection>) -> Result<Value, String> {
+    backend.desktop(WorkloadRequest::Status.into()).await
 }

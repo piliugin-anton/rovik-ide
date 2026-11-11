@@ -927,6 +927,53 @@ async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
     assert!(h.events_of("toolNote").last().unwrap()["note"].is_null());
 }
 
+/// A failed overlay must stop before the model can change project files.
+#[tokio::test]
+async fn an_isolated_run_refuses_an_overlay_owned_elsewhere() {
+    let mut h = harness(&[("keep.txt", "original")]).await;
+    h.isolate().await;
+    let store = h.core.paths.data_dir.join("overlays").join(&h.dialog_id);
+    std::fs::create_dir_all(&store).unwrap();
+    let _owner = crate::os_lock::try_hold(&store.join("mounted.lock"))
+        .unwrap()
+        .expect("the other owner holds the overlay");
+    let (url, _) = model(vec![Reply::Text("Must not run")]).await;
+    let mut request = h.request(&url, Harness::send("Change keep.txt"), quiet_permissions());
+    request.isolate = Some(true);
+    let error = agent_start(&h.core, request).await.unwrap_err();
+    assert!(
+        error.contains(crate::overlay::chats::OPEN_ELSEWHERE),
+        "{error}"
+    );
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+    assert_eq!(
+        std::fs::read_to_string(h.project.join("keep.txt")).unwrap(),
+        "original"
+    );
+}
+
+#[tokio::test]
+async fn an_isolated_run_refuses_an_unusable_overlay_lock() {
+    let mut h = harness(&[("keep.txt", "original")]).await;
+    h.isolate().await;
+    let store = h.core.paths.data_dir.join("overlays").join(&h.dialog_id);
+    // A directory at the lock path reliably fails even when tests run as root.
+    std::fs::create_dir_all(store.join("mounted.lock")).unwrap();
+    let (url, _) = model(vec![Reply::Text("Must not run")]).await;
+    let mut request = h.request(&url, Harness::send("Change keep.txt"), quiet_permissions());
+    request.isolate = Some(true);
+    let error = agent_start(&h.core, request).await.unwrap_err();
+    assert!(
+        error.contains("Couldn't lock this chat's isolated files"),
+        "{error}"
+    );
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+    assert_eq!(
+        std::fs::read_to_string(h.project.join("keep.txt")).unwrap(),
+        "original"
+    );
+}
+
 /// An isolated chat: its writes and commands change its overlay, not the
 /// project. Needs FUSE (skipped without it).
 #[tokio::test]

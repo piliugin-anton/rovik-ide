@@ -573,6 +573,36 @@ async fn a_delivery_test_goes_to_the_open_projects_remote() {
             remote: "git@github.com:acme/app.git".into()
         }));
 
+    let other = app.dir.0.join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+    git2::Repository::init(&other)
+        .unwrap()
+        .remote("origin", "https://github.com/acme/other.git")
+        .unwrap();
+    remote.set_client_project("a", Some(("p1".into(), root.clone())));
+    remote.set_client_project("b", Some(("p2".into(), other)));
+    assert_eq!(
+        remote
+            .test_delivery_for_client(HOST, "a")
+            .await
+            .unwrap()
+            .remote,
+        "git@github.com:acme/app.git"
+    );
+    assert_eq!(
+        remote
+            .test_delivery_for_client(HOST, "b")
+            .await
+            .unwrap()
+            .remote,
+        "git@github.com:acme/other.git"
+    );
+    assert!(remote
+        .test_delivery_for_client(HOST, "unknown")
+        .await
+        .unwrap_err()
+        .starts_with("Open a project"));
+
     let (old, _) = connected(&app).await;
     old.set_open_project(Some(("p1".into(), root)));
     let too_old = old.test_delivery(HOST).await.unwrap_err();
@@ -741,12 +771,15 @@ async fn the_open_project_follows_what_the_user_says_its_folder_is() {
 
     remote.folder_answered(&app.dir.0.join("elsewhere"), "separate");
     assert_eq!(
-        remote.lock().open,
+        remote.lock().open.client(""),
         Some(("original".into(), folder.clone()))
     );
 
     remote.folder_answered(&folder, "separate");
-    assert_eq!(remote.lock().open, Some(("separate".into(), folder)));
+    assert_eq!(
+        remote.lock().open.client(""),
+        Some(("separate".into(), folder))
+    );
 }
 
 /// D11, D16: a setting goes to every connected host, a configuration
@@ -1386,12 +1419,29 @@ async fn a_chat_shows_its_events_in_the_window_its_project_is_open_in() {
     app.chat("chat", Some(&project), Vec::new()).await;
     let remote = Remote::new(app.core.clone());
     remote.place("chat", HOST);
-    let open_there = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let there = open_there.clone();
-    let id = project.clone();
-    remote.on_open_elsewhere(Arc::new(move |p| {
-        p == id && there.load(std::sync::atomic::Ordering::Relaxed)
-    }));
+    use crate::project_ownership::{claim_files, EmbeddedOwnership, WindowHolder};
+    let directory = app.dir.0.join("open-projects");
+    let (lock, info) = claim_files(&directory, &format!("project:{project}"));
+    let held = rovik_core::os_lock::try_hold(&lock).unwrap().unwrap();
+    std::fs::write(
+        info,
+        serde_json::to_vec(&WindowHolder {
+            path: folder.to_string_lossy().into(),
+            pid: std::process::id(),
+            port: 0,
+            token: "other".into(),
+            at_work: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    // A shared backend owns events even when a native UI holds a focus lock.
+    assert!(!remote.handled_elsewhere("chat").await);
+    remote.use_embedded_ownership(EmbeddedOwnership::new(directory, "mine".into()));
+    assert_eq!(
+        remote.project_open_elsewhere("client", &project, None),
+        Some(folder.clone())
+    );
     let ask = || AgentEvent::ApprovalRequested {
         request: approval("chat", false),
     };
@@ -1417,7 +1467,7 @@ async fn a_chat_shows_its_events_in_the_window_its_project_is_open_in() {
 
     // Open nowhere: every window's.
     remote.set_open_project(None);
-    open_there.store(false, std::sync::atomic::Ordering::Relaxed);
+    drop(held);
     remote.lock().elsewhere_seen.clear();
     remote.receive(HOST, event(ask())).await;
     assert_eq!(app.sent().len(), 2);
@@ -1478,11 +1528,19 @@ async fn a_chat_is_pulled_by_one_window_at_a_time() {
 #[tokio::test]
 async fn a_steer_goes_to_the_chats_host_with_its_paths_from_the_project() {
     let app = App::new();
-    app.chat("chat", None, Vec::new()).await;
+    let folder = app.dir.0.join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let opened = rovik_core::chat_db::api::chat_open_project(
+        &app.core.db,
+        folder.to_string_lossy().into_owned(),
+    )
+    .await
+    .unwrap();
+    app.chat("chat", Some(&opened.project.id), Vec::new()).await;
     let (remote, fake) = connected(&app).await;
     remote.place("chat", HOST);
-    let folder = app.dir.0.join("project");
-    remote.set_open_project(Some(("p".into(), folder.clone())));
+    remote.set_client_project("first", Some((opened.project.id, folder.clone())));
+    remote.set_client_project("second", Some(("other".into(), app.dir.0.join("other"))));
     let local = folder.join("src").join("a.rs");
     let message = UserMessage {
         id: "s1".into(),
@@ -1559,7 +1617,10 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
     );
     let mut waiting = config.clone();
     ApprovalPolicy::WaitForMe.apply(&autonomy, &mut waiting);
-    assert_eq!(waiting.autopilot.plan_fix.max_rounds, 10, "only a host that works on its own");
+    assert_eq!(
+        waiting.autopilot.plan_fix.max_rounds, 10,
+        "only a host that works on its own"
+    );
     ApprovalPolicy::Autonomous.apply(&autonomy, &mut config);
     assert_eq!(
         config.autopilot.plan_fix,
@@ -1922,4 +1983,662 @@ async fn memory_sync_leaves_an_older_daemon_on_its_existing_protocol() {
         .await
         .unwrap();
     assert!(fake.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn workload_priority_is_replayed_to_a_reconnecting_host_including_a_clear() {
+    let app = App::new();
+    let (remote, fake) = connected(&app).await;
+    remote.send_workload_focus(Some("watched".into())).await;
+    remote.configure(HOST).await;
+    remote.send_workload_focus(None).await;
+    remote.configure(HOST).await;
+    let selected: Vec<_> = fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|request| {
+            if let Request::WorkloadFocus { dialog_id } = request {
+                Some(dialog_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        selected,
+        vec![Some("watched".into()), Some("watched".into()), None, None]
+    );
+}
+
+#[tokio::test]
+async fn upgrade_pauses_resume_results_but_shutdown_never_restarts_queued_imports() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    assert!(!remote.prevents_replacement().await);
+    let pause = remote.pause_results().await;
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut result)
+        .await
+        .is_err());
+    drop(pause);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err(),
+        "a missing chat reports a completed landing error"
+    );
+    let pause = remote.pause_results().await;
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut result)
+        .await
+        .is_err());
+    remote.stop_results();
+    drop(pause);
+    assert!(tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap()
+        .is_err());
+    remote
+        .lock()
+        .chats
+        .insert("mirrored".into(), "offline-host".into());
+    assert!(
+        remote.prevents_replacement().await,
+        "offline mirrors still retain work"
+    );
+}
+
+#[tokio::test]
+async fn idle_connections_drain_but_unsaved_mirrors_are_left_connected() {
+    let app = App::new();
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    let _pause = remote.pause_results().await;
+    remote.lock().chats.insert("retained".into(), HOST.into());
+    assert!(remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap_err()
+        .contains("chats"));
+    assert!(remote.hosts.client(HOST).is_some());
+    remote.lock().chats.remove("retained");
+    // A client held by an accepted operation retains the event sink. Timeout
+    // must refuse replacement, never abort that operation or its receiver.
+    let held = remote.client(HOST).unwrap();
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("receivers"));
+    assert!(remote.prevents_replacement().await);
+    assert!(remote.states().is_empty());
+    drop(held);
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!remote.prevents_replacement().await);
+    remote.connect("offline", crate::testing::Nowhere, identity("offline"));
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!remote.prevents_replacement().await);
+}
+
+#[tokio::test]
+async fn dequeued_results_waiting_on_a_pause_still_block_retirement() {
+    let app = App::new();
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    let pause = remote.pause_results().await;
+    let (reply, result) = oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(remote.jobs.has_pending());
+    assert!(remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap_err()
+        .contains("imports"));
+    assert!(
+        remote.hosts.client(HOST).is_some(),
+        "refusal must not disconnect a host with work"
+    );
+    drop(pause);
+    assert!(result.await.unwrap().is_err());
+    until(|| !remote.jobs.has_pending()).await;
+    let _pause = remote.pause_results().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn work_arriving_while_receivers_drain_is_retained_for_a_retry() {
+    let app = App::new();
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    let pause = remote.pause_results().await;
+    let held = remote.client(HOST).unwrap();
+    let draining = remote.clone();
+    let drain =
+        tokio::spawn(async move { draining.drain_for_upgrade(Duration::from_secs(5)).await });
+    until(|| remote.states().is_empty()).await;
+    assert!(remote.states().is_empty());
+    let (reply, result) = oneshot::channel();
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    drop(held);
+    assert!(drain.await.unwrap().unwrap_err().contains("new work"));
+    assert!(remote.jobs.has_pending());
+    drop(pause);
+    assert!(
+        result.await.unwrap().is_err(),
+        "the queued request still gets its normal result"
+    );
+    until(|| !remote.jobs.has_pending()).await;
+    let _pause = remote.pause_results().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn detached_event_work_blocks_retirement_even_before_its_first_poll() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let _pause = remote.pause_results().await;
+    let task = remote.spawn(std::future::pending());
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("event work"));
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn a_closed_result_queue_releases_its_pending_registration() {
+    let (jobs, receiver) = results::channel();
+    drop(receiver);
+    assert!(jobs.send(Job::Opened).is_err());
+    assert!(!jobs.has_pending());
+}
+
+#[tokio::test]
+async fn persisted_idle_mirrors_survive_retirement_and_reload() {
+    let app = App::new();
+    app.chat("saved", None, vec![]).await;
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    app.core
+        .db
+        .write(|conn| {
+            store::create_child_dialog(
+                conn,
+                &NewChildDialog {
+                    id: "child".into(),
+                    parent_id: "saved".into(),
+                    parent_call_id: "call".into(),
+                    kind: "scout".into(),
+                    title: "Child".into(),
+                    created_at: 0,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    remote.place("saved", HOST);
+    // Flush the detached placement, then reconstruct the child's routing.
+    remote.verify_saved_mirrors().await.unwrap();
+    remote.load().await.unwrap();
+    app.core
+        .db
+        .write(|conn| {
+            rovik_core::chat_db::mirror::set_imported(conn, "saved", "imported-commit", 7)?;
+            rovik_core::chat_db::mirror::set_unreported(conn, "saved", Some("pending-landing"))
+        })
+        .await
+        .unwrap();
+    remote
+        .lock()
+        .pulls
+        .insert("saved".into(), Default::default());
+    let _pause = remote.pause_results().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!remote.prevents_replacement().await);
+    // A subsequent local refusal must leave the existing routing usable too.
+    assert_eq!(remote.host_of("saved").as_deref(), Some(HOST));
+    let replacement = Remote::new(app.core.clone());
+    replacement.load().await.unwrap();
+    assert_eq!(replacement.host_of("saved").as_deref(), Some(HOST));
+    assert_eq!(replacement.host_of("child").as_deref(), Some(HOST));
+    let before = app
+        .core
+        .db
+        .read(|c| rovik_core::chat_db::mirror::state(c, "saved"))
+        .await
+        .unwrap();
+    let saved = before.unwrap();
+    assert_eq!(saved.host, HOST);
+    assert_eq!(saved.imported_result.as_deref(), Some("imported-commit"));
+    assert_eq!(saved.imported_seq, Some(7));
+    assert_eq!(saved.unreported_landing.as_deref(), Some("pending-landing"));
+}
+
+#[tokio::test]
+async fn persisted_mirrors_refuse_unknown_run_owners_and_invalid_local_decisions() {
+    let app = App::new();
+    app.chat("saved", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("saved", HOST);
+    let _pause = remote.pause_results().await;
+    remote.lock().running.insert("unknown".into(), "run".into());
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("known owner"));
+    remote.lock().running.clear();
+    remote.lock().kept.insert("saved".into());
+    assert!(remote.drain_for_upgrade(Duration::ZERO).await.is_err());
+    remote.lock().kept.clear();
+    remote.lock().rechecks.insert("saved".into(), 1);
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    remote.lock().rechecks.clear();
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    app.core
+        .db
+        .write(|c| {
+            c.execute("DELETE FROM mirror_state WHERE dialog_id = 'saved'", [])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("mirror state"));
+}
+
+#[tokio::test]
+async fn ownership_changed_while_receivers_drain_refuses_retirement() {
+    let app = App::new();
+    app.chat("saved", None, vec![]).await;
+    let (remote, _) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    remote.place("saved", HOST);
+    let _pause = remote.pause_results().await;
+    let held = remote.client(HOST).unwrap();
+    let draining = remote.clone();
+    let drain =
+        tokio::spawn(async move { draining.drain_for_upgrade(Duration::from_secs(5)).await });
+    until(|| remote.states().is_empty()).await;
+    assert!(remote.states().is_empty());
+    app.core
+        .db
+        .write(|conn| location::set(conn, "saved", &Location::Here))
+        .await
+        .unwrap();
+    drop(held);
+    assert!(drain.await.unwrap().unwrap_err().contains("new work"));
+    assert_eq!(remote.host_of("saved").as_deref(), Some(HOST));
+}
+
+fn waiting_sync(chat: &str) -> ChatSync {
+    ChatSync {
+        dialog_id: chat.into(),
+        state: rovik_protocol::work::SyncState::Conflicts,
+        files: vec!["a.rs".into()],
+    }
+}
+
+#[tokio::test]
+async fn keep_and_recheck_decisions_survive_restart_and_reset_at_their_boundaries() {
+    let app = App::new();
+    app.chat("decisions", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("decisions", HOST);
+    let sync = waiting_sync("decisions");
+    remote.synced(sync.clone());
+    remote.keep_older_copy("decisions").unwrap();
+    {
+        let mut state = remote.lock();
+        state.rechecks.insert("decisions".into(), 2);
+        state.save_decisions("decisions").unwrap();
+    }
+    // The writer barrier and checkpoint let an upgrade preserve both choices.
+    let _pause = remote.pause_results().await;
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    assert_eq!(restored.lock().rechecks.get("decisions"), Some(&2));
+    assert!(restored.bar_sync("decisions").is_none());
+    restored.synced(sync.clone());
+    assert!(
+        restored.bar_sync("decisions").is_none(),
+        "replayed sync preserves Keep"
+    );
+    let mut next = sync;
+    next.files.push("b.rs".into());
+    restored.synced(next.clone());
+    assert_eq!(restored.bar_sync("decisions"), Some(next));
+    restored.sync_before_send(HOST, "decisions").await.unwrap();
+    let again = Remote::new(app.core.clone());
+    again.load().await.unwrap();
+    assert!(!again.lock().kept.contains("decisions"));
+    assert!(!again.lock().rechecks.contains_key("decisions"));
+}
+
+#[tokio::test]
+async fn failed_decision_saves_refuse_upgrade_and_can_be_retried_without_losing_keep() {
+    let app = App::new();
+    app.chat("decisions", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("decisions", HOST);
+    remote.synced(waiting_sync("decisions"));
+    let path = app.core.paths.data_dir.join("remote-decisions");
+    std::fs::write(&path, "not a directory").unwrap();
+    assert!(remote.keep_older_copy("decisions").is_err());
+    assert!(remote.lock().kept.contains("decisions"));
+    let _pause = remote.pause_results().await;
+    assert!(remote
+        .drain_for_upgrade(Duration::ZERO)
+        .await
+        .unwrap_err()
+        .contains("save remote decisions"));
+    std::fs::remove_file(&path).unwrap();
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    assert!(restored.lock().kept.contains("decisions"));
+    let record = std::fs::read_dir(path)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "json"))
+        .unwrap();
+    std::fs::write(record, "{broken").unwrap();
+    assert!(Remote::new(app.core.clone())
+        .load()
+        .await
+        .unwrap_err()
+        .contains("read remote decisions"));
+}
+
+#[tokio::test]
+async fn forgetting_a_chat_clears_its_saved_decisions() {
+    let app = App::new();
+    app.chat("decisions", None, vec![]).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("decisions", HOST);
+    remote.synced(waiting_sync("decisions"));
+    remote.keep_older_copy("decisions").unwrap();
+    remote.lock().driving.insert("decisions".into());
+    remote.lock().forget("decisions");
+    assert!(!remote.lock().driving.contains("decisions"));
+    remote.place("decisions", HOST);
+    remote.verify_saved_mirrors().await.unwrap();
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    assert!(!restored.lock().kept.contains("decisions"));
+}
+
+#[tokio::test]
+async fn results_arriving_while_acquiring_the_pause_finish_before_upgrade() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let held = remote.pause_results().await;
+    let (reply, result) = oneshot::channel();
+    let draining = remote.clone();
+    let wait = tokio::spawn(async move { draining.pause_for_upgrade().await });
+    tokio::task::yield_now().await;
+    assert!(!wait.is_finished());
+    remote
+        .jobs
+        .send(Job::Land {
+            dialog_id: "missing".into(),
+            keep_chat: false,
+            reply,
+        })
+        .unwrap();
+    drop(held);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err(),
+        "accepted work gets its normal result"
+    );
+    let _pause = tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!remote.jobs.has_pending());
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_drain_timeout_does_not_cancel_the_work_it_waits_for() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let (finish, finished) = oneshot::channel();
+    let work = remote.spawn(async move {
+        finished.await.unwrap();
+    });
+    assert!(
+        tokio::time::timeout(Duration::ZERO, remote.pause_for_upgrade())
+            .await
+            .is_err()
+    );
+    assert!(!work.is_finished());
+    finish.send(()).unwrap();
+    work.await.unwrap();
+    let _pause = remote.pause_for_upgrade().await;
+    remote.drain_for_upgrade(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn remote_runs_and_drivers_continue_and_are_restored_after_replacement() {
+    let app = App::new();
+    app.chat("active", None, vec![]).await;
+    let (remote, fake) = connected(&app).await;
+    until(|| remote.retained_remote_work().is_none()).await;
+    remote.place("active", HOST);
+    remote
+        .receive(
+            HOST,
+            event(AgentEvent::RunStarted {
+                dialog_id: "active".into(),
+                run_id: "remote-run".into(),
+                steerable: false,
+            }),
+        )
+        .await;
+    remote
+        .receive(
+            HOST,
+            event(AgentEvent::TaskDriving {
+                dialog_id: "active".into(),
+                driving: true,
+            }),
+        )
+        .await;
+    *fake.status.lock().unwrap() = Some(AgentStatus {
+        runs: vec![RunningRun {
+            dialog_id: "active".into(),
+            run_id: "remote-run".into(),
+            steerable: false,
+        }],
+        driving: vec!["active".into()],
+        ..Default::default()
+    });
+    app.core
+        .db
+        .write(|conn| {
+            conn.execute(
+                "UPDATE mirror_state SET rev = 7 WHERE dialog_id = 'active'",
+                [],
+            )
+            .map_err(|e| e.to_string())
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let _pause = remote.pause_for_upgrade().await;
+    remote
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(remote.states().is_empty());
+    assert_eq!(
+        remote.lock().running.get("active").map(String::as_str),
+        Some("remote-run")
+    );
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|req| matches!(req, Request::AgentStop { .. })));
+    let restored = Remote::new(app.core.clone());
+    restored.load().await.unwrap();
+    restored.connect(HOST, fake.clone(), identity(HOST));
+    until(|| {
+        let state = restored.lock();
+        state.running.contains_key("active") && state.driving.contains("active")
+    })
+    .await;
+    assert_eq!(
+        restored.lock().running.get("active").map(String::as_str),
+        Some("remote-run")
+    );
+    until(|| {
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|req| matches!(req, Request::ChatChangesSince { rev: 7, .. }))
+    })
+    .await;
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|req| matches!(req, Request::ChatChangesSince { rev: 7, .. })),
+        "replacement retries synchronization from the durable cursor"
+    );
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|req| matches!(req, Request::AgentStop { .. })));
+    assert!(restored.lock().driving.contains("active"));
+    // The fake cannot serve changes: a failed pull still retries from the saved
+    // cursor on the next connection rather than pinning this backend forever.
+    let _restored_pause =
+        tokio::time::timeout(Duration::from_secs(5), restored.pause_for_upgrade())
+            .await
+            .unwrap();
+    restored
+        .drain_for_upgrade(Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn context_file_reads_require_support_and_keep_the_owning_chat() {
+    for supported in [false, true] {
+        let app = App::new();
+        app.chat("chat", None, Vec::new()).await;
+        let fake = Fake::default();
+        if supported {
+            fake.features
+                .lock()
+                .unwrap()
+                .push(features::CONTEXT_FILES.into());
+        }
+        let (remote, fake) = connected_to(&app, fake).await;
+        remote.place("chat", HOST);
+        let request = Request::ClmReadFile {
+            dialog_id: "chat".into(),
+            path: "@context/TASK.md".into(),
+        };
+        let result = remote.route("chat", request.clone()).await;
+        if supported {
+            assert_eq!(
+                result.unwrap(),
+                Response::Text("chat:@context/TASK.md".into())
+            );
+        } else {
+            assert!(result.unwrap_err().message.contains("update it"));
+            let live = remote
+                .route(
+                    "chat",
+                    Request::ClmReadFile {
+                        dialog_id: "chat".into(),
+                        path: "@context/LIVE_CONTEXT.md".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(live, Response::Text("chat:revision-7".into()));
+            assert!(!fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| matches!(request, Request::ClmReadFile { .. })));
+        }
+        assert_eq!(fake.requests.lock().unwrap().contains(&request), supported);
+        remote.disconnect(HOST);
+    }
 }

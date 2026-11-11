@@ -46,6 +46,14 @@ pub(super) struct Pulls {
     failed: bool,
 }
 
+impl Pulls {
+    /// In-flight pulls must finish locally; failed pulls retry from their saved cursor.
+    #[cfg(any(unix, windows, test))]
+    pub(super) fn retains_work(&self) -> bool {
+        self.coming || self.going || self.again
+    }
+}
+
 impl Remote {
     /// Pulls the chat's changes from `host` after `wait`, unless a pull is
     /// coming already; one going now is followed by another.
@@ -63,7 +71,7 @@ impl Remote {
             pulls.coming = true;
         }
         let (me, host, chat) = (self.me.clone(), host.to_string(), chat.to_string());
-        rovik_core::rt::spawn(async move {
+        self.spawn(async move {
             tokio::time::sleep(wait).await;
             let Some(remote) = me.upgrade() else { return };
             // Another window's project: that window pulls it (into the
@@ -101,7 +109,7 @@ impl Remote {
     /// failed or `host` went away meanwhile: then the next connection tells.
     fn tell_when_caught_up(&self, host: &str, chats: Vec<String>) {
         let (me, host) = (self.me.clone(), host.to_string());
-        rovik_core::rt::spawn(async move {
+        self.spawn(async move {
             loop {
                 let Some(remote) = me.upgrade() else { return };
                 let (busy, failed) = {
@@ -149,7 +157,7 @@ impl Remote {
         let pulled = self.pull(host, chat).await;
         if self.pull_again(chat) {
             let (me, host, chat) = (self.me.clone(), host.to_string(), chat.to_string());
-            rovik_core::rt::spawn(async move {
+            self.spawn(async move {
                 if let Some(remote) = me.upgrade() {
                     remote.keep_pulling(&host, &chat).await;
                 }
@@ -390,7 +398,7 @@ impl Remote {
         let replaced = self.replace(&host, &chat).await;
         if self.pull_again(&chat) {
             let (me, host, chat) = (self.me.clone(), host.clone(), chat.clone());
-            rovik_core::rt::spawn(async move {
+            self.spawn(async move {
                 if let Some(remote) = me.upgrade() {
                     remote.keep_pulling(&host, &chat).await;
                 }
@@ -443,4 +451,35 @@ impl Remote {
 fn files_of(changes: &ChangeSet) -> BTreeSet<String> {
     let named = changes.messages.iter().flat_map(|m| m.attachments.iter());
     named.cloned().collect()
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    #[test]
+    fn unfinished_pulls_block_but_failed_pulls_can_retry_after_replacement() {
+        assert!(!Pulls::default().retains_work());
+        assert!(!Pulls {
+            failed: true,
+            ..Default::default()
+        }
+        .retains_work());
+        for pulls in [
+            Pulls {
+                coming: true,
+                ..Default::default()
+            },
+            Pulls {
+                going: true,
+                ..Default::default()
+            },
+            Pulls {
+                again: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(pulls.retains_work());
+        }
+    }
 }

@@ -1668,7 +1668,7 @@ async fn run(
                     .map_err(|e| e.to_string())??,
                 _ => {
                     return Ok(ToolResult::error(
-                        "Error: \"action\" is list, output or stop.",
+                        "Error: the background tool manages existing commands; \"action\" is list, output or stop. To start a command, call bash with {\"command\": \"...\", \"background\": true}.",
                     ))
                 }
             };

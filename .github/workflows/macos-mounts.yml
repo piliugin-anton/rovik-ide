@@ -1,0 +1,76 @@
+# Native FSKit validation is separate from ordinary macOS CI: installing the
+# driver must never turn a skipped mount into a successful validation result.
+name: macOS mounted backend
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-mounts-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+jobs:
+  fskit:
+    name: FSKit busy mounts and saved edits
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+      - name: Install and enable macFUSE's FSKit module
+        run: |
+          sw_vers
+          brew install --cask macfuse
+          python3 -m unittest discover -s scripts -p enable_ci_fskit_test.py
+          python3 scripts/enable_ci_fskit.py
+          /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule
+      - name: Check message transport and channel lifetime
+        run: |
+          cargo test --manifest-path src-tauri/crates/fuser/Cargo.toml --lib \
+            --features custom-transport,macos-no-mount,macfuse-4-compat
+          cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
+            vfs::macfuse::messages::tests
+          cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
+            the_installed_framework_exposes_the_message_api -- --ignored
+      - name: Refuse busy mounts and recover saved edits
+        env:
+          ROVIK_MOUNTED_BACKEND: '1'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml -p rovik-core --lib \
+            mounted_child_views_drain_without_losing_their_dependency_tree \
+            -- --ignored --nocapture 2>&1 | tee macos-mounts.log
+      - name: Mount diagnostics
+        if: always()
+        run: |
+          {
+            sw_vers
+            mount
+            /usr/bin/pluginkit -m -A -p com.apple.fskit.fsmodule
+            framework=/Library/Filesystems/macfuse.fs/Contents/Frameworks/MFMount.framework/MFMount
+            /usr/bin/otool -L "$framework"
+            /usr/bin/nm -gU "$framework" | grep -E 'MF(Channel|Message|Mount|Release)'
+          } > macos-mount-diagnostics.log 2>&1
+      - name: FSKit service diagnostics
+        if: always()
+        run: |
+          /usr/bin/log show --last 5m --style compact --info --debug \
+            --predicate 'subsystem == "io.macfuse" OR subsystem == "com.apple.FSKit"' \
+            2>&1 | tee macos-mount-services.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-mount-results
+          path: macos-mount*.log

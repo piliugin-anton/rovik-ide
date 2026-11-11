@@ -275,3 +275,24 @@ async fn an_isolated_chats_changes_wait_to_land_while_its_server_runs_in_its_vie
     told(&h, &[]).await;
     assert!(!background_stop(&h, &id).await, "stopped with the landing");
 }
+
+#[tokio::test]
+async fn a_start_sent_to_the_background_manager_explains_how_to_use_bash() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "wrong-tool",
+            name: "background",
+            args: json!({ "command": "python3 -m http.server 8001 --bind 127.0.0.1", "background": true }),
+        },
+        Reply::Text("Use bash to start it."),
+    ]).await;
+    h.start(h.request(&url, Harness::send("Start the server"), any_command()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = &result_of(&messages, "wrong-tool").content;
+    assert!(result.contains("call bash with"), "{result}");
+    assert!(result.contains("\"background\": true"), "{result}");
+    assert!(background_tasks(&h).await.is_empty());
+}

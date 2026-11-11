@@ -321,3 +321,16 @@ test('a host has caught up once it says so, and has to again after it was away (
   emit({ type: 'caughtUp', host: 'h1' });
   assert.equal(cloud.caughtUp.h1, true);
 });
+
+test('journal cloud events reach component subscribers once and stop after disposal', async () => {
+  const { onCloudEvent, handleBackendCloud } = await import('./cloud');
+  let seen = 0;
+  const stop = onCloudEvent((event) => {
+    if (event.type === 'changed' && event.dialogId === 'journal') seen++;
+  });
+  handleBackendCloud({ type: 'changed', dialogId: 'journal' });
+  assert.equal(seen, 1);
+  stop();
+  handleBackendCloud({ type: 'changed', dialogId: 'journal' });
+  assert.equal(seen, 1);
+});

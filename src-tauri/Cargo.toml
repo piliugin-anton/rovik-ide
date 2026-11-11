@@ -16,7 +16,7 @@ members = [
 # A dependency kept here as published, but for its fixes (its FORK.md):
 # built as one, not as a member, so its own tests and examples, and what
 # they need, stay out of the workspace's.
-exclude = ["crates/russh"]
+exclude = ["crates/russh", "crates/fuser"]
 resolver = "2"
 
 [workspace.package]
@@ -61,6 +61,7 @@ windows = "0.62"
 # H08): eoka with a pipe transport, until a release of eoka has one.
 # crates/eoka/FORK.md says what differs and how to drop the fork.
 [patch.crates-io]
+fuser = { path = "crates/fuser" }
 eoka = { path = "crates/eoka" }
 # One SSH channel that isn't read mustn't hold up the others: russh with
 # flow control by what's read, and a window counted once, until a release
@@ -97,31 +98,15 @@ serde_json.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
 ignore.workspace = true
-notify = "8.2.0"
 tokio = { workspace = true, features = ["time"] }
-portable-pty = "0.9.0"
 uuid.workspace = true
-git2 = { workspace = true, features = ["https", "ssh"] }
 sha2.workspace = true
 log.workspace = true
-regex.workspace = true
 # Deleting moves to the system trash (Recycle Bin, macOS Trash, freedesktop.org trash).
 trash = "5"
-# rust-analyzer downloads: .gz (Linux, macOS) and .zip (Windows) releases.
-flate2 = "1"
-zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
-
-# Intel Macs: the OpenSSL git2's HTTPS and SSH need, built from source. The
-# Intel app is built on Apple silicon (release.yml), whose Homebrew OpenSSL
-# is for the other CPU; openssl-sys finds none for Intel there.
-[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
-openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
@@ -136,6 +121,7 @@ tauri-plugin-updater = { version = "~2.14", default-features = false, features =
 # The core's test support, and its short waits (a closed terminal's end,
 # rovik_core::process::SessionTree), as the other crates' tests have them.
 [dev-dependencies]
+tempfile = "3.27.0"
 rovik-core = { workspace = true, features = ["testing"] }
 
 # Dependencies optimized in dev builds (the tests', `tauri dev`): the tests

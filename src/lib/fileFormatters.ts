@@ -1,7 +1,7 @@
 // fileFormatters.ts
 //
 // Format Document through the project's command-line formatter (Prettier,
-// rustfmt, Ruff, gofmt, … — the table is src-tauri/src/formatter.rs). The
+// rustfmt, Ruff, gofmt, … — the table is src-tauri/crates/rovik-client/src/formatter/mod.rs). The
 // backend picks the formatter per file; this registers it with Monaco for
 // that one file, so it wins over Monaco's built-in TS/JSON/CSS/HTML
 // formatters there, and those stay for files with no formatter of their own.

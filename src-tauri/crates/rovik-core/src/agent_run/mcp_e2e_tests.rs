@@ -353,6 +353,7 @@ async fn a_scout_calls_only_read_only_mcp_tools() {
 }
 
 /// The calls the user's `docs` server got, one of `read` with `path`.
+#[cfg(unix)]
 fn read_of(path: &str) -> Vec<String> {
     vec![format!("read: {{\"path\":\"{path}\"}}")]
 }

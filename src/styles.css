@@ -82,6 +82,44 @@ body {
   overflow: hidden;
 }
 
+/* Covers the window while a project's tabs and folders are restored.
+   Confirmation dialogs and error notifications remain above it. */
+.project-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgb(0 0 0 / 50%);
+  color: #fff;
+  font-size: 16px;
+  cursor: progress;
+}
+
+.chat-loading .sidebar-tab-spinner,
+.project-loading-overlay .sidebar-tab-spinner {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-color: currentColor;
+  border-top-color: transparent;
+}
+
+/* Preserve the composer's DOM for draft restoration, but show only the loader. */
+.chat-panel.loading-history > :not(.chat-loading) {
+  display: none;
+}
+
+.chat-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
 /* Sidebar */
 
 .sidebar {

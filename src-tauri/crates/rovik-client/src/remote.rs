@@ -10,6 +10,7 @@ use crate::client::{Client, DaemonInfo, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
 use git2::Oid;
+#[cfg(test)]
 use results::Job;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest};
 use rovik_core::agent_run::subagent::Kind;
@@ -38,10 +39,12 @@ const HOSTS_WAIT: Duration = Duration::from_secs(15);
 
 mod back;
 mod bar;
+mod decisions;
 mod mcp_relay;
 mod memory;
 mod mirror;
 mod moving;
+mod open_projects;
 mod pages;
 mod results;
 mod sync;
@@ -187,10 +190,15 @@ pub struct Remote {
     state: Mutex<State>,
     cloud: Mutex<Option<CloudSink>>,
     /// The queue of results to import and land (remote/results.rs).
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: results::Jobs,
+    result_turn: Arc<tokio::sync::Mutex<()>>,
+    results_closing: std::sync::atomic::AtomicBool,
+    receivers: Arc<std::sync::atomic::AtomicUsize>,
+    receivers_done: Arc<tokio::sync::Notify>,
+    background_work: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether a project is open in another of Rovik's windows, each a
     /// process with its own connections (the app's instances.rs).
-    elsewhere: Mutex<Option<OpenElsewhere>>,
+    elsewhere: Mutex<Option<crate::project_ownership::EmbeddedOwnership>>,
     /// What brings the hosts' policies up to date before they go to a
     /// host: another window may have changed them (HostsPage::follow).
     refresh: Mutex<Option<Refresh>>,
@@ -198,11 +206,10 @@ pub struct Remote {
     sign_outs: Mutex<Option<Arc<dyn OwedSignOuts>>>,
     /// The ports forwarded for the chats' pages (remote/pages.rs).
     pages: pages::Pages,
+    // Unset until a UI reports priority; Some(None) is an explicit clear
+    // that reconnecting hosts must receive too.
+    workload_focus: tokio::sync::Mutex<Option<Option<String>>>,
 }
-
-/// Whether the project with this id is open in another of Rovik's windows:
-/// that window lands its chats' results and shows their events.
-pub type OpenElsewhere = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Brings the hosts' policies up to date from their settings file.
 pub type Refresh = Arc<dyn Fn() + Send + Sync>;
@@ -219,6 +226,8 @@ pub trait OwedSignOuts: Send + Sync {
 
 #[derive(Default)]
 struct State {
+    decision_dir: PathBuf,
+    decision_errors: HashMap<String, String>,
     /// Each remote chat's host, and its subagents' chats': the chats the
     /// database puts on a host (`location`).
     chats: HashMap<String, String>,
@@ -256,8 +265,8 @@ struct State {
     /// commands are sandboxed. A chat of a project moves there before its
     /// first start (remote/moving.rs, `go_home`).
     home: Option<String>,
-    /// The project open in the app: its id and folder (6.5).
-    open: Option<(String, PathBuf)>,
+    /// Every client's open project: its id and folder (6.5).
+    open: open_projects::OpenProjects,
     /// Each chat's snapshot as its last sync took it (6.7).
     last_sync: HashMap<String, Oid>,
     /// The projects ensured on each host this session: (host, project).
@@ -294,30 +303,194 @@ impl State {
     fn forget(&mut self, chat: &str) {
         self.chats.remove(chat);
         self.running.remove(chat);
+        self.driving.remove(chat);
         self.pulls.remove(chat);
         self.last_sync.remove(chat);
         self.syncs.remove(chat);
         self.rechecks.remove(chat);
+        self.kept.remove(chat);
+        self.syncs.remove(chat);
+        self.save_decisions_logged(chat);
     }
 }
 
 impl Remote {
     pub fn new(core: Core) -> Arc<Remote> {
-        let (jobs, queue) = mpsc::unbounded_channel();
+        let (jobs, queue) = results::channel();
+        let decision_dir = core.paths.data_dir.join("remote-decisions");
         let remote = Arc::new_cyclic(|me| Remote {
             core,
             hosts: Hosts::default(),
             me: me.clone(),
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                decision_dir,
+                ..Default::default()
+            }),
             cloud: Mutex::new(None),
             jobs,
+            result_turn: Default::default(),
+            results_closing: Default::default(),
+            receivers: Default::default(),
+            receivers_done: Default::default(),
+            background_work: Default::default(),
             elsewhere: Mutex::new(None),
             refresh: Mutex::new(None),
             sign_outs: Mutex::new(None),
             pages: pages::Pages::default(),
+            workload_focus: Default::default(),
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
         remote
+    }
+
+    fn spawn(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> tokio::task::JoinHandle<()> {
+        rovik_core::rt::spawn(self.track(future))
+    }
+
+    /// Registers detached event work before scheduling it, preserving the
+    /// caller's runtime and counting futures that have not been polled yet.
+    fn track(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        struct Working(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Working {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        self.background_work
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let working = Working(self.background_work.clone());
+        async move {
+            let _working = working;
+            future.await;
+        }
+    }
+
+    /// State that cannot be released just by closing an idle connection.
+    #[cfg(any(unix, windows, test))]
+    fn retained_remote_work(&self) -> Option<&'static str> {
+        if self.jobs.has_pending() {
+            return Some("Remote result imports are still finishing");
+        }
+        if self
+            .background_work
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != 0
+        {
+            return Some("Remote event work is still finishing");
+        }
+        if self.pages.retains_forwarding() {
+            return Some("Forwarded remote ports still retain work");
+        }
+        let state = self.lock();
+        let retained = state.pulls.values().any(mirror::Pulls::retains_work)
+            || !state.moving.is_empty()
+            || !state.cancels.is_empty()
+            || !state.mcp_relayable.is_empty()
+            || !state.uploads.is_empty()
+            || !state.steer_uploads.is_empty()
+            || !state.backs.is_empty()
+            || !state.held.is_empty();
+        retained.then_some("Remote chats or transfers still retain work")
+    }
+
+    /// Whether connections, buffered events, or retained work still own state.
+    #[cfg(any(unix, windows, test))]
+    pub(crate) async fn prevents_replacement(&self) -> bool {
+        self.receivers.load(std::sync::atomic::Ordering::SeqCst) != 0
+            || !self.hosts.states().is_empty()
+            || self.retained_remote_work().is_some()
+            || self.verify_saved_mirrors().await.is_err()
+            || self.retained_remote_work().is_some()
+    }
+
+    /// Queries on the writer queue so earlier detached placements have finished.
+    /// Keep the in-memory routing intact if a later resource refuses retirement.
+    #[cfg(any(unix, windows, test))]
+    async fn verify_saved_mirrors(&self) -> Result<(), String> {
+        self.lock().checkpoint_decisions()?;
+        let chats = {
+            let state = self.lock();
+            if state
+                .running
+                .keys()
+                .chain(state.driving.iter())
+                .any(|chat| !state.chats.contains_key(chat))
+            {
+                return Err(
+                    "Active remote work has no known owner; reconnect before retrying the upgrade"
+                        .into(),
+                );
+            }
+            state.chats.clone()
+        };
+        if chats.is_empty() {
+            return Ok(());
+        }
+        let expected = chats.clone();
+        self.core.db.write(move |conn| {
+            for (chat, host) in expected {
+                let lead = store::lead_chat(conn, &chat)?;
+                let saved = rovik_core::chat_db::mirror::state(conn, &lead)?;
+                if location::of_chat(conn, &chat)? != Location::Host(host.clone())
+                    || location::of_chat(conn, &lead)? != Location::Host(host.clone())
+                    || !saved.is_some_and(|saved| saved.host == host)
+                {
+                    return Err(format!("Remote chats lack saved ownership or mirror state: {chat}; synchronize before retrying the upgrade"));
+                }
+            }
+            Ok(())
+        }).await.map_err(|error| format!("Could not verify saved remote chats: {error}"))?;
+        if self.lock().chats != chats {
+            return Err(
+                "Remote chats changed during the upgrade check; retry after synchronization".into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Detaches server-owned execution after local work pauses, joining buffered events.
+    /// The caller must exclude new clients and pause maintenance and results.
+    #[cfg(any(unix, windows, test))]
+    pub(crate) async fn drain_for_upgrade(&self, wait: Duration) -> Result<(), String> {
+        if let Some(reason) = self.retained_remote_work() {
+            return Err(reason.into());
+        }
+        self.verify_saved_mirrors().await?;
+        if let Some(reason) = self.retained_remote_work() {
+            return Err(reason.into());
+        }
+        for (host, _) in self.hosts.states() {
+            // Keep policies and home-host identity for a resumed host. Settings
+            // remain on disk; no remote chat is stopped or deleted.
+            self.hosts.disconnect(&host);
+        }
+        let joined = tokio::time::timeout(wait, async {
+            loop {
+                let changed = self.receivers_done.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.receivers.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    break;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        if joined.is_err() {
+            return Err("Remote event receivers are still finishing; retry the upgrade".into());
+        }
+        if self.prevents_replacement().await {
+            return Err(
+                "Remote events retained new work while draining; retry after it finishes".into(),
+            );
+        }
+        Ok(())
     }
 
     /// Where uploads' and pushes' progress goes from now on.
@@ -330,9 +503,10 @@ impl Remote {
         *self.cloud.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
-    /// How to tell a project open in another of Rovik's windows.
-    pub fn on_open_elsewhere(&self, elsewhere: OpenElsewhere) {
+    /// Enables cross-process ownership guards for a private embedded host only.
+    pub fn use_embedded_ownership(&self, elsewhere: crate::project_ownership::EmbeddedOwnership) {
         *self.elsewhere.lock().unwrap_or_else(|e| e.into_inner()) = Some(elsewhere);
+        self.lock().elsewhere_seen.clear();
     }
 
     /// How to bring the hosts' policies up to date before one is sent.
@@ -372,11 +546,7 @@ impl Remote {
         let Some(project) = self.chat_project(dialog_id).await else {
             return false;
         };
-        let open_here = self
-            .lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| *id == project);
+        let open_here = self.lock().open.contains(&project);
         if open_here {
             return false;
         }
@@ -390,7 +560,8 @@ impl Remote {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let seen = elsewhere.is_some_and(|elsewhere| elsewhere(&project));
+        let seen =
+            elsewhere.is_some_and(|elsewhere| elsewhere.other(Some(&project), None).is_some());
         self.lock()
             .elsewhere_seen
             .insert(project, (std::time::Instant::now(), seen));
@@ -442,7 +613,22 @@ impl Remote {
         });
         self.hosts.connect(host, connector, identity, sink);
         let (me, host) = (self.me.clone(), host.to_string());
+        // Removed hosts may still have buffered events or an import in flight.
+        struct Receiving(
+            Arc<std::sync::atomic::AtomicUsize>,
+            Arc<tokio::sync::Notify>,
+        );
+        impl Drop for Receiving {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                self.1.notify_waiters();
+            }
+        }
+        self.receivers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let receiving = Receiving(self.receivers.clone(), self.receivers_done.clone());
         tokio::spawn(async move {
+            let _receiving = receiving;
             while let Some(incoming) = rx.recv().await {
                 let Some(remote) = me.upgrade() else { break };
                 remote.receive(&host, incoming).await;
@@ -457,6 +643,7 @@ impl Remote {
         let mut state = self.lock();
         for (chat, location) in away {
             if let Location::Host(host) = location {
+                state.load_decisions(&chat, &host)?;
                 state.chats.insert(chat, host);
             }
         }
@@ -466,9 +653,16 @@ impl Remote {
     /// The chat is on `host` from now on, with its subagents' chats: here,
     /// and in the database, queued before any write that comes after.
     pub fn place(&self, dialog_id: &str, host: &str) {
-        self.lock()
-            .chats
-            .insert(dialog_id.to_string(), host.to_string());
+        {
+            let mut state = self.lock();
+            let previous = state.chats.insert(dialog_id.to_string(), host.to_string());
+            if previous.as_deref().is_some_and(|previous| previous != host) {
+                state.kept.remove(dialog_id);
+                state.rechecks.remove(dialog_id);
+                state.syncs.remove(dialog_id);
+                state.save_decisions_logged(dialog_id);
+            }
+        }
         let (chat, host) = (dialog_id.to_string(), host.to_string());
         self.core
             .db
@@ -524,7 +718,16 @@ impl Remote {
     /// "Test delivery" (H05): the host pushes an empty branch to the open
     /// project's remote, as a task's result would go, and deletes it.
     pub async fn test_delivery(&self, host: &str) -> Result<DeliveryTest, String> {
-        let folder = self.lock().open.clone().map(|(_, folder)| folder);
+        self.test_delivery_for_client(host, "").await
+    }
+
+    /// Tests delivery using the requesting client's project, never another window's.
+    pub async fn test_delivery_for_client(
+        &self,
+        host: &str,
+        client: &str,
+    ) -> Result<DeliveryTest, String> {
+        let folder = self.lock().open.client(client).map(|(_, folder)| folder);
         let remote = folder
             .as_deref()
             .and_then(sync::origin_of)
@@ -678,6 +881,39 @@ impl Remote {
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
+        if let Request::ClmReadFile { path, .. } = &request {
+            if !self.serves(&host, features::CONTEXT_FILES) {
+                // Older hosts already support the live context through revisions.
+                // Never send them a request variant they cannot decode.
+                let path = path.trim().replace('\\', "/");
+                if matches!(
+                    path.as_str(),
+                    "@context" | "@context/" | "@context/LIVE_CONTEXT.md"
+                ) {
+                    let client = self.client(&host)?;
+                    if let Response::ClmStatus(status) = client
+                        .call(Request::ClmStatus {
+                            dialog_id: dialog_id.into(),
+                        })
+                        .await?
+                    {
+                        if let Some(number) = status.revision {
+                            return client
+                                .call(Request::ClmReadRevision {
+                                    dialog_id: dialog_id.into(),
+                                    number,
+                                })
+                                .await;
+                        }
+                    }
+                    return Err(Fail::new(
+                        FailCode::BadRequest,
+                        "This chat has no saved context revision yet",
+                    ));
+                }
+                return Err(Fail::new(FailCode::BadRequest, format!("{} runs an older Rovik: update it to open task cards and other context files.", self.host_name(&host))));
+            }
+        }
         // What the run waits on is still answered (6.8).
         let writes = matches!(request.target(), Some((_, Access::Write)));
         if writes && self.is_moving_back(dialog_id) {
@@ -808,7 +1044,9 @@ impl Remote {
             .await
             .map_err(internal)?;
         if matches!(request.start, StartKind::Send { .. }) {
-            self.sync_before_send(&host, &request.dialog_id).await;
+            self.sync_before_send(&host, &request.dialog_id)
+                .await
+                .map_err(internal)?;
         }
         if let Some(root) = request.root.clone().filter(|r| !r.trim().is_empty()) {
             relative_paths(&mut request, &root);
@@ -1003,7 +1241,11 @@ impl Remote {
             return rovik_core::dispatch(&self.core, request).await;
         };
         let client = self.client(&host)?;
-        let root = self.lock().open.clone().map(|(_, folder)| folder);
+        let root = self
+            .project_of(dialog_id)
+            .await
+            .map_err(|e| Fail::new(FailCode::BadRequest, e))?
+            .map(|(_, folder)| folder);
         if let Some(root) = root.as_deref().and_then(Path::to_str) {
             let sent = message.meta.as_mut().and_then(|m| m.get_mut("sentContent"));
             if let Some(serde_json::Value::String(text)) = sent {
@@ -1279,6 +1521,25 @@ impl Remote {
         Ok(reply)
     }
 
+    /// Sends only cloud priority; local priority is already applied by the backend.
+    /// The same lock orders reconnect snapshots after any earlier update.
+    pub(crate) async fn send_workload_focus(&self, dialog_id: Option<String>) {
+        let mut focus = self.workload_focus.lock().await;
+        *focus = Some(dialog_id.clone());
+        futures_util::future::join_all(self.hosts.ready().into_iter().map(|(host, client)| {
+            let dialog_id = dialog_id.clone();
+            async move {
+                if let Err(error) = client
+                    .call_within(Request::WorkloadFocus { dialog_id }, HOSTS_WAIT)
+                    .await
+                {
+                    log::warn!("{host} didn't take workload priority: {error}");
+                }
+            }
+        }))
+        .await;
+    }
+
     /// Settings → Network changed how cloud hosts connect (their rows, the
     /// timeout, a proxy or its password they go through): each ready host
     /// is sent the configuration again, with it. Before the frontend
@@ -1324,6 +1585,22 @@ impl Remote {
             let sent = client.call_within(Request::AgentConfigure(Box::new(config)), HOSTS_WAIT);
             if let Err(fail) = sent.await {
                 log::warn!("{host} didn't take the configuration: {fail}");
+            }
+        }
+        {
+            let focus = self.workload_focus.lock().await;
+            if let Some(dialog_id) = focus.as_ref() {
+                if let Err(error) = client
+                    .call_within(
+                        Request::WorkloadFocus {
+                            dialog_id: dialog_id.clone(),
+                        },
+                        HOSTS_WAIT,
+                    )
+                    .await
+                {
+                    log::warn!("{host} didn't take workload priority: {error}");
+                }
             }
         }
         if self.serves(host, features::AUTONOMY) {
@@ -1464,7 +1741,7 @@ impl Remote {
                 }
                 self.after_connecting(host).await;
                 let (remote, host_for_memory) = (self.me.clone(), host.to_string());
-                rovik_core::rt::spawn(async move {
+                self.spawn(async move {
                     if let Some(remote) = remote.upgrade() {
                         remote.sync_host_memories(&host_for_memory).await;
                     }
@@ -1600,7 +1877,7 @@ impl Remote {
                 self.lock().running.remove(dialog_id);
                 self.pull_later(host, dialog_id, Duration::ZERO);
                 let (remote, host, dialog) = (self.me.clone(), host.to_string(), dialog_id.clone());
-                rovik_core::rt::spawn(async move {
+                self.spawn(async move {
                     if let Some(remote) = remote.upgrade() {
                         remote.memory_sync_hint(&host, &dialog).await;
                     }

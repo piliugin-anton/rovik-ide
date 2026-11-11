@@ -1,9 +1,13 @@
 //! The agent's file tools as the editor uses them (agent_tools.rs), the
 //! Files tab's search (code_search.rs) and source outlines (outline).
 
-use rovik_core::agent_tools::{self, EditOutcome, EditorMarker, ToolDirEntry};
+use rovik_client::{
+    desktop_api::filesystem::FilesystemRequest, desktop_connection::DesktopConnection,
+};
+use rovik_core::agent_tools::{self, EditorMarker, ToolDirEntry};
 use rovik_core::code_search::{self, SearchResult};
 use rovik_core::outline::{self, Symbol};
+use tauri::State;
 
 /// Recursively lists a directory, respecting .gitignore and the built-in
 /// denylist.
@@ -43,12 +47,23 @@ pub async fn tool_search_code(
 /// The editor's current markers for a file (fire-and-forget from the
 /// frontend's marker listener).
 #[tauri::command]
-pub fn report_editor_diagnostics(
+pub async fn report_editor_diagnostics(
+    backend: State<'_, DesktopConnection>,
     root: String,
     path: String,
     markers: Vec<EditorMarker>,
 ) -> Result<(), String> {
-    agent_tools::report_editor_diagnostics(root, path, markers)
+    backend
+        .desktop(
+            FilesystemRequest::ReportEditorDiagnostics {
+                root,
+                path,
+                markers,
+            }
+            .into(),
+        )
+        .await
+        .map(|_| ())
 }
 
 /// Reads a text file: a 1-indexed inclusive line range, one declaration by
@@ -69,7 +84,8 @@ pub fn tool_read_file_range(
 /// approval review.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn tool_edit_file(
+pub async fn tool_edit_file(
+    backend: State<'_, DesktopConnection>,
     root: String,
     path: String,
     old_text: String,
@@ -77,17 +93,42 @@ pub fn tool_edit_file(
     start_line: Option<usize>,
     end_line: Option<usize>,
     dry_run: Option<bool>,
-) -> Result<EditOutcome, String> {
-    agent_tools::tool_edit_file(
-        root, path, old_text, new_text, start_line, end_line, dry_run,
-    )
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(
+            FilesystemRequest::ToolEditFile {
+                root,
+                path,
+                old_text,
+                new_text,
+                start_line,
+                end_line,
+                dry_run,
+            }
+            .into(),
+        )
+        .await
 }
 
 /// Writes (creating parent directories as needed) or overwrites a file
 /// inside the project root.
 #[tauri::command]
-pub fn tool_write_file(root: String, path: String, content: String) -> Result<String, String> {
-    agent_tools::tool_write_file(root, path, content)
+pub async fn tool_write_file(
+    backend: State<'_, DesktopConnection>,
+    root: String,
+    path: String,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(
+            FilesystemRequest::ToolWriteFile {
+                root,
+                path,
+                content,
+            }
+            .into(),
+        )
+        .await
 }
 
 /// Search for the Files tab: larger result limit, include/exclude globs,

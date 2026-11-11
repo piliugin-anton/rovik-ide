@@ -1,33 +1,62 @@
-//! The agent's browser tools (browser_tools.rs), on the shared headless
-//! Chrome.
-
-use rovik_core::browser_tools::{self, BrowsedPage, BrowserScreenshot, SearchHit};
-use rovik_core::Core;
+//! Browser tools execute in the shared backend, independently of the command connection.
+use rovik_client::{desktop_api::browser::BrowserRequest, desktop_connection::DesktopConnection};
+use serde_json::Value;
 use tauri::State;
 
-/// DuckDuckGo's HTML endpoint: server-rendered, no JavaScript needed.
+/// Searches through the backend's existing browser service.
 #[tauri::command]
 pub async fn web_search(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     query: String,
     max_results: Option<usize>,
-) -> Result<Vec<SearchHit>, String> {
-    browser_tools::web_search(&core.browser, query, max_results).await
+) -> Result<Value, Value> {
+    backend
+        .desktop_task(
+            |sink| {
+                BrowserRequest::Search {
+                    query,
+                    max_results,
+                    sink,
+                }
+                .into()
+            },
+            |_| Ok(()),
+        )
+        .await
 }
 
+/// Reads a page through the backend's URL and network checks.
 #[tauri::command]
 pub async fn browse_url(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     url: String,
     max_chars: Option<usize>,
-) -> Result<BrowsedPage, String> {
-    browser_tools::browse_url(&core.browser, url, max_chars).await
+) -> Result<Value, Value> {
+    backend
+        .desktop_task(
+            |sink| {
+                BrowserRequest::Browse {
+                    url,
+                    max_chars,
+                    sink,
+                }
+                .into()
+            },
+            |_| Ok(()),
+        )
+        .await
 }
 
+/// Captures a browser screenshot and stores it in the backend's attachments.
 #[tauri::command]
 pub async fn browser_screenshot(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     url: Option<String>,
-) -> Result<BrowserScreenshot, String> {
-    browser_tools::browser_screenshot(&core, url).await
+) -> Result<Value, Value> {
+    backend
+        .desktop_task(
+            |sink| BrowserRequest::Screenshot { url, sink }.into(),
+            |_| Ok(()),
+        )
+        .await
 }

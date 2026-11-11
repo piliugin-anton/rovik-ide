@@ -1,3 +1,4 @@
+import { backendGeneration, onBackendLost } from '../backendSession';
 // client.ts
 //
 // A Language Server Protocol client for Monaco, for servers the backend
@@ -88,6 +89,7 @@ const COMPLETION_KIND = [
 
 export class LspClient {
   private serverId: string | null = null;
+  private forgetSession?: () => void;
   private nextRequestId = 1;
   private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
   private capabilities: Json = {};
@@ -117,17 +119,27 @@ export class LspClient {
   /** Starts the server, initializes it and starts serving the editor. */
   async start(): Promise<void> {
     this.status({ state: 'starting' });
+    const generation = backendGeneration();
+    this.forgetSession = onBackendLost(() => this.handleExit(null));
     const channel = new Channel<LspEvent>();
     channel.onmessage = (event) => {
+      if (generation !== backendGeneration() || this.exited) return;
       if (event.type === 'message') this.receive(event.data);
       else if (event.type === 'exit') this.handleExit(event.code);
     };
-    this.serverId = await invoke<string>('lsp_start', {
-      command: this.opts.command,
-      args: this.opts.args ?? [],
-      cwd: this.opts.root,
-      onEvent: channel,
-    });
+    try {
+      this.serverId = await invoke<string>('lsp_start', {
+        command: this.opts.command,
+        args: this.opts.args ?? [],
+        cwd: this.opts.root,
+        onEvent: channel,
+      });
+    } catch (error) {
+      this.forgetSession?.();
+      throw error;
+    }
+    if (generation !== backendGeneration())
+      throw new Error('Language server session ended during reconnect');
 
     const rootUri = modelUriFor(this.opts.root).toString();
     const name = this.opts.root.split(/[\\/]/).filter(Boolean).pop() ?? this.opts.root;
@@ -317,6 +329,7 @@ export class LspClient {
   }
 
   private handleExit(code: number | null) {
+    if (this.exited) return;
     this.exited = true;
     for (const { reject } of this.pending.values()) reject(new Error(`${this.opts.name} exited`));
     this.pending.clear();
@@ -327,6 +340,8 @@ export class LspClient {
   }
 
   private dispose() {
+    this.forgetSession?.();
+    this.forgetSession = undefined;
     for (const p of this.providers) p.dispose();
     this.providers = [];
     for (const doc of this.docs.values()) {

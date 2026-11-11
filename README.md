@@ -49,7 +49,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
 - The startup spinner stays visible until the project, restored tabs and
-  expanded folders have finished loading.
+  expanded folders have finished loading. Switching projects shows a dimmed
+  loading overlay until its tabs and folders are ready. Chat history loads within
+  the AI Chat panel, with a spinner in its tab and a centered loading message.
+  Returning to a cached chat shows it immediately without a loading indicator.
 - Browser tabs: a page a dev server on a cloud host opens shows in a tab
   of the editor, hot reload and all, with an address bar for any http or
   https page (see [Servers and pages on a cloud
@@ -276,8 +279,8 @@ Once installed, Rovik [updates itself](#updates).
 
 ### Building from source
 
-You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22
-(or 20.19 and newer), plus your system's build tools, as below.
+You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 24,
+plus your system's build tools, as below.
 
 #### Linux
 
@@ -298,8 +301,7 @@ Built packages end up in `src-tauri/target/release/bundle/`.
 #### macOS
 
 1. Install the Xcode Command Line Tools: `xcode-select --install`
-2. Install [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22
-   (or 20.19 and newer).
+2. Install [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 24.
 3. From the project folder:
 
    ```bash
@@ -315,7 +317,7 @@ Built packages end up in `src-tauri/target/release/bundle/`.
    with the **Desktop development with C++** workload.
 2. Install [Rust](https://rustup.rs) with the default
    `x86_64-pc-windows-msvc` toolchain (MinGW isn't supported).
-3. Install [Node.js](https://nodejs.org) 22 (or 20.19 and newer).
+3. Install [Node.js](https://nodejs.org) 24.
 4. From the project folder, run the same `npm` commands as on macOS.
 
 WebView2 is already part of Windows 10 and 11.
@@ -1119,8 +1121,8 @@ What one process must not do to another's work is guarded the same way:
   changed by one window at a time.
 - A window open while a newer Rovik updated the chat database (an update
   installed while it ran) stops writing to it: close it and open Rovik
-  again. rust-analyzer's old versions are cleaned up only while no other
-  window runs, as one may still run them.
+  again. rust-analyzer's older managed versions remain available, as another
+  window may still run or restart one.
 - What a window used to keep in its own browser storage, and so wrote back
   whole over what other windows had saved, is shared in `<data>/shared`: a
   file each for the projects' tabs, the editor settings, the reasoning
@@ -1137,7 +1139,7 @@ What one process must not do to another's work is guarded the same way:
 ### Git hooks
 
 The Git panel works through libgit2, which runs no hooks, so the panel
-runs them itself (`src-tauri/src/git/hooks.rs`), where git would and with
+runs them itself (`src-tauri/crates/rovik-client/src/git/hooks.rs`), where git would and with
 git's arguments and input:
 
 | In the Git panel               | Hooks that run                                               |
@@ -1167,7 +1169,7 @@ pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
 
 The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
 **Git hooks…** (`src/components/GitHooksView.tsx`,
-`src-tauri/src/git/hook_files.rs`). It lists each of the hooks above with
+`src-tauri/crates/rovik-client/src/git/hook_files.rs`). It lists each of the hooks above with
 its state: on, not executable (skipped), only git's example (`.sample`),
 or not there. A hook opens in the editor. **Create** makes one from a
 small template, executable, and opens it. **Enable** makes one executable
@@ -1314,6 +1316,12 @@ read offers **Try again**. Each project's memory is a SQLite file
 of its own in the app's data folder (`memory/<project>.db`), so nothing is
 written into your repository. The store is the `verified-code-memory` crate in
 `src-tauri/crates/verified-code-memory`.
+
+Plan implementation memories use the named plan request as their title, rather
+than the generic instruction sent with the expanded plan. They also retain the
+project-relative plan path and its implementation-time SHA-256 fingerprint. The
+plan is included among the memory’s associated files, separately from the files
+the run changed.
 
 A chat's run uses it at four points:
 
@@ -1640,7 +1648,66 @@ in the input.
   line for each step of a message's life, and the headless runner can send
   scripted messages (`--steer "TEXT@N"`).
 
+### Desktop backend migration
+
+`rovik-client::desktop_backend::DesktopBackend` initializes the desktop's core,
+credentials, MCP services, and remote-host routing without depending on Tauri.
+The desktop supplies event publishers and keeps native window callbacks in the
+application layer. Initialization fails if remote chat ownership cannot be
+loaded, rather than treating those chats as local.
+
+Unix windows now attach to a shared backend with singleton ownership and a
+private readiness socket. The packaged app hosts it in `--desktop-backend` mode;
+`rovik-desktopd` provides the same host as a standalone binary.
+`local_backend::ensure_backend` negotiates safe upgrades and attaches to the host,
+or starts that binary and waits for initialization. The handshake identifies the protocol,
+backend boot, and client session; the daemon retains ownership through shutdown.
+A newly launched backend retries transient readiness timeouts within its existing
+30-second startup budget. Authentication and protocol errors still stop startup.
+
+The shared backend writes its standard output and diagnostics to `backend.log`
+in its private backend directory under the app data directory. Its output handles
+remain valid after the launching window or `tauri dev` process exits.
+The Unix endpoint also serves bounded typed request/reply calls through
+`local_backend::rpc::Client`. Requests route by their chat or message identity;
+run start, steering, deletion, and configuration use the existing remote-routing
+operations. Status includes connected hosts, and `call_host` explicitly targets
+a host for operations such as connector setup. The handshake requires client
+acknowledgement before accepting operations; a stalled handshake cannot block
+other clients. A lost or cancelled reply invalidates the client connection, and
+mutations are never retried automatically. Unix command-session recovery is
+explicit; Windows named pipes remain outstanding. Desktop-only commands and
+events use their own adapters. Build the standalone host with
+`cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
+
+Agent controls, connector operations, chat mutations, and CLM commands now use
+`DesktopConnection`, which supplies the same typed replies in embedded and Unix
+IPC modes. Unix desktops select IPC by default; Windows keeps its embedded
+host pending transport support. IPC connection errors
+never create an embedded backend as a fallback. Checklists continue to read the
+local chat rows, including cached remote rows when their host is offline.
+
+Overlay operations and non-streaming VFS mount, file, and history commands also
+use the adapter. Local protocol 18 provides private client event connections alongside
+explicit desktop requests. VFS subscriptions now use this transport in both
+embedded and IPC modes. Each client owns its subscriptions; disconnecting it
+cleans up only its resources. Bounded queues fail explicitly if a consumer falls
+behind, and native callback loss cancels its producer. See the
+[desktop backend migration](docs/design/desktop-command-migration.md).
+
+Chat data and drafts, attachments, CLM tools, memory, AI/project/network settings,
+host operations, and non-browser MCP operations now run behind that boundary.
+Structured host-deployment errors retain their fields. Desktop operations keep
+their service-specific deadlines instead of using the framing timeout as a
+whole-operation deadline. Attachments use bounded base64 frames, preserving the
+existing image size limit. Project registration, browser sign-in, host-test
+progress, and other event-dependent operations also use desktop RPC.
+
 ### Chat isolation
+
+If an isolated chat cannot mount or lock its overlay, the run stops with an
+error. It never falls back to writing directly in the project folder. Restore
+access to the overlay and retry.
 
 Every agent run works in an **overlay**: the project as it is on disk, with
 that chat's changes on top. Only the changed files are stored. When a run
@@ -1720,11 +1787,11 @@ Design and reasoning: [`docs/design/chat-isolation-plan.md`](docs/design/chat-is
 like real files to every other program. Commands the agent runs can `cat`,
 `grep`, `sed -i` or execute them, and the app sees what they changed.
 
-| OS      | Driver  | Installed from                                      | Notes                                                                                                                                                                                              |
-| ------- | ------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | FUSE 3  | the distro's `fuse3` package, via polkit (`pkexec`) | Mounted with `fusermount3`; libfuse isn't needed to build or run.                                                                                                                                  |
-| macOS   | macFUSE | the official `.dmg` (signature checked)             | On macOS 15.4+ with macFUSE 5.1+ it uses FSKit (no kernel extension; enable it once in System Settings), mounted at `/Volumes/RovikVirtualFiles`. Older systems need the kernel extension allowed. |
-| Windows | none    | —                                                   | The agent works in WSL, whose daemon mounts them with FUSE. A chat of a project runs there; without WSL it doesn't start.                                                                          |
+| OS      | Driver  | Installed from                                      | Notes                                                                                                                                                                                                                      |
+| ------- | ------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux   | FUSE 3  | the distro's `fuse3` package, via polkit (`pkexec`) | Mounted with `fusermount3`; libfuse isn't needed to build or run.                                                                                                                                                          |
+| macOS   | macFUSE | the official `.dmg` (signature checked)             | Selects FSKit on macOS 15.4+ with macFUSE 5.1+. FSKit requires the current MFMount message API (install a current macFUSE release); kernel mounts use device descriptors. Older systems need the kernel extension allowed. |
+| Windows | none    | —                                                   | The agent works in WSL, whose daemon mounts them with FUSE. A chat of a project runs there; without WSL it doesn't start.                                                                                                  |
 
 The app starts without the driver; only mounting needs it. At startup it
 checks in the background and either mounts the volume or offers once to
@@ -1781,6 +1848,10 @@ agent's context is kept within the model's limit (`src/lib/contextMode.ts`):
   the agent manages its own context by editing it as a file
   (`src-tauri/crates/rovik-core/src/clm/`). Requires the virtual files driver; without it, the
   chat falls back to Trimming.
+
+Links to `@context/TASK.md` and other context files open from the chat that owns
+them. Mounted local files remain editable; remote or unmounted files open as
+read-only snapshots. Saved task cards remain readable after a backend restart.
 
 How CLM mode works:
 
@@ -2176,3 +2247,159 @@ Existing High selections stay High. CLI connectors pass the selected effort to t
 
 Retry and Continue (including the checklist) restore the chat’s saved reasoning
 effort, even if another chat changed the shared preference for that model.
+
+Local, SSH, system-SSH, and WSL terminals now run in the desktop backend.
+Terminal output uses the owning client's private stream; write and resize
+requests require that ownership. Closing a client ends its terminals and their
+remaining jobs, while a shell that exits naturally keeps the existing behavior
+of leaving its background jobs running.
+
+Filesystem reads and edits, stable file IDs, image previews, last-project settings,
+and project watches also use the backend. Each client has its own file-ID cache
+and watcher generation. Replacing or disconnecting one watch cannot stop another
+client's watch; delayed cleanup cannot stop a newer watch in the same client.
+Native filesystem events target only the window that requested them.
+
+Streamed model requests, MCP sign-in, and host-test progress now use private
+backend tasks. Stop remains available during a streamed request, and matching
+request IDs in different clients cannot cancel each other. Shared UI settings and
+WSL operations also use desktop RPC; native adapters retain browser/window actions.
+
+Project lifecycle commands and attachment reads now use desktop RPC. Open projects
+are registered per client, with guarded merges/deletes and disconnect cleanup;
+remote results and steering use the chat's project. This completes the listed
+command-family migration. Unix windows attach automatically to the shared host;
+Windows currently uses an embedded backend.
+
+Agent and cloud events now reach each UI through a project-scoped replay journal.
+The read connection reconnects independently of commands, and a missed-history
+reset refreshes chats, live runs, approvals, hosts, and ports before advancing its
+cursor. After a command-session failure, the notification’s Reconnect action
+creates a fresh session and restores the window’s registrations and subscriptions.
+
+Git panel operations now execute in the shared desktop backend, including hooks,
+fetch/push, branches, stashes, merge/rebase, and conflict resolution. Windows keep
+only RPC adapters. History searches supersede only that client's previous search;
+Git working-tree guards live alongside the backend's FUSE and overlay services.
+
+Language servers and rust-analyzer setup now execute in the desktop backend.
+Each window owns its server IDs and private message/log stream; closing a window
+or losing a callback ends only its servers and their child processes. Stdin writes
+run independently so Stop works even when a server is not reading. The backend
+waits for language-server cleanup before shutting down. Managed rust-analyzer
+installs are serialized and preserve older binaries still used by other windows.
+
+Headless browser search, page reads, screenshots, and pinned Chrome setup now use
+desktop RPC. They use the backend's serialized browser state and attachment store.
+Concurrent Chrome installation requests observe one backend-owned job through
+private progress callbacks. Losing a window stops its observer; an accepted
+installation finishes publication, and backend shutdown waits for it.
+
+Remote forwarded-page requests use private callbacks scoped to each window's
+project and retained chats. The backend chooses one owner and includes the ports
+needed to open its tab; missing or ambiguous owners produce a chat notice.
+Page actions are not replayed after reconnection or project switches. Native
+browser opening stays in the selected UI client.
+
+Editor formatter discovery and execution now run in the backend through desktop
+RPC. Each request uses its own project configuration and unsaved buffer, leaving
+the source file untouched. Disconnecting a client cancels its formatter process;
+backend shutdown waits for formatter cleanup. Other clients can keep formatting
+and sending commands while a formatter is busy.
+
+Heavy-command slot limits and queue status now belong to the shared backend.
+Each window retains its visible-chat selection; the most recently selected chat
+gets priority, and returning to a window promotes its chat again. Hiding a chat
+or disconnecting a window releases only its selection. Cloud priority updates
+are ordered, and reconnecting hosts receive the current selection.
+
+Host startup and periodic refresh now run in one backend-owned worker, shared by
+embedded and daemon modes. Shutdown joins any active startup or refresh operation
+before stopping execution services. Developer remote-chat environment settings
+are also honored by the standalone backend. Native windows retain focus and
+position handling while execution and host connections belong to the backend.
+
+### Shared desktop backend
+
+On Linux and macOS, Rovik windows share one local backend for chats, execution,
+and virtual filesystem mounts. Closing a window releases its UI resources;
+backend work continues even when the last window closes. Opening Rovik again
+reattaches to that backend. Windows currently uses an embedded backend while its
+shared transport is being implemented.
+
+After a backend crash or lost command session, use **Reconnect** in the connection
+notification. The window keeps unsaved editor text and chat drafts, restores its
+project registration and watches, and refreshes authoritative chat/host state.
+Connectors and other AI settings reload from saved state after reconnection,
+including when their earlier load failed.
+Terminal sessions end; their shells and commands are not restarted. Language
+support restarts from the open editor models. Rovik does not replay commands whose
+completion is uncertain: check their result before retrying them.
+
+Newer Unix apps automatically replace an idle backend once all windows are closed
+and its work and retained resources are released. Mounted virtual filesystems,
+open chat filesystem views, virtual files in memory, retained remote chats/transfers, and
+unfinished background work defer replacement. Compatible apps keep using that
+backend; incompatible apps explain why the upgrade must wait. The old process
+keeps its ownership lock through shutdown, so replacement cannot create a second
+mount owner. Hosts from before upgrade negotiation was introduced still need an
+explicit graceful stop: finish their work, stop the process running with
+`--desktop-backend` (SIGTERM), then reopen Rovik.
+
+Linux CI also requires a real mounted multi-client regression for both backend
+entry points. It checks chat overlay isolation, commands continuing after every
+client closes, virtual-file handles surviving reattachment, and clean shutdown.
+See [the mounted test commands](docs/design/desktop-command-migration.md#required-mounted-multi-client-isolation).
+
+An upgrade can release an empty, unused virtual-files mount on Linux and macOS. A program
+holding a file or directory open keeps that mount busy and defers replacement;
+virtual files with retained contents also defer it. Close programs using the
+volume and release its files before retrying. Remote work follows the draining
+rules below.
+
+On Linux and macOS, idle chat views can also drain for an upgrade without landing
+or discarding their edits. The replacement reads their saved changes. Busy views
+or failed persistence defer retirement and keep the old backend. Child views drain
+before their parents, preserving each view’s saved edits. Invalid dependency
+metadata defers the whole drain.
+
+Idle remote connections, including offline hosts, can drain during a Unix backend
+upgrade. Persisted chat mirrors can reconnect through the replacement;
+queued result imports, unfinished pulls, transfers, forwarded ports, and
+unfinished event tasks must finish locally before replacement. A bounded drain
+lets that work complete; a timeout leaves it running in the existing backend.
+The backend waits for buffered events to finish and checks for newly retained work before retiring. If draining
+times out or another resource blocks replacement, saved hosts reconnect on the
+next maintenance refresh without changing their settings.
+
+Before releasing a mirrored chat connection, the backend verifies each chat’s
+saved owner and its lead’s mirror record on the database writer queue. It repeats
+the check after buffered events finish. Unsaved or inconsistent records defer
+replacement, as do decisions whose persistence failed.
+
+Keep the older copy and automatic recheck counts are saved locally per remote
+chat. Replayed sync events preserve Keep; a changed sync clears it. A new message
+or successful landing resets the recheck budget. Failed saves report an error and
+defer replacement until the decision can be saved; corrupt records are reported
+during startup.
+
+Server-owned runs and Autopilot drivers can continue during local backend
+replacement. The replacement restores their status from the server and retries
+mirror synchronization from its saved cursor. Draining sends no Stop request.
+Long-lived forwarded pages, MCP relays, unresolved results, or transfers may still
+defer replacement until they finish; timing out never cancels them.
+
+On macOS, upgrade draining requests an ordinary unmount before releasing the
+macFUSE channel or serving session. Busy mounts and unmount errors defer the
+upgrade with the current backend still serving them. This path never forces a
+volume off its users. Saved edits remain available after refusal, including
+edits made before retrying the upgrade.
+
+Idle backend RPC connections stay open without periodic traffic. The frame-read
+timeout starts with the first received byte, so stale socket readiness cannot
+disconnect a quiet window; partially sent requests still time out.
+
+Terminal input is sent in order per terminal even when RPC writes complete
+asynchronously. Other terminals remain independent. Failed writes reject input
+already queued behind them, and reconnecting never sends queued input into the
+replacement backend.

@@ -1,21 +1,16 @@
 // src-tauri/src/instances.rs
 //
-// Rovik runs as several processes, each with its own project: the chats,
-// agent runs and file state a process keeps in memory are its own, and two
-// processes on one project would each change its chats unaware of the
-// other's changes. So a project is open in one process at a time. Opening
-// a folder claims it, and the project ID in it (folders with the same ID,
-// copies of one another, share their chats); a window with no folder open
-// claims the chats without a project. A claim is an OS lock on a file
-// named after it (rovik_core::os_lock), held while the project is open
-// here and let go when another one is opened or the process ends (a crash
-// too: the OS lets go of its locks). A project left for another while its
-// chats are still at work here stays claimed until they're done. A project
-// another process holds isn't opened again: that process is asked to bring
-// its window to the front instead, over a localhost connection that only
-// takes the token it wrote next to its locks, in the user's own data
-// folder.
+// Native focus claims deduplicate a visible project across windows. Opening
+// a folder claims its path and project ID; a request from another window
+// focuses the owner through its authenticated loopback listener. OS locks
+// release claims on a crash as well as normal exit.
+//
+// Shared-mode execution belongs to the daemon and outlives these claims.
+// Only embedded hosts retain a previous project's claims while its private
+// execution is still busy, using the compatibility policy in rovik-client.
 
+#[cfg(any(not(any(unix, windows)), test))]
+use rovik_client::project_ownership::EmbeddedOwnership;
 use rovik_core::os_lock::Held;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -24,26 +19,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use rovik_client::project_ownership::{claim_files, read_holder, WindowHolder as Holder};
 use rovik_core::chat_db::projects::{folder_project_id, path_key};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Serialize;
 
 /// The claim of a window with no folder open: the chats without a project.
 const NO_PROJECT: &str = "no-project";
-
-/// What the process holding a project wrote next to its locks: how to ask
-/// it to come to the front.
-#[derive(Serialize, Deserialize)]
-struct Holder {
-    /// The folder ("" for the chats without a project).
-    path: String,
-    pid: u32,
-    port: u16,
-    token: String,
-    /// Left for another project, its chats still at work there.
-    #[serde(default)]
-    at_work: bool,
-}
 
 /// What claiming a project came to.
 #[derive(Debug, Default, Serialize, PartialEq, Eq)]
@@ -76,6 +57,7 @@ impl Claim {
 struct AtWork {
     keys: Vec<String>,
     path: String,
+    #[cfg(any(not(any(unix, windows)), test))]
     project: Option<Option<String>>,
 }
 
@@ -182,6 +164,7 @@ impl Instances {
             claims.at_work.push(AtWork {
                 keys: before,
                 path: was,
+                #[cfg(any(not(any(unix, windows)), test))]
                 project: was_project,
             });
         } else {
@@ -220,11 +203,13 @@ impl Instances {
 
     /// The project open in the window, if known: its ID (None: the chats
     /// without a project).
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn open_project(&self) -> Option<Option<String>> {
         self.claims().project.clone()
     }
 
     /// The projects left for another while their chats were at work here.
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn left_at_work(&self) -> Vec<Option<String>> {
         let claims = self.claims();
         claims
@@ -236,6 +221,7 @@ impl Instances {
 
     /// Lets go of the projects left at work whose chats are done (an ID
     /// `still` doesn't name), and those whose project was never known.
+    #[cfg(any(not(any(unix, windows)), test))]
     pub fn let_go_done(&self, still: impl Fn(&Option<String>) -> bool) {
         let mut claims = self.claims();
         let (busy, done): (Vec<AtWork>, Vec<AtWork>) = std::mem::take(&mut claims.at_work)
@@ -269,22 +255,10 @@ impl Instances {
         }
     }
 
-    /// The folder another process has open with the project `id` (or the
-    /// folder `folder`), if one does: its chats aren't this process's to
-    /// change (delete, merge).
-    pub fn open_elsewhere(&self, id: Option<&str>, folder: Option<&Path>) -> Option<String> {
-        let mut keys: Vec<String> = id.map(|id| format!("project:{id}")).into_iter().collect();
-        keys.extend(folder.map(|f| format!("folder:{}", path_key(f))));
-        let claims = self.claims();
-        keys.iter()
-            .filter(|k| !claims.held.contains_key(*k))
-            .find(|key| self.held_elsewhere(key))
-            .map(|key| {
-                read_holder(&self.files(key).1)
-                    .map(|h| h.path)
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or_else(|| "another window".to_string())
-            })
+    /// Ownership policy for this window's private embedded backend.
+    #[cfg(any(not(any(unix, windows)), test))]
+    pub fn ownership(&self) -> EmbeddedOwnership {
+        EmbeddedOwnership::new(self.dir.clone(), self.token.clone())
     }
 
     /// Lets go of every project held here.
@@ -338,12 +312,7 @@ impl Instances {
 
     /// A claim's lock, and the file saying who holds it.
     fn files(&self, key: &str) -> (PathBuf, PathBuf) {
-        let digest = Sha256::digest(key.as_bytes());
-        let name: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-        (
-            self.dir.join(format!("{name}.lock")),
-            self.dir.join(format!("{name}.json")),
-        )
+        claim_files(&self.dir, key)
     }
 }
 
@@ -367,21 +336,6 @@ fn sent_token(stream: &TcpStream, token: &str) -> bool {
     let mut line = String::new();
     let mut reader = BufReader::new(stream.take(256));
     reader.read_line(&mut line).is_ok() && line.trim_end() == token
-}
-
-/// Who holds a claim, from its `.json`: just locked, it may not be written
-/// yet.
-fn read_holder(info: &Path) -> Option<Holder> {
-    for attempt in 0..10 {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let read = std::fs::read(info).ok();
-        if let Some(holder) = read.and_then(|b| serde_json::from_slice(&b).ok()) {
-            return Some(holder);
-        }
-    }
-    None
 }
 
 /// Asks `holder` to come to the front. Whether it did.
@@ -640,17 +594,17 @@ mod tests {
         let app = folder(&dir, "app", Some("project-app-1"));
         let (a, _) = instance(&dir);
         let (b, _) = instance(&dir);
-        let shown = Some(app.to_string_lossy().into_owned());
+        let shown = Some(app.clone());
 
         assert_eq!(open(&a, &app), Claim::claimed());
-        assert_eq!(b.open_elsewhere(Some("project-app-1"), None), shown);
-        assert_eq!(b.open_elsewhere(None, Some(&app)), shown);
-        assert_eq!(b.open_elsewhere(Some("project-other"), None), None);
+        assert_eq!(b.ownership().other(Some("project-app-1"), None), shown);
+        assert_eq!(b.ownership().other(None, Some(&app)), shown);
+        assert_eq!(b.ownership().other(Some("project-other"), None), None);
         // Not elsewhere for the one that has it.
-        assert_eq!(a.open_elsewhere(Some("project-app-1"), Some(&app)), None);
+        assert_eq!(a.ownership().other(Some("project-app-1"), Some(&app)), None);
         // Asking doesn't claim: once A lets go, B can open it.
         a.release();
-        assert_eq!(b.open_elsewhere(Some("project-app-1"), Some(&app)), None);
+        assert_eq!(b.ownership().other(Some("project-app-1"), Some(&app)), None);
         assert_eq!(open(&b, &app), Claim::claimed());
     }
 

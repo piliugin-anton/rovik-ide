@@ -21,7 +21,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: memory-minilm-l6-v2-v1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check whether the model is already published
         id: existing
         run: |

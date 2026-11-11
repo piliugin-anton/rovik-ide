@@ -69,7 +69,7 @@ const status = {
         if (args.event === 'agent-event') listener = args.handler;
         return 1;
       }
-      if (cmd === 'agent_status') return status;
+      if (cmd === 'desktop_event_status') return status;
       if (cmd === 'chat_get_messages') return { messages: [], hasOlder: false, hasNewer: false };
       return null;
     },
@@ -433,4 +433,48 @@ test('a run that ends with a message it said nothing of: a local chat’s comes 
     takeReturnedSteerDrafts(chat).map((d) => d.messageId),
     ['unsaid']
   );
+});
+
+test('journal recovery removes stale runs, steering, approvals and questions', async () => {
+  const { recoverAgentRuns, activeRunId } = await import('./agentRuns');
+  const { registerApproval } = await import('./approvals');
+  const { registerQuestions } = await import('./questions');
+  chatStore.setRunning('stale', true);
+  chatStore.setDriving('stale', true);
+  registerApproval(
+    { dialogId: 'stale', toolCallId: 'old', toolName: 'bash', summary: 'old', edit: undefined },
+    false
+  );
+  registerQuestions({ dialogId: 'stale', toolCallId: 'old', questions: [] });
+  recoverAgentRuns({ runs: [{ dialogId: 'current', runId: 'new' }], approvals: [], questions: [] });
+  assert.equal(chatStore.isRunning('stale'), false);
+  assert.equal(pendingApproval('stale', 'old'), undefined);
+  assert.equal(pendingQuestions('stale', 'old'), undefined);
+  assert.equal(activeRunId('current'), 'new');
+  assert.equal(chatStore.isRunning('current'), true);
+});
+
+test('a replayed end of an older run cannot stop the attempt restored from a snapshot', async () => {
+  const { recoverAgentRuns, handleBackendAgent, activeRunId, onRunEnded } =
+    await import('./agentRuns');
+  const chat = 'recovered-task';
+  recoverAgentRuns({
+    runs: [{ dialogId: chat, runId: 'review', steerable: true }],
+    approvals: [],
+    questions: [],
+  });
+  const ended: string[] = [];
+  const remove = onRunEnded((id) => ended.push(id));
+  try {
+    handleBackendAgent({ type: 'runEnded', dialogId: chat, runId: 'plan', outcome: 'done' });
+    assert.equal(activeRunId(chat), 'review');
+    assert.equal(isRunning(chat), true);
+    assert.equal(chatStore.state.steerable[chat], true);
+    assert.deepEqual(ended, []);
+    handleBackendAgent({ type: 'runEnded', dialogId: chat, runId: 'review', outcome: 'done' });
+    assert.equal(isRunning(chat), false);
+    assert.deepEqual(ended, [chat]);
+  } finally {
+    remove();
+  }
 });

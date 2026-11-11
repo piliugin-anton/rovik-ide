@@ -9,6 +9,7 @@
 
 #[cfg(unix)]
 use super::permissions::{ApprovalRule, Approver};
+#[cfg(unix)]
 use super::*;
 
 /// A send in `mode` on Codex's model, its connector's `settings` with the

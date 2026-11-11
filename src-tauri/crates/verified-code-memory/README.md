@@ -211,5 +211,5 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo doc --no-deps
-cargo run --example basic
+cargo run --example verified_memory
 ```

@@ -572,3 +572,13 @@ export function reportBody(result: string): string {
   const blank = result.indexOf('\n\n');
   return result.startsWith('Report from a ') && blank >= 0 ? result.slice(blank + 2) : result;
 }
+
+/** A replay gap invalidates live worker progress and cached child transcripts. */
+export function resetLiveSubagents() {
+  setState(
+    produce((s) => {
+      s.live = {};
+      s.transcripts = {};
+    })
+  );
+}

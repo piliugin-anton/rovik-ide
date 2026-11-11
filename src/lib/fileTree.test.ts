@@ -151,3 +151,32 @@ test('a failed root read finishes loading and can be retried by refreshing', asy
     console.warn = quiet;
   }
 });
+
+test('recovery waits for cached directory identities to be refreshed', async () => {
+  disk = { '/p': ['before.ts'] };
+  await createRoot(async (dispose) => {
+    const [root] = createSignal<string | null>('/p');
+    const tree = createFileTreeController(root);
+    await settle();
+    const pending = deferred<DirEntryInfo[]>();
+    read = () => pending.promise;
+    try {
+      let finished = false;
+      const refreshed = tree.refresh().then(() => {
+        finished = true;
+      });
+      await settle();
+      assert.equal(finished, false);
+      disk = { '/p': ['after.ts'] };
+      pending.resolve(entries('/p'));
+      await refreshed;
+      assert.deepEqual(
+        tree.rows().map((row) => row.id),
+        ['/p/after.ts']
+      );
+    } finally {
+      read = (path) => entries(path);
+      dispose();
+    }
+  });
+});

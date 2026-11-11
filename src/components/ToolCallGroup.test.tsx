@@ -72,3 +72,38 @@ test('labels that read the same are the same', () => {
   assert.ok(!sameGroupLabel(a, { ...a, items: [{ text: 'a.ts', path: 'src/a.ts', line: 3 }] }));
   assert.ok(!sameGroupLabel(a, { ...a, more: 1 }));
 });
+
+test('a context file link carries its originating chat even for a read', () => {
+  const root = container();
+  const opened: OpenInEditor[] = [];
+  setEditorOpener(async (request) => {
+    opened.push(request);
+  });
+  const dispose = render(
+    () => (
+      <ToolCallGroup
+        name="read"
+        calls={[
+          {
+            id: 'task-read',
+            name: 'read',
+            arguments: JSON.stringify({ path: '@context/TASK.md' }),
+          },
+        ]}
+        dialogId="source-chat"
+        result={() => undefined}
+        running={false}
+        renderCall={() => <div />}
+      />
+    ),
+    root
+  );
+  try {
+    (root.querySelector('.tool-group-file') as HTMLButtonElement).click();
+    assert.deepEqual(opened, [{ path: '@context/TASK.md', focus: true, dialogId: 'source-chat' }]);
+  } finally {
+    dispose();
+    root.remove();
+    setEditorOpener(null);
+  }
+});

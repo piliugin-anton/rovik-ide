@@ -203,6 +203,24 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 
 fn answer(request: &Request) -> Response {
     match request {
+        Request::ClmReadFile { dialog_id, path } => Response::Text(format!("{dialog_id}:{path}")),
+        Request::ClmStatus { .. } => Response::ClmStatus(rovik_protocol::clm::ClmStatus {
+            mode: Some("clm".into()),
+            available: false,
+            problem: None,
+            path: "@context".into(),
+            real_path: None,
+            revision: Some(7),
+            revisions: 1,
+            edits: 0,
+            projected: false,
+            tokens: 0,
+            budget: 0,
+            compliance: None,
+        }),
+        Request::ClmReadRevision { dialog_id, number } => {
+            Response::Text(format!("{dialog_id}:revision-{number}"))
+        }
         Request::AgentStart(_) => Response::RunId(Some("run-1".into())),
         Request::AgentStatus => Response::AgentStatus(AgentStatus::default()),
         Request::AgentStop { .. }

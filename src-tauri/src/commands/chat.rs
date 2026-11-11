@@ -2,42 +2,43 @@
 //! files attached in the chat input. A chat on a host is read from the
 //! mirror here, and written to on the host (6.1).
 
-use super::{answer, route};
 use crate::instances::Instances;
-use rovik_client::Remote;
-use rovik_core::agent_run::autopilot::{self, StageRow};
+use rovik_client::desktop_api::projects::ProjectRequest;
+use rovik_client::desktop_api::{chat::ChatRequest, DesktopRequest};
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_core::agent_run::StartRequest;
-use rovik_core::chat_db::search::SearchHit;
-use rovik_core::chat_db::store::{
-    ChatModel, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog,
-};
-use rovik_core::chat_db::{api, attachments, projects};
-use rovik_core::Core;
+use rovik_core::chat_db::store::{ChatModel, Cursor, MessagePatch, NewDialog};
 use rovik_protocol::Request;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 use tauri::ipc::InvokeBody;
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 pub async fn chat_list_dialogs(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     project_id: Option<String>,
     cursor: Option<Cursor>,
     limit: Option<usize>,
-) -> Result<DialogPage, String> {
-    api::chat_list_dialogs(&core.db, project_id, cursor, limit).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::ListDialogs {
+            project_id,
+            cursor,
+            limit,
+        }))
+        .await
 }
 
 /// One chat's summary as the list shows it, as it is now: after a move,
 /// where it went (U02).
 #[tauri::command]
 pub async fn chat_get_dialog(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
-) -> Result<Option<DialogSummary>, String> {
-    api::chat_get_dialog(&core.db, dialog_id).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::GetDialog { dialog_id }))
+        .await
 }
 
 /// The project a folder is, with a suggestion when it looks like a copy or
@@ -46,14 +47,17 @@ pub async fn chat_get_dialog(
 #[tauri::command]
 pub async fn chat_open_project(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
-) -> Result<projects::Opened, String> {
-    let opened = api::chat_open_project(&core.db, root.clone()).await?;
-    reclaim(&app, &root, &opened.project.id);
-    let open = (opened.project.id.clone(), PathBuf::from(root));
-    remote.set_open_project(Some(open));
+) -> Result<serde_json::Value, String> {
+    let opened = backend
+        .desktop(ProjectRequest::Open { root: root.clone() }.into())
+        .await?;
+    let id = opened
+        .pointer("/project/id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Invalid open-project reply")?;
+    reclaim(&app, &root, id);
     Ok(opened)
 }
 
@@ -73,30 +77,13 @@ fn reclaim(app: &AppHandle, root: &str, project: &str) {
 /// The chats among `dialog_ids` another of Rovik's windows is at work on
 /// (rovik_core::chat_hold): their unanswered messages are its to judge.
 #[tauri::command]
-pub fn chats_at_work_elsewhere(dialog_ids: Vec<String>) -> Vec<String> {
-    dialog_ids
-        .into_iter()
-        .filter(|id| rovik_core::chat_hold::elsewhere(id))
-        .collect()
-}
-
-/// Refuses to change the chats of a project another window has open (by
-/// its ID, or a folder it would go to).
-fn not_open_elsewhere(
-    app: &AppHandle,
-    id: &str,
-    folder: Option<&str>,
-    what: &str,
-) -> Result<(), String> {
-    let elsewhere = app
-        .try_state::<Instances>()
-        .and_then(|i| i.open_elsewhere(Some(id), folder.map(Path::new)));
-    match elsewhere {
-        Some(folder) => Err(format!(
-            "{folder} is open in another window: close it there first, then {what}."
-        )),
-        None => Ok(()),
-    }
+pub async fn chats_at_work_elsewhere(
+    backend: State<'_, DesktopConnection>,
+    dialog_ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(ProjectRequest::AtWork { dialog_ids }.into())
+        .await
 }
 
 /// A chat's plan (`meta.planFile`): a local chat's file, or a remote one's
@@ -105,37 +92,33 @@ fn not_open_elsewhere(
 /// which could name any file of this computer's.
 #[tauri::command]
 pub async fn chat_read_plan(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     path: String,
-) -> Result<String, String> {
-    if remote.host_of(&dialog_id).is_some() {
-        return remote.read_plan(&dialog_id, &path).await;
-    }
-    if !rovik_core::agent_run::plan::is_plan_file(&path) {
-        return Err("Not a plan's file.".into());
-    }
-    std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::ReadPlan {
+            dialog_id,
+            path,
+        }))
+        .await
 }
 
 /// Implementation evidence for this revision, read from local chats and
 /// remote mirrors in the current project. No host connection is required.
 #[tauri::command]
 pub async fn chat_plan_implementation(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     project_id: Option<String>,
     path: String,
     content: String,
-) -> Result<Option<rovik_core::agent_run::plan::PlanImplementation>, String> {
-    core.db
-        .read(move |conn| {
-            rovik_core::agent_run::plan::plan_implementation(
-                conn,
-                project_id.as_deref(),
-                &path,
-                &content,
-            )
-        })
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::PlanImplementation {
+            project_id,
+            path,
+            content,
+        }))
         .await
 }
 
@@ -143,18 +126,26 @@ pub async fn chat_plan_implementation(
 #[tauri::command]
 pub async fn chat_answer_copy(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
     original_id: String,
     share: bool,
-) -> Result<projects::ProjectInfo, String> {
-    if share {
-        not_open_elsewhere(&app, &original_id, None, "share its chats")?;
-    }
-    let project = api::chat_answer_copy(&core.db, root.clone(), original_id, share).await?;
-    reclaim(&app, &root, &project.id);
-    remote.folder_answered(Path::new(&root), &project.id);
+) -> Result<serde_json::Value, String> {
+    let project = backend
+        .desktop(
+            ProjectRequest::AnswerCopy {
+                root: root.clone(),
+                original_id,
+                share,
+            }
+            .into(),
+        )
+        .await?;
+    let id = project
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Invalid project reply")?;
+    reclaim(&app, &root, id);
     Ok(project)
 }
 
@@ -163,115 +154,168 @@ pub async fn chat_answer_copy(
 #[tauri::command]
 pub async fn chat_answer_moved(
     app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     root: String,
     current_id: String,
     target_id: String,
-) -> Result<projects::ProjectInfo, String> {
-    not_open_elsewhere(&app, &target_id, None, "use its chats here")?;
-    remote.before_merging_project(&current_id).await?;
-    let project = api::chat_answer_moved(&core.db, root.clone(), current_id, target_id).await?;
-    reclaim(&app, &root, &project.id);
-    remote.folder_answered(Path::new(&root), &project.id);
+) -> Result<serde_json::Value, String> {
+    let project = backend
+        .desktop(
+            ProjectRequest::AnswerMoved {
+                root: root.clone(),
+                current_id,
+                target_id,
+            }
+            .into(),
+        )
+        .await?;
+    let id = project
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Invalid project reply")?;
+    reclaim(&app, &root, id);
     Ok(project)
 }
 
 /// "Not these": not suggested for this folder again.
 #[tauri::command]
 pub async fn chat_decline_projects(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     root: String,
     project_ids: Vec<String>,
-) -> Result<(), String> {
-    api::chat_decline_projects(&core.db, root, project_ids).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::DeclineProjects {
+            root,
+            project_ids,
+        }))
+        .await
 }
 
 /// Every project, most recently opened first, missing ones marked.
 #[tauri::command]
 pub async fn chat_list_projects(
-    core: State<'_, Core>,
-) -> Result<Vec<projects::ProjectSummary>, String> {
-    api::chat_list_projects(&core.db).await
+    backend: State<'_, DesktopConnection>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::ListProjects))
+        .await
 }
 
 /// A missing project's chats at another folder (merged, if it's another
 /// project already and `merge` is set).
 #[tauri::command]
 pub async fn chat_relink_project(
-    app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     project_id: String,
     root: String,
     merge: bool,
-) -> Result<projects::Relinked, String> {
-    not_open_elsewhere(&app, &project_id, Some(&root), "move its chats")?;
-    if merge {
-        remote.before_merging_project(&project_id).await?;
-    }
-    api::chat_relink_project(&core.db, project_id, root, merge).await
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(
+            ProjectRequest::Relink {
+                project_id,
+                root,
+                merge,
+            }
+            .into(),
+        )
+        .await
 }
 
 /// A project and all its chats.
 #[tauri::command]
 pub async fn chat_delete_project(
-    app: AppHandle,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     project_id: String,
-) -> Result<(), String> {
-    not_open_elsewhere(&app, &project_id, None, "delete it")?;
-    remote.before_deleting_project(&project_id).await?;
-    api::chat_delete_project(&core, project_id).await
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(ProjectRequest::Delete { project_id }.into())
+        .await
 }
 
 #[tauri::command]
 pub async fn chat_get_messages(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     before_seq: Option<i64>,
     limit: Option<usize>,
-) -> Result<MessagePage, String> {
-    api::chat_get_messages(&core.db, dialog_id, before_seq, limit).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::GetMessages {
+            dialog_id,
+            before_seq,
+            limit,
+        }))
+        .await
 }
 
 /// The chat's current Autopilot task's stage records, from its rows (a
 /// remote chat's mirror's), for the strip above the input.
 #[tauri::command]
 pub async fn chat_task_stages(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
-) -> Result<Option<Vec<StageRow>>, String> {
-    autopilot::task_stages(&core, &dialog_id).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::TaskStages { dialog_id }))
+        .await
 }
 
 #[tauri::command]
 pub async fn chat_get_messages_around(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     message_id: String,
     before: Option<usize>,
     after: Option<usize>,
-) -> Result<MessagePage, String> {
-    api::chat_get_messages_around(&core.db, message_id, before, after).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::GetMessagesAround {
+            message_id,
+            before,
+            after,
+        }))
+        .await
 }
 
 #[tauri::command]
 pub async fn chat_get_message_body(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     message_id: String,
-) -> Result<String, String> {
-    api::chat_get_message_body(&core.db, message_id).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::GetMessageBody {
+            message_id,
+        }))
+        .await
 }
 
 #[tauri::command]
-pub async fn chat_create_dialog(core: State<'_, Core>, dialog: NewDialog) -> Result<(), String> {
-    api::chat_create_dialog(&core.db, dialog).await
+pub async fn chat_create_dialog(
+    backend: State<'_, DesktopConnection>,
+    dialog: NewDialog,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let NewDialog {
+        id,
+        title,
+        created_at,
+        updated_at,
+        project_id,
+    } = dialog;
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::CreateDialog {
+            id,
+            title,
+            created_at,
+            updated_at,
+            project_id,
+        }))
+        .await
 }
 
 #[tauri::command]
 pub async fn chat_update_message(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     message_id: String,
     patch: MessagePatch,
 ) -> Result<(), String> {
@@ -279,12 +323,12 @@ pub async fn chat_update_message(
         message_id: message_id.clone(),
         patch,
     };
-    answer(remote.route_message(&message_id, request).await)
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn chat_rename_dialog(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     title: String,
 ) -> Result<(), String> {
@@ -292,28 +336,30 @@ pub async fn chat_rename_dialog(
         dialog_id: dialog_id.clone(),
         title,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 #[tauri::command]
 pub async fn chat_delete_dialog(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
 ) -> Result<(), String> {
-    remote.delete(&dialog_id).await.map_err(|fail| fail.message)
+    backend.call(Request::ChatDelete { dialog_id }).await
 }
 
 /// What moving the chat to `host` would do, and whether it can (6.8).
 #[tauri::command]
 pub async fn cloud_move_preflight(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     host: String,
-) -> Result<rovik_client::MovePreflight, String> {
-    remote
-        .move_preflight(&dialog_id, &host)
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::MovePreflight {
+            dialog_id,
+            host,
+        }))
         .await
-        .map_err(|fail| fail.message)
 }
 
 /// Moves the chat to `host` (6.8). `start` is how the app would start it:
@@ -321,15 +367,18 @@ pub async fn cloud_move_preflight(
 /// comes on `cloud-event`.
 #[tauri::command]
 pub async fn cloud_move_chat(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     host: String,
     start: Option<StartRequest>,
-) -> Result<(), String> {
-    remote
-        .move_chat(&dialog_id, &host, start)
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::MoveChat {
+            dialog_id,
+            host,
+            start,
+        }))
         .await
-        .map_err(|fail| fail.message)
 }
 
 /// Moves the chat back from its host (6.8). `start` is how the app would
@@ -337,87 +386,109 @@ pub async fn cloud_move_chat(
 /// Progress comes on `cloud-event`.
 #[tauri::command]
 pub async fn cloud_move_back(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     start: Option<StartRequest>,
-) -> Result<(), String> {
-    remote
-        .move_back(&dialog_id, start)
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::MoveBack {
+            dialog_id,
+            start,
+        }))
         .await
-        .map_err(|fail| fail.message)
 }
 
 /// "Cancel move": the chat is where it was before its move (6.8).
 #[tauri::command]
 pub async fn cloud_cancel_move(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
-) -> Result<(), String> {
-    remote
-        .cancel_move(&dialog_id)
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::CancelMove { dialog_id }))
         .await
-        .map_err(|fail| fail.message)
 }
 
 /// The ports forwarded for each remote chat's pages (D20): each port its
 /// servers opened on its host, and the port here that leads there. Changes
 /// come on `cloud-event` (`ports`).
 #[tauri::command]
-pub fn cloud_forwarded_ports(
-    remote: State<'_, Arc<Remote>>,
-) -> HashMap<String, Vec<rovik_client::ForwardedPort>> {
-    remote.all_forwarded_ports()
+pub async fn cloud_forwarded_ports(
+    backend: State<'_, DesktopConnection>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::ForwardedPorts))
+        .await
 }
 
 /// "Re-sync this chat" (6.3): a remote chat's rows again from its host, in
 /// place of the mirror's. The chat and its input's draft stay.
 #[tauri::command]
 pub async fn chat_resync_dialog(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
-) -> Result<(), String> {
-    remote
-        .resync_chat(&dialog_id)
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::ResyncDialog {
+            dialog_id,
+        }))
         .await
-        .map_err(|fail| fail.message)
 }
 
 #[tauri::command]
 pub async fn chat_search(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     query: String,
     project_id: Option<String>,
     limit: Option<usize>,
-) -> Result<Vec<SearchHit>, String> {
-    api::chat_search(&core.db, query, project_id, limit).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::Search {
+            query,
+            project_id,
+            limit,
+        }))
+        .await
 }
 
 /// The sends of the project's chats a window that ended left unanswered:
 /// this window judges them as it would its own after a restart.
 #[tauri::command]
 pub async fn chat_unsettled_sends(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     project_id: Option<String>,
-) -> Result<Vec<rovik_core::chat_db::store::UnsettledSend>, String> {
-    api::chat_unsettled_sends(&core.db, project_id).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::UnsettledSends {
+            project_id,
+        }))
+        .await
 }
 
 #[tauri::command]
 pub async fn chat_messages_answered(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     message_ids: Vec<String>,
-) -> Result<Vec<String>, String> {
-    api::chat_messages_answered(&core.db, message_ids).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::MessagesAnswered {
+            message_ids,
+        }))
+        .await
 }
 
 /// Which of these messages are stored: one sent to a run while it worked
 /// is, once the run read it (steering-plan.md, 3.7).
 #[tauri::command]
 pub async fn chat_messages_stored(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     message_ids: Vec<String>,
-) -> Result<Vec<String>, String> {
-    api::chat_messages_stored(&core.db, message_ids).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::MessagesStored {
+            message_ids,
+        }))
+        .await
 }
 
 /// An image or a PDF attached in the chat input, stored until the message
@@ -427,10 +498,14 @@ pub async fn chat_messages_stored(
 /// image's size.
 #[tauri::command]
 pub async fn chat_store_attachment(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     request: tauri::ipc::Request<'_>,
-) -> Result<attachments::Stored, String> {
-    attachments::store_attached(&core.db, body_bytes(request.body())?).await
+) -> Result<serde_json::Value, String> {
+    backend
+        .desktop(DesktopRequest::from(ChatRequest::StoreAttachment {
+            bytes: body_bytes(request.body())?,
+        }))
+        .await
 }
 
 /// A command's raw body as bytes. Where the webview blocks the IPC's custom
@@ -451,26 +526,35 @@ fn body_bytes(body: &InvokeBody) -> Result<Vec<u8>, String> {
 /// Debounced save of the chat input's unsent text (one row per chat).
 #[tauri::command]
 pub async fn chat_save_composer_draft(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     content: String,
-) -> Result<(), String> {
-    api::chat_save_composer_draft(&core.db, dialog_id, content).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::SaveComposerDraft {
+            dialog_id,
+            content,
+        }))
+        .await
 }
 
 /// The chat's unsent input text, if any (restored on restart / tab switch).
 #[tauri::command]
 pub async fn chat_get_composer_draft(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
-) -> Result<Option<String>, String> {
-    api::chat_get_composer_draft(&core.db, dialog_id).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::GetComposerDraft {
+            dialog_id,
+        }))
+        .await
 }
 
 /// Saves the model and effort a chat uses, so reopening it continues with them.
 #[tauri::command]
 pub async fn chat_set_model(
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
     model: ChatModel,
 ) -> Result<(), String> {
@@ -478,16 +562,18 @@ pub async fn chat_set_model(
         dialog_id: dialog_id.clone(),
         model,
     };
-    route(&remote, &dialog_id, request).await
+    backend.call(request).await
 }
 
 /// The chat's saved model and effort, if any.
 #[tauri::command]
 pub async fn chat_get_model(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     dialog_id: String,
-) -> Result<Option<ChatModel>, String> {
-    api::chat_get_model(&core.db, dialog_id).await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(ChatRequest::GetModel { dialog_id }))
+        .await
 }
 
 #[cfg(test)]

@@ -240,7 +240,7 @@ async fn without_the_chat_resolving_the_sync_waits() {
     assert_eq!(bar.sync.as_ref(), Some(&sync), "the bar says why");
 
     // Keep the older copy: the bar stops asking.
-    app.remote.keep_older_copy(CHAT);
+    app.remote.keep_older_copy(CHAT).unwrap();
     let bar = app.remote.overlay_status(CHAT).await.unwrap();
     assert_eq!(bar.sync, None);
     assert_eq!(read(&root.join("src/main.rs")), "fn main() { remote() }\n");

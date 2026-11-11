@@ -2,7 +2,7 @@
 // folder is on the server, is read from its latest revision (U04).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { remoteContextText } from './contextMode';
+import { remoteContextText, readContextFile } from './contextMode';
 
 let revision: number | null = 7;
 const calls: { cmd: string; args: any }[] = [];
@@ -10,6 +10,7 @@ const calls: { cmd: string; args: any }[] = [];
   __TAURI_INTERNALS__: {
     invoke: async (cmd: string, args: any) => {
       calls.push({ cmd, args });
+      if (cmd === 'clm_read_file') return `Task for ${args.dialogId}`;
       if (cmd === 'clm_status') return { revision, realPath: null };
       if (cmd === 'clm_read_revision') return `[[LIVE_CONTEXT revision=${args.number} turns=2]]`;
       return null;
@@ -25,4 +26,12 @@ test('a remote chat’s context file is read from its latest revision', async ()
   );
   revision = null;
   assert.equal(await remoteContextText('c1'), null, 'none yet: nothing to show');
+});
+
+test('task cards are read from their owner without resolving a mounted path', async () => {
+  calls.length = 0;
+  assert.equal(await readContextFile('source-chat', '@context/TASK.md'), 'Task for source-chat');
+  assert.deepEqual(calls, [
+    { cmd: 'clm_read_file', args: { dialogId: 'source-chat', path: '@context/TASK.md' } },
+  ]);
 });

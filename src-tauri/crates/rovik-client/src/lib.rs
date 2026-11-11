@@ -32,11 +32,17 @@ mod client;
 pub mod connection_test;
 mod connector;
 pub mod deploy;
+pub mod desktop_api;
+pub mod desktop_backend;
+pub mod desktop_connection;
+mod desktop_events;
+pub mod desktop_session;
 pub mod host_settings;
 pub mod host_shell;
 mod hosts;
 pub mod hosts_page;
 mod http;
+pub mod local_backend;
 pub mod mcp_sign_in;
 mod packs;
 pub mod provider_keys;
@@ -59,3 +65,40 @@ pub use remote::{
     ApprovalPolicy, CloudEvent, CloudSink, ForwardedPort, HandedSync, MovePreflight, OpenPage,
     PageToOpen, Remote, LOCAL_ONLY,
 };
+
+pub mod terminal;
+pub mod util;
+
+pub mod filesystem;
+
+mod desktop_task;
+
+pub mod shared_state;
+
+/// Replayable shared desktop events.
+pub mod desktop_journal;
+
+/// Shared Git panel service.
+pub mod git;
+/// Shared Git merge and rebase service.
+pub mod git_sync;
+
+/// Backend-owned language servers and rust-analyzer management.
+pub mod lsp;
+
+/// Backend-owned Chrome installation and client progress observers.
+pub mod browser_install;
+
+/// Private routing of one-shot remote page requests to UI clients.
+pub mod desktop_pages;
+
+/// Backend-owned editor formatter discovery and execution.
+pub mod formatter;
+
+/// Shared workload controls and client-owned priority.
+pub mod workload;
+
+mod maintenance;
+
+/// Embedded backend compatibility with native project claims.
+pub mod project_ownership;

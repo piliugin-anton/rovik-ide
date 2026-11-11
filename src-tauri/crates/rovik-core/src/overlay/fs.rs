@@ -1657,6 +1657,12 @@ impl OverlayFs {
 
     /// Saves the list of changes, so the overlay can be opened again.
     pub fn save(&self) {
+        let _ = self.save_checked();
+    }
+
+    /// Saves the current manifest, reporting failure so an upgrade cannot
+    /// release the only in-memory copy of changes that were not persisted.
+    pub fn save_checked(&self) -> io::Result<()> {
         let _one = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         // The list and the files it no longer names, taken together.
         let (changes, next_file, trash) = {
@@ -1668,7 +1674,8 @@ impl OverlayFs {
             inner.saved_at = Some(Instant::now());
             (changes, inner.next_file, std::mem::take(&mut inner.trash))
         };
-        if write_manifest(&self.store, next_file, changes).is_ok() {
+        let result = write_manifest(&self.store, next_file, changes);
+        if result.is_ok() {
             let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
             for f in trash {
                 handles.remove(&f);
@@ -1679,6 +1686,7 @@ impl OverlayFs {
             inner.trash.extend(trash);
             inner.dirty = true;
         }
+        result
     }
 
     /// Deletes files in the overlay's folders that its list of changes

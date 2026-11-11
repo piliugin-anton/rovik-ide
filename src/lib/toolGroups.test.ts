@@ -345,3 +345,41 @@ describe('domainName', () => {
     assert.equal(domainName(undefined), undefined);
   });
 });
+
+describe('background command labels', () => {
+  it('separates starts, foreground calls, output and stops', () => {
+    const groups = groupToolCalls([
+      call('bash', { command: 'python3 -m http.server 8001', background: true }),
+      call('bash', { command: 'git status' }),
+      call('background', { action: 'output', id: 'bg1' }),
+      call('background', { action: 'stop', id: 'bg1' }),
+    ]);
+    assert.equal(groups.length, 4);
+    assert.deepEqual(
+      groups.map(
+        (g) =>
+          describeGroup(
+            g.name,
+            g.calls.map((c) => JSON.parse(c.arguments)),
+            false
+          ).verb
+      ),
+      ['Started', 'Ran', 'Checked on', 'Stopped']
+    );
+    assert.equal(
+      describeGroup('background', [{ action: 'stop', id: 'bg1' }], true).verb,
+      'Stopping'
+    );
+  });
+  it('skips entire quoted environment assignments when naming commands', () => {
+    for (const command of [
+      "USER_AGENT='Mozilla/5.0 (X11; Linux x86_64)' python3 -m http.server",
+      'A="one two" B=three /usr/bin/python3 script.py',
+      "A=prefix'with spaces'suffix python3 script.py",
+      'A=one\\ two python3 script.py',
+    ])
+      assert.equal(commandName(command), 'python3', command);
+    assert.equal(commandName('"/some path/my command" --flag'), 'my command');
+    assert.equal(commandName("A='only an assignment'"), undefined);
+  });
+});

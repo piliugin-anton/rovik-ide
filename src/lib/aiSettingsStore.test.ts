@@ -27,6 +27,7 @@ import type { PersistedAiSettings } from './aiSettings';
 import { DEFAULT_PERMISSIONS } from './permissions';
 import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './subagentSettings';
 import type { Provider } from '../types';
+import { reconnectBackend } from './backendSession';
 
 const provider = (id: string, models: string[]): Provider => ({
   id,
@@ -202,5 +203,39 @@ test('ai settings store: another window’s save is read in when the revision sa
     assert.equal(aiPermissions().checklist, 'always');
   } finally {
     dispose();
+  }
+});
+
+test('ai settings store: reconnect restores saved connectors after a failed load without saving defaults', async () => {
+  const f = file({ ...saved, providers: [], loadFailed: true });
+  await reloadAiSettings();
+  assert.equal(aiSettingsLoadFailed(), true);
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      __TAURI_INTERNALS__: {
+        invoke: async (command: string) => assert.equal(command, 'desktop_reconnect'),
+      },
+    },
+  });
+  const dispose = createRoot((dispose) => {
+    followAiSettingsRevision();
+    return dispose;
+  });
+  try {
+    f.set(saved);
+    await reconnectBackend();
+    assert.deepEqual(aiProviders(), saved.providers);
+    assert.equal(aiSettingsLoadFailed(), false);
+    assert.equal(f.saves.length, 0);
+    dispose();
+    const loads = f.loads();
+    await reconnectBackend();
+    assert.equal(f.loads(), loads, 'disposed windows stop following reconnections');
+  } finally {
+    dispose();
+    if (original) Object.defineProperty(globalThis, 'window', original);
+    else Reflect.deleteProperty(globalThis, 'window');
   }
 });

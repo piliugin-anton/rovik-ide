@@ -102,6 +102,70 @@ impl Core {
         self.events.agent(&event);
     }
 
+    /// Why an automatic host replacement must retain this core. The caller must
+    /// first prevent new requests and remote producers from starting work.
+    pub fn replacement_blocker(&self) -> Option<&'static str> {
+        self.replacement_blocker_inner(false)
+    }
+
+    /// Drains unused Linux and macOS virtual and dependent chat volumes for an upgrade.
+    /// The host must exclude clients and pause producers throughout this call.
+    /// A busy mount or any retained work leaves the existing owner in place.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn prepare_replacement(&self) -> Result<(), String> {
+        if let Some(reason) = self.replacement_blocker_inner(true) {
+            return Err(reason.into());
+        }
+        self.vfs.unmount_if_unused()?;
+        crate::overlay::chats::drain_for_upgrade()?;
+        // A kernel writer could have created a file between the empty check
+        // and unmount. Keep those bytes in this host even after detachment.
+        self.replacement_blocker()
+            .map_or(Ok(()), |reason| Err(reason.into()))
+    }
+
+    fn replacement_blocker_inner(&self, drain_mount: bool) -> Option<&'static str> {
+        let activity = crate::rt::activity_epoch();
+        if crate::rt::has_blocking_work() {
+            return Some("Blocking operations are still finishing");
+        }
+        if crate::memory_semantic::active() {
+            return Some("Memory indexing or model preparation is still running");
+        }
+        if crate::connectors::setup_active() {
+            return Some("Connector setup is still running");
+        }
+        let status = crate::agent_run::agent_status(self);
+        if !crate::chat_hold::held_here().is_empty()
+            || !status.runs.is_empty()
+            || !status.subagents.is_empty()
+            || !status.driving.is_empty()
+            || !status.approvals.is_empty()
+            || !status.questions.is_empty()
+        {
+            return Some("Chats are still at work or waiting for input");
+        }
+        if crate::command_tool::background::retains_work() {
+            return Some("Background commands or unread command results remain");
+        }
+        if !drain_mount && crate::overlay::chats::retains_views() {
+            return Some("Chat filesystem views are still open");
+        }
+        if !drain_mount && self.vfs.mountpoint().is_some() {
+            return Some("The virtual filesystem is still mounted");
+        }
+        match self.vfs.list("") {
+            Ok(entries) if entries.is_empty() => {
+                if activity == crate::rt::activity_epoch() {
+                    None
+                } else {
+                    Some("Background activity changed while checking; retry the upgrade")
+                }
+            }
+            _ => Some("Virtual files remain in memory or their state could not be checked"),
+        }
+    }
+
     /// As the process exits: no headless Chrome, MCP server or command the
     /// agent left running, no dead mount where the virtual files were,
     /// paused commands resumed and the workload's history written, and the
@@ -115,7 +179,12 @@ impl Core {
         let _ = self.vfs.unmount();
         crate::overlay::chats::close_all();
         crate::workload::shutdown();
-        self.db.mark_clean_exit();
+        // Detached writes share the same queue. Flush accepted persistence
+        // before a retiring host releases its lifetime ownership lock.
+        match self.db.write(|_| Ok(())).await {
+            Ok(()) => self.db.mark_clean_exit(),
+            Err(error) => log::error!("Could not flush chat persistence at shutdown: {error}"),
+        }
     }
 }
 
@@ -148,11 +217,56 @@ mod tests {
         let paths = Paths::new(data.clone(), dir.0.join("config"));
         let core = Core::new(paths, Arc::new(Recorder(Default::default()))).unwrap();
         assert!(data.join("chats.db").is_file());
+        assert_eq!(core.replacement_blocker(), None);
+        let hold = crate::chat_hold::take("upgrade-held").unwrap();
+        assert!(core.replacement_blocker().unwrap().contains("Chats"));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(core.prepare_replacement().unwrap_err().contains("Chats"));
+        drop(hold);
+        core.vfs.write_unmounted("kept.txt", b"unsaved").unwrap();
+        assert!(core
+            .replacement_blocker()
+            .unwrap()
+            .contains("Virtual files"));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(core
+            .prepare_replacement()
+            .unwrap_err()
+            .contains("Virtual files"));
+        core.vfs.remove("kept.txt").unwrap();
+        assert_eq!(core.replacement_blocker(), None);
+
+        let (release, blocked) = std::sync::mpsc::channel();
+        let task = crate::rt::spawn_blocking(move || blocked.recv().unwrap());
+        drop(task); // Losing the caller must not lose the upgrade blocker.
+        assert!(core.replacement_blocker().unwrap().contains("Blocking"));
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::rt::has_blocking_work() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        core.vfs.pretend_mounted(dir.0.join("mounted"));
+        assert!(core.replacement_blocker().unwrap().contains("mounted"));
         assert_eq!(crate::overlay::chats::data_dir(), Some(data.clone()));
         assert_eq!(core.paths.log_dir, data);
         let marker = || std::fs::read_to_string(data.join("chats.db.running")).unwrap();
         assert_eq!(marker(), "running");
-        crate::rt::block_on(core.shutdown());
+        let (release, blocked) = std::sync::mpsc::channel();
+        core.db.write_detached(move |_| {
+            blocked.recv().unwrap();
+            Ok(())
+        });
+        let closing = core.clone();
+        let shutdown = crate::rt::spawn(async move { closing.shutdown().await });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must join accepted database writes"
+        );
+        assert_eq!(marker(), "running");
+        release.send(()).unwrap();
+        crate::rt::block_on(shutdown).unwrap();
         assert_eq!(marker(), "clean", "a clean exit");
     }
 

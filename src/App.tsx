@@ -1,3 +1,6 @@
+import { backendProject, onBackendRestored } from './lib/backendSession';
+import { startPageRequests } from './lib/pageRequests';
+import { startBackendEvents } from './lib/backendEvents';
 import {
   batch,
   createSignal,
@@ -106,7 +109,7 @@ import {
   withPage,
   type EditorTab,
 } from './lib/editorTabs';
-import { closeTabsOfClosedPorts, frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
+import { closeTabsOfClosedPorts, frameUrl, setPageOpener } from './lib/browserTabs';
 import { isMarkdownLanguage } from './lib/markdownView';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
@@ -121,8 +124,7 @@ import {
 import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
-import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
-import { isLiveContextPath } from './lib/contextDoc';
+import { contextRealPath, isContextPath, readContextFile } from './lib/contextMode';
 import { chatStore } from './lib/chatStore';
 import { overlayFile } from './lib/overlay';
 import { notify } from './lib/notifications';
@@ -136,8 +138,8 @@ import { startSandbox } from './lib/sandboxStartup';
 import { startWsl } from './lib/wslStartup';
 import { startUpdates } from './lib/updates';
 import { startHostUpdates } from './lib/hostUpdates';
-import { initAgentRuns, onShowChat } from './lib/agentRuns';
-import { cloud, hostName, initCloud } from './lib/cloud';
+import { onShowChat } from './lib/agentRuns';
+import { cloud } from './lib/cloud';
 import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
@@ -164,6 +166,9 @@ export default function App() {
   /** The project whose tabs are being opened again: until they are, the
    *  tabs shown aren't kept as its (showWithTabs). */
   const [tabsComing, setTabsComing] = createSignal<string | null>(null);
+  const [openingProject, setOpeningProject] = createSignal(true);
+  const [preparingProject, setPreparingProject] = createSignal(false);
+  const [loadingChats, setLoadingChats] = createSignal(false);
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -173,9 +178,10 @@ export default function App() {
   onMount(() => void startWsl());
   // Agent runs live in the backend: follow them from the start, whichever
   // sidebar tab is open (approvals show in the editor too).
-  onMount(() => void initAgentRuns());
-  // The cloud hosts' connections and the chats' moves, likewise.
-  onMount(() => void initCloud());
+  onMount(() => {
+    const stop = startBackendEvents();
+    onCleanup(stop);
+  });
   // The web tools' browser: downloaded if it's missing (in the background).
   onMount(() => void startBrowser());
 
@@ -309,6 +315,21 @@ export default function App() {
   createEffect(() => {
     if (!restoringProject() && currentProject() !== undefined && !tree.loading()) {
       dismissBootSplash();
+    }
+  });
+
+  // Only project transitions wait for folder reads; expanding a folder later
+  // keeps its existing inline loader instead of covering the whole window.
+  createEffect(() => {
+    if (
+      openingProject() &&
+      !preparingProject() &&
+      !restoringProject() &&
+      !tabsComing() &&
+      currentProject() !== undefined &&
+      !tree.loading()
+    ) {
+      setOpeningProject(false);
     }
   });
 
@@ -492,26 +513,34 @@ export default function App() {
 
   /** Opens a project folder: Files, Chat and Git switch to it. */
   async function openProjectAt(folder: string) {
-    if (folder === rootPath()) return;
-    // Open in another window (or a copy sharing its chats): that one comes
-    // to the front instead (lib/instances.ts).
-    if (!(await checkProject(folder))) return;
-    if (!(await settleUnsavedTabs('project'))) return;
-    // Chosen meanwhile (the dialog was open), or the same one again.
-    if (folder === rootPath()) return;
-    // Its tabs as the window that had it last left them, this one or
-    // another (checked above: none has it now).
-    const session = await savedProjectSession(folder);
-    // Claimed elsewhere since the check, if it came to that.
-    if (!(await claimProject(folder))) return;
-    // The project left keeps its tabs for coming back to it.
-    void keepTabsNow();
-    for (const m of monaco.editor.getModels()) m.dispose();
-    // The old project's change marks; its tabs close below.
-    for (const { absPath } of markedFiles()) clearGitBase(absPath);
-    setSelectedFileIds(new Set<string>());
-    setLastSelectedId(null);
-    await showWithTabs(folder, session);
+    if (preparingProject() || folder === rootPath()) return;
+    batch(() => {
+      setPreparingProject(true);
+      setOpeningProject(true);
+    });
+    try {
+      // Open in another window (or a copy sharing its chats): that one comes
+      // to the front instead (lib/instances.ts).
+      if (!(await checkProject(folder))) return;
+      if (!(await settleUnsavedTabs('project'))) return;
+      // Chosen meanwhile (the dialog was open), or the same one again.
+      if (folder === rootPath()) return;
+      // Its tabs as the window that had it last left them, this one or
+      // another (checked above: none has it now).
+      const session = await savedProjectSession(folder);
+      // Claimed elsewhere since the check, if it came to that.
+      if (!(await claimProject(folder))) return;
+      // The project left keeps its tabs for coming back to it.
+      void keepTabsNow();
+      for (const m of monaco.editor.getModels()) m.dispose();
+      // The old project's change marks; its tabs close below.
+      for (const { absPath } of markedFiles()) clearGitBase(absPath);
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
+      await showWithTabs(folder, session);
+    } finally {
+      setPreparingProject(false);
+    }
   }
 
   /** `folder` becomes the project shown, its tabs as they were left, if kept. */
@@ -707,8 +736,19 @@ export default function App() {
       const rel = toRelativePath(toAbsolutePath(path, root), root);
       if (await openChatVersion(request.dialogId, rel, request)) return;
     }
-    const abs = await resolveOpenPath(path, root);
-    if (!abs && (await openRemoteContext(path, request))) return;
+    let abs: string | null;
+    if (isContextPath(path)) {
+      const dialogId = request.dialogId ?? chatStore.state.activeId;
+      if (!dialogId) return;
+      // Keep local mounted files editable. A remote mount belongs to its host;
+      // missing mounts use an owner-routed text snapshot instead.
+      const mounted = await contextRealPath(dialogId, path);
+      if (mounted && (await pathExists(mounted))) abs = mounted;
+      else {
+        await openContextFile(path, { ...request, dialogId });
+        return;
+      }
+    } else abs = await resolveOpenPath(path, root);
     if (!abs) {
       notify({
         kind: 'warning',
@@ -877,27 +917,27 @@ export default function App() {
     );
     return true;
   }
-  /**
-   * A remote chat's context file, read-only from its latest revision: the
-   * folder it's in is on the server (U04). False when `path` isn't that
-   * file, or the chat isn't remote.
-   */
-  async function openRemoteContext(path: string, request: OpenInEditor): Promise<boolean> {
-    const chat = chatStore.state.active;
-    if (!chat?.place || !isLiveContextPath(path)) return false;
-    const text = await remoteContextText(chat.id).catch(() => null);
-    if (text === null) return false;
-    await openComparison(
-      `context:${chat.id}`,
-      {
-        title: `LIVE_CONTEXT.md (on ${hostName(chat.place.host, cloud.hosts)})`,
-        fileName: 'LIVE_CONTEXT.md',
-        before: text,
-        after: text,
-      },
-      request
-    );
-    return true;
+  /** Context links name their originating chat, independent of the selected chat. */
+  async function openContextFile(path: string, request: OpenInEditor): Promise<void> {
+    const dialogId = request.dialogId ?? chatStore.state.activeId;
+    if (!dialogId) return;
+    try {
+      const text = await readContextFile(dialogId, path);
+      const name =
+        path === '@context' ? 'LIVE_CONTEXT.md' : path.split(/[\\/]/).pop() || 'LIVE_CONTEXT.md';
+      await openComparison(
+        `context:${dialogId}:${path}`,
+        { title: name, fileName: name, before: text, after: text },
+        request
+      );
+    } catch (error) {
+      notify({
+        kind: 'warning',
+        title: `Can't open ${path}`,
+        message: String(error),
+        timeout: 8_000,
+      });
+    }
   }
   /**
    * The file a path from the chat names: relative to the project, absolute,
@@ -914,6 +954,14 @@ export default function App() {
   // Which paths mentioned in the chat are files in this project (or the
   // agent's context folder).
   setProjectFileResolver(async (path) => {
+    if (isContextPath(path)) {
+      const dialogId = chatStore.state.activeId;
+      if (!dialogId) return null;
+      return readContextFile(dialogId, path).then(
+        () => path,
+        () => null
+      );
+    }
     const abs = await resolveOpenPath(path, rootPath());
     if (!abs || !(await pathExists(abs))) return null;
     return (await dirEntryCount(abs, 1)) === null ? abs : null; // a file, not a folder
@@ -1318,7 +1366,7 @@ export default function App() {
   // "Opened ports" opens a page again; the app asks for a remote chat's.
   setPageOpener(openPageTab);
   onCleanup(() => setPageOpener(null));
-  onMount(() => onCleanup(onPageWanted(openPageTab)));
+  onMount(() => onCleanup(startPageRequests(openPageTab)));
 
   /** The active tab's path, when it's a file's: its editor shows. */
   const activeFilePath = createMemo(() => {
@@ -1989,6 +2037,27 @@ export default function App() {
   );
   onCleanup(() => clearTimeout(tabsTimer));
 
+  onMount(() => {
+    // The chat panel is lazy: its store may never have selected this project.
+    onCleanup(
+      backendProject(() => ({ root: rootPath(), projectId: currentProject()?.id ?? null }))
+    );
+    onCleanup(
+      onBackendRestored(async () => {
+        const root = rootPath();
+        if (!root) return;
+        // Register path identities again without replacing open text or editor models.
+        await Promise.all(
+          openFiles()
+            .filter((file) => !file.readOnly)
+            .map((file) => getPathId(file.path))
+        );
+        tree.refresh();
+        await invoke('start_file_watch', { pathStr: root });
+      })
+    );
+  });
+
   createEffect(async () => {
     const currentPath = rootPath();
     if (!currentPath) return;
@@ -2124,7 +2193,7 @@ export default function App() {
             >
               AI Chat
               <Show
-                when={chatStore.hasAnyRunning()}
+                when={loadingChats() || chatStore.hasAnyRunning()}
                 fallback={
                   <Show when={chatStore.hasAnyUnread()}>
                     <span
@@ -2137,8 +2206,8 @@ export default function App() {
               >
                 <span
                   class="sidebar-tab-spinner"
-                  title="The agent is working"
-                  aria-label="The agent is working"
+                  title={loadingChats() ? 'Loading chats' : 'The agent is working'}
+                  aria-label={loadingChats() ? 'Loading chats' : 'The agent is working'}
                   role="status"
                 />
               </Show>
@@ -2247,6 +2316,7 @@ export default function App() {
           >
             <ChatPanel
               rootPath={rootPath}
+              onLoadingChange={setLoadingChats}
               activeFileContext={activeFileContext}
               files={tree.files}
               projectId={() => {
@@ -2348,7 +2418,9 @@ export default function App() {
                 readOnlyMessage={
                   openFiles().find((f) => f.path === path)?.commit
                     ? 'Committed version — read-only.'
-                    : 'Stashed preview — read-only. Pop the stash to edit.'
+                    : path.startsWith('context:')
+                      ? 'Context snapshot — read-only. Reopen the file to refresh it.'
+                      : 'Stashed preview — read-only. Pop the stash to edit.'
                 }
               />
             )}
@@ -2378,6 +2450,17 @@ export default function App() {
           onPaste={handlePasteFile}
           onDelete={handleDeleteFile}
         />
+      </Show>
+      <Show when={openingProject()}>
+        <div
+          class="project-loading-overlay"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading project"
+        >
+          <span class="sidebar-tab-spinner" aria-hidden="true" />
+          <span>Loading...</span>
+        </div>
       </Show>
       <ConfirmDialogHost />
       <NewBranchDialogHost />

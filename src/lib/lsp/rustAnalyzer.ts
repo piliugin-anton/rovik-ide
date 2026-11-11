@@ -1,3 +1,4 @@
+import { onBackendRestored } from '../backendSession';
 // rustAnalyzer.ts
 //
 // Rust support in the editor: finds rust-analyzer, offers to download it,
@@ -76,6 +77,19 @@ function savePrefs(patch: Partial<Prefs>) {
 let current: { root: string; client: LspClient; binary: RaBinary } | null = null;
 /** The project Rust support was started (or offered) for. */
 let activeRoot: string | null = null;
+// Language-server initialization must not hold the rest of the UI's recovery open.
+function restoreRustSupport(): void {
+  void restartRustAnalyzer().catch((error) =>
+    notify({
+      id: NOTE_INSTALL,
+      kind: 'error',
+      title: 'Rust support couldn’t restart',
+      message: String(error),
+      actions: [{ label: 'Restart', run: restoreRustSupport }],
+    })
+  );
+}
+onBackendRestored(restoreRustSupport);
 /** "Not now" on the download offer: don't ask again this session. */
 let downloadDeclined = false;
 /** Install or update in progress. */
@@ -127,18 +141,17 @@ export function rustFileSaved(path: string) {
 }
 
 /** Restarts rust-analyzer for the current project (finding the binary again). */
-export function restartRustAnalyzer() {
+export async function restartRustAnalyzer(): Promise<void> {
   const root = activeRoot;
   if (!root) return;
-  void (async () => {
-    const binary = await find();
-    if (!binary) {
-      downloadDeclined = false;
-      offerDownload(root);
-      return;
-    }
-    await restartWith(root, binary);
-  })();
+  const binary = await find();
+  if (activeRoot !== root) return;
+  if (!binary) {
+    downloadDeclined = false;
+    offerDownload(root);
+    return;
+  }
+  await restartWith(root, binary);
 }
 
 /** Checks for a newer rust-analyzer now, and says so either way. */

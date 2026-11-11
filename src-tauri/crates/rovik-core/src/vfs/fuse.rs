@@ -851,6 +851,54 @@ impl FuseMount {
         })));
     }
 
+    /// Whether this handle still owns a serving session, including after an
+    /// unmount succeeded but joining the filesystem thread reported an error.
+    pub(crate) fn is_mounted(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Ordinary unmount refuses open files and working directories. Do not
+    /// consume the session until the kernel has accepted that operation.
+    pub(crate) fn unmount_if_unused(&mut self) -> Result<(), String> {
+        if self.session.is_none() {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Stdio;
+            let helper = ["fusermount3", "fusermount"]
+                .iter()
+                .find_map(|name| crate::process::find_on_path(name))
+                .ok_or("Cannot drain the virtual filesystem: install fuse3 and retry")?;
+            let status = crate::process::command(helper)
+                .args(["-u", "--"])
+                .arg(&self.mountpoint)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .status()
+                .map_err(|error| format!("Could not unmount the virtual filesystem: {error}"))?;
+            if !status.success() {
+                return Err("The virtual filesystem is still in use or could not be unmounted; close programs using it and retry".into());
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mac = self
+                .mac
+                .as_ref()
+                .ok_or("The macFUSE mount handle is missing; retry after restarting Rovik")?;
+            mac.unmount_if_unused()?;
+            self.mac.take();
+        }
+        self.vfs.set_listener(None);
+        if let Some(session) = self.session.take() {
+            session.join().map_err(|error| {
+                format!("Could not join the unmounted virtual filesystem: {error}")
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn unmount(mut self) -> Result<(), String> {
         self.unmount_inner()
     }

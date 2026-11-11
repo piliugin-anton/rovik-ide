@@ -6,7 +6,7 @@
 //
 //   node scripts/e2e/run.mjs --app <binary> --out <dir> [--driver webdriver|bridge]
 //        [--tauri-driver <path>] [--native-driver <path>] [--only <regex>]
-//        [--second-app <binary>]
+//        [--second-app <binary>] [--require-isolation] [--require-shared-backend] [--profile-id <id>]
 //
 // webdriver (Linux, Windows): starts tauri-driver, which starts the app
 // through WebKitWebDriver or msedgedriver. bridge (macOS, where WKWebView
@@ -26,6 +26,7 @@ import {
   appendFileSync,
 } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebDriver, Keys, sleep } from './webdriver.mjs';
 import { BridgeDriver } from './bridge.mjs';
@@ -40,6 +41,9 @@ const PROJECTS = join(WORK, 'projects');
 const DEMO = join(PROJECTS, 'demo');
 const MODEL_PORT = Number(args['model-port'] ?? 18080);
 const ONLY = args.only ? new RegExp(args.only, 'i') : null;
+const REQUIRE_ISOLATION = Boolean(args['require-isolation']);
+const REQUIRE_SHARED_BACKEND = Boolean(args['require-shared-backend']);
+const PROFILE_ID = args['profile-id'] ?? 'rovik-ide';
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
 const APP = resolve(args.app ?? '');
 const APPIMAGE = /\.AppImage$/i.test(APP);
@@ -51,6 +55,52 @@ const SECOND_APP = args['second-app']
   : DRIVER === 'webdriver'
     ? APP
     : null;
+
+// The acceptance builds have a distinct Tauri identifier. Windows known-folder
+// APIs ignore APPDATA overrides, so isolation must be part of both app builds.
+if (REQUIRE_SHARED_BACKEND) {
+  if (PLATFORM !== 'win32' || !SECOND_APP || PROFILE_ID !== 'rovik-ide-e2e')
+    throw new Error(
+      '--require-shared-backend requires Windows, a second app, and --profile-id rovik-ide-e2e'
+    );
+}
+
+function sharedBackendProcesses(stop = false) {
+  assert(REQUIRE_SHARED_BACKEND, 'backend process checks require an isolated profile');
+  const result = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-Command',
+      `
+    $ErrorActionPreference = 'Stop'
+    $hosts = @(Get-CimInstance Win32_Process | Where-Object {
+      $_.ExecutablePath -and
+      [IO.Path]::GetDirectoryName($_.ExecutablePath) -eq $env:E2E_BACKEND_IMAGES -and
+      [IO.Path]::GetFileName($_.ExecutablePath) -match '^rovik-backend-[0-9a-f]{64}\\.exe$'
+    })
+    ${stop ? '$hosts | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }' : ''}
+    ConvertTo-Json -Compress -InputObject @($hosts | ForEach-Object { $_.ProcessId })
+  `,
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        E2E_BACKEND_IMAGES: join(process.env.APPDATA, PROFILE_ID, 'desktop-backend', 'images'),
+      },
+    }
+  );
+  return JSON.parse(result);
+}
+
+async function backendEpoch() {
+  const batch = await d.exec(`return window.__TAURI_INTERNALS__.invoke('desktop_poll_events', {
+    scope: { projectId: null, chats: [] }, cursor: null
+  });`);
+  assert(typeof batch.cursor.epoch === 'string', 'backend returned an incarnation');
+  return batch.cursor.epoch;
+}
 
 // The app's looks for a new version (src-tauri/src/updates.rs) go to a port
 // nothing listens on, in every Rovik the run starts (each takes this
@@ -207,6 +257,28 @@ function launchRovik(argv, name, env = {}) {
   return startChild(SECOND_APP, argv, { name, env: { ...own, ...env } });
 }
 
+/** Published project claims, used to wait for a window to finish opening. */
+function heldBy(pid) {
+  const data =
+    PLATFORM === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support')
+      : PLATFORM === 'win32'
+        ? process.env.APPDATA
+        : join(WORK, 'app', 'data');
+  const claims = join(data, PROFILE_ID, 'open-projects');
+  if (!existsSync(claims)) return [];
+  return readdirSync(claims)
+    .filter((file) => file.endsWith('.json'))
+    .flatMap((file) => {
+      try {
+        const holder = JSON.parse(readFileSync(join(claims, file), 'utf8'));
+        return holder.pid === pid ? [holder] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
 /** `child`'s exit code, once it ends; fails after `timeout` ms. */
 function exited(child, timeout) {
   return new Promise((done, fail) => {
@@ -267,6 +339,20 @@ function askedToFront(logFile) {
   return text.split('asked this one to come to the front').length - 1;
 }
 
+/** Restore native focus after another app process owned the foreground. */
+async function focusDrivenProject() {
+  if (PLATFORM !== 'darwin') return;
+  const logFile = join(OUT, 'app.log');
+  const before = askedToFront(logFile);
+  const request = launchRovik([DEMO], 'focus-driven-project');
+  assert((await exited(request, 60_000)) === 0, 'the driven project handles activation');
+  await waitFor(() => askedToFront(logFile) > before, 'the driven window to receive activation');
+  await waitFor(
+    () => d.exec('return document.hasFocus()'),
+    'the driven window to have native focus'
+  );
+}
+
 /** The first line a child prints (the scripted model's base URL). */
 function firstLine(child, timeout = 15_000) {
   return new Promise((done, fail) => {
@@ -311,6 +397,23 @@ const MOD = PLATFORM === 'darwin' ? Keys.META : Keys.CTRL;
 
 /** A leftover instance would take the new launch (single instance) and the session would hang. */
 function killApp() {
+  if (REQUIRE_SHARED_BACKEND) {
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `
+      $ErrorActionPreference = 'Stop'
+      Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -eq $env:E2E_UI_APP -or $_.ExecutablePath -eq $env:E2E_UI_SECOND_APP
+      } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
+    `,
+      ],
+      { env: { ...process.env, E2E_UI_APP: APP, E2E_UI_SECOND_APP: SECOND_APP }, timeout: 30_000 }
+    );
+    return;
+  }
   // By the launched binary's name: an installed build's may differ. An
   // AppImage's is the binary inside it.
   const name = APPIMAGE ? 'rovik-ide' : basename(APP) || 'rovik-ide';
@@ -372,14 +475,15 @@ if (!window.__e2e) {
     ce(...a);
   };
   window.alert = (m) => { window.__e2e.alerts.push(String(m)); push('alert', m); };
-  const seen = new WeakSet();
+  const seen = new WeakMap();
   new MutationObserver(() => {
     for (const n of document.querySelectorAll('.notification')) {
-      if (seen.has(n)) continue;
-      seen.add(n);
-      window.__e2e.notifications.push(n.innerText.replace(/\\n+/g, ' | '));
+      const text = n.innerText.replace(/\\n+/g, ' | ');
+      if (seen.get(n) === text) continue;
+      seen.set(n, text);
+      window.__e2e.notifications.push(text);
     }
-  }).observe(document.body, { childList: true, subtree: true });
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 return true;`;
 
@@ -701,6 +805,7 @@ async function contextMenu(target, item) {
 
 /** Adds a provider in Settings: its URL, a key, its name; `models` it lists. */
 async function addProvider(name, url, models) {
+  while (await d.exists('.notification-close')) await click('.notification-close');
   await click('.sidebar-settings-button');
   await click(
     await mark(
@@ -766,7 +871,19 @@ async function send(text) {
     60_000
   );
   await composer(text);
-  await keys(Keys.ENTER);
+  // A previous run can finish while text is being composed, and Enter can
+  // accept a completion instead of sending. Wait for Send and its acceptance.
+  await waitFor(
+    () => d.exists('.chat-send-button:not(.stop):not(:disabled)'),
+    'Send to be ready',
+    60_000
+  );
+  await click('.chat-send-button:not(.stop)');
+  await waitFor(
+    () =>
+      d.exec("return !document.querySelector('.chat-input-contenteditable')?.textContent.trim()"),
+    'the message to leave the composer'
+  );
 }
 
 const chatText = () => panelText('.chat-panel');
@@ -968,6 +1085,10 @@ async function run() {
     await step(
       'instances: another project opens in a window of its own, and only there',
       async () => {
+        const epoch = REQUIRE_SHARED_BACKEND ? await backendEpoch() : null;
+        const owners = REQUIRE_SHARED_BACKEND ? sharedBackendProcesses() : [];
+        if (REQUIRE_SHARED_BACKEND)
+          assert(owners.length === 1, 'exactly one backend before opening another window');
         const side = join(PROJECTS, 'side');
         write(join(side, 'side.txt'), 'a project of its own\n');
         const sideLog = join(OUT, 'app-side.log');
@@ -976,6 +1097,16 @@ async function run() {
         assert(second.exitCode === null, `the window on side ended: ${second.exitCode}`);
         moveAside(second.pid);
         try {
+          if (REQUIRE_SHARED_BACKEND) {
+            assert(
+              JSON.stringify(sharedBackendProcesses()) === JSON.stringify(owners),
+              'both UI windows share one backend process'
+            );
+            assert(
+              (await backendEpoch()) === epoch,
+              'opening another window preserves the backend'
+            );
+          }
           // A third on it: the second comes to the front, and the third ends.
           const third = launchRovik([side], 'third-on-side');
           assert((await exited(third, 60_000)) === 0, 'the third Rovik ended');
@@ -1003,9 +1134,37 @@ async function run() {
             'this window is still on demo'
           );
           assert(askedToFront(sideLog) > 1, 'the window on side asked to the front again');
+          if (REQUIRE_SHARED_BACKEND) {
+            // WM_CLOSE exercises the UI's normal detach/exit path, not just
+            // process death. The finally block still cleans up a failed close.
+            execFileSync(
+              'powershell.exe',
+              [
+                '-NoProfile',
+                '-Command',
+                `
+              $window = Get-Process -Id $env:E2E_UI_PID -ErrorAction Stop
+              if (-not $window.CloseMainWindow()) { throw 'The second UI has no closable window' }
+            `,
+              ],
+              { env: { ...process.env, E2E_UI_PID: String(second.pid) } }
+            );
+            assert((await exited(second, 15_000)) === 0, 'the second UI closes cleanly');
+          }
         } finally {
           second.kill();
           await exited(second, 15_000).catch(() => {});
+          await focusDrivenProject();
+        }
+        if (REQUIRE_SHARED_BACKEND) {
+          assert(
+            (await backendEpoch()) === epoch,
+            'closing another window preserves RPC and backend incarnation'
+          );
+          assert(
+            JSON.stringify(sharedBackendProcesses()) === JSON.stringify(owners),
+            'closing another window preserves the owner'
+          );
         }
       }
     );
@@ -1017,18 +1176,6 @@ async function run() {
       await step(
         'instances: New window starts without a project; the chats without one stay in the first',
         async () => {
-          const claims = join(WORK, 'app', 'data', 'rovik-ide', 'open-projects');
-          const heldBy = (pid) =>
-            readdirSync(claims)
-              .filter((f) => f.endsWith('.json'))
-              .map((f) => {
-                try {
-                  return JSON.parse(readFileSync(join(claims, f), 'utf8'));
-                } catch {
-                  return null;
-                }
-              })
-              .filter((holder) => holder?.pid === pid);
           const newWindows = () => {
             try {
               return execFileSync('pgrep', ['-f', 'rovik-ide --new-window'], { encoding: 'utf8' })
@@ -1099,6 +1246,61 @@ async function run() {
       'main.ts in the editor'
     );
   });
+
+  if (REQUIRE_SHARED_BACKEND) {
+    await step(
+      'shared backend: reconnect after a crash preserves unsaved editor text',
+      async () => {
+        const epoch = await backendEpoch();
+        await click('.monaco-editor .view-lines');
+        await keys([MOD, Keys.END]);
+        await keys(Keys.ENTER);
+        await typeKeys('// unsaved across backend crash');
+        await waitFor(
+          async () => (await tabs()).includes('main.ts •'),
+          'unsaved text before crash'
+        );
+        assert(
+          !readFileSync(join(DEMO, 'src', 'main.ts'), 'utf8').includes(
+            'unsaved across backend crash'
+          ),
+          'text has not been saved'
+        );
+        assert(sharedBackendProcesses(true).length === 1, 'terminated exactly the test backend');
+        await waitFor(
+          async () => (await d.bodyText()).includes('Backend connection interrupted'),
+          'backend failure notice',
+          30_000
+        );
+        await click(await buttonByText('Reconnect'));
+        await waitFor(
+          () => d.exec("return window.__TAURI_INTERNALS__.invoke('desktop_session_usable');"),
+          'a usable replacement session',
+          30_000
+        );
+        assert((await backendEpoch()) !== epoch, 'reconnect started a new backend incarnation');
+        assert(sharedBackendProcesses().length === 1, 'reconnect has exactly one owner');
+        assert(
+          (await panelText('.project-switcher-name')).includes('demo'),
+          'project remains open'
+        );
+        assert(
+          (await panelText('.monaco-editor .view-lines')).includes('unsaved across backend crash'),
+          'unsaved editor text survives'
+        );
+        assert((await tabs()).includes('main.ts •'), 'editor remains unsaved');
+        await click('.monaco-editor .view-lines');
+        await keys([MOD, 's']);
+        await waitFor(
+          () =>
+            readFileSync(join(DEMO, 'src', 'main.ts'), 'utf8').includes(
+              'unsaved across backend crash'
+            ),
+          'recovered editor can save through RPC'
+        );
+      }
+    );
+  }
 
   await step('editor: type, see it unsaved, save to disk', async () => {
     await click('.monaco-editor .view-lines');
@@ -1334,29 +1536,51 @@ async function run() {
     await keys([MOD, 'a'], Keys.BACKSPACE, Keys.ESC);
   });
 
-  await step('open: a changed file from the tree opens at its first change, lit', async () => {
-    // A change far down a long file, made outside the app (an editor, a
-    // script): the file opens with it in view and marked against git, not
-    // at its top.
-    const path = join(DEMO, 'long.ts');
-    write(path, readFileSync(path, 'utf8').replace('// line 200:', '// line 200 changed:'));
-    await click(row('long.ts'));
-    await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts opened');
-    await waitFor(() => d.exists('.monaco-editor .editor-reveal-flash'), 'the change lit', 5_000);
-    await waitFor(
-      async () => (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
-      'the change in view'
-    );
-    const shown = await panelText('.monaco-editor .view-lines');
-    assert(!shown.includes('line 1:'), 'the top of the file is out of view');
-    await waitFor(() => d.exists('.monaco-editor .git-line-modified'), 'the change marked', 5_000);
-    // And still in view once the light has faded.
-    await sleep(1600);
-    assert(
-      (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
-      'the change still in view after a moment'
-    );
-  });
+  await step(
+    'open: Files hides change marks; Git reveals and highlights the first change',
+    async () => {
+      // A change far down a long file, made outside the app (an editor, a
+      // script): Files opens plain text, while Git reveals and marks the change.
+      const path = join(DEMO, 'long.ts');
+      // Earlier editor steps left this tab open. Close it before the external
+      // write so this tests opening from disk, without racing its file watcher.
+      await click(row('long.ts'));
+      await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts selected');
+      await click('.tab.active .tab-close');
+      await waitFor(async () => !(await tabs()).includes('long.ts'), 'long.ts closed');
+      write(path, readFileSync(path, 'utf8').replace('// line 200:', '// line 200 changed:'));
+      await click(row('long.ts'));
+      await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts opened');
+      assert(
+        !(await d.exists('.monaco-editor .editor-reveal-flash')),
+        'Files does not flash changes'
+      );
+      assert(!(await d.exists('.monaco-editor .git-line-modified')), 'Files hides change marks');
+      await sidebar('Git');
+      const changed = '.git-file-row[title="long.ts: click to open with its changes marked"]';
+      await waitFor(() => d.exists(changed), 'Git to list the changed file');
+      await click(changed);
+      await waitFor(() => d.exists('.monaco-editor .editor-reveal-flash'), 'the change lit', 5_000);
+      await waitFor(
+        async () => (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
+        'the change in view'
+      );
+      const shown = await panelText('.monaco-editor .view-lines');
+      assert(!shown.includes('line 1:'), 'the top of the file is out of view');
+      await waitFor(
+        () => d.exists('.monaco-editor .git-line-modified'),
+        'the change marked',
+        5_000
+      );
+      // And still in view once the light has faded.
+      await sleep(1600);
+      assert(
+        (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
+        'the change still in view after a moment'
+      );
+      await sidebar('Files');
+    }
+  );
 
   await step('terminal: run a command', async () => {
     await openTerminal();
@@ -1376,7 +1600,7 @@ async function run() {
   // Bash up to 5.4 garbles an input line taller than the terminal: held
   // Backspace through a long paste blanked the row the caret moved up to.
   // A terminal here starts bash 4.4 to 5.4 with a file of its own
-  // (src-tauri/src/terminal/bash.sh), and has a paste that may not fit go
+  // (src-tauri/crates/rovik-client/src/terminal/bash.sh), and has a paste that may not fit go
   // on one row first, which wraps again once enough is deleted for it to
   // fit (src/lib/bashLine.ts). Asked of the terminal's own shell: bash 5.1
   // to 5.4 (from 5.1 on, with bracketed paste on as it is by default). A
@@ -1990,21 +2214,108 @@ async function run() {
     }
   });
 
-  await step('settings: add a model provider', () =>
-    addProvider('Fake', `http://127.0.0.1:${MODEL_PORT}/v1`, 2)
-  );
+  await step('settings: add a model provider', async () => {
+    await addProvider('Fake', `http://127.0.0.1:${MODEL_PORT}/v1`, 2);
+    // This fixture changes branches explicitly in the Git scenarios. Keep
+    // chat sends on that branch instead of leaving a branch question pending.
+    await click('.sidebar-settings-button');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.settings-menu-item')].find((b) => b.innerText.trim().startsWith('Agent runs'));`,
+        'page'
+      )
+    );
+    const offer = await mark(
+      `return [...document.querySelectorAll('.modal .setting-checkbox')].find((l) => l.innerText.includes('Offer a new chat a branch of its own'))?.querySelector('input[type="checkbox"]');`,
+      'branch-offer'
+    );
+    if (await d.exec('return document.querySelector(arguments[0]).checked', offer))
+      await click(offer);
+    await closeModal();
+  });
 
   await step('chat: a reply streams in', async () => {
     await sidebar('AI Chat');
     await waitFor(() => d.exists('.chat-input-contenteditable'), 'the chat');
     await send('Hello there, what is this project?');
     await waitFor(
-      async () => (await chatText()).includes('Echo of your message'),
-      'the reply',
+      async () =>
+        (await chatText()).includes('Echo of your message') &&
+        (await d.exists('.chat-send-button:not(.stop)')),
+      'the first reply and run completion',
       30_000
     );
-    await waitFor(() => d.exists('.chat-send-button:not(.stop)'), 'the run to end', 30_000);
+    assert((await chatText()).includes('Echo of your message'), 'the reply streamed in');
   });
+
+  if (REQUIRE_ISOLATION) {
+    await step('chat: opening and closing another window preserves the isolated view', async () => {
+      assert(SECOND_APP, '--require-isolation needs --second-app with the bridge driver');
+      const before = toolResults().length;
+      await send(
+        'Show the working directory.\n@tool bash {"command":"pwd"}\n@text Found the working directory.'
+      );
+      const result = await waitFor(() => toolResults()[before], 'the chat working directory');
+      const view = result
+        .split('\n')
+        .find((line) => line.startsWith('/'))
+        ?.trim();
+      assert(view && resolve(view) !== DEMO, `the chat must use an isolated view: ${result}`);
+      assert(existsSync(join(view, 'package.json')), `the mounted view exists: ${view}`);
+      const side = join(PROJECTS, 'mount-peer');
+      write(join(side, 'peer.txt'), 'another window\n');
+      const sideLog = join(OUT, 'app-mount-peer.log');
+      const second = launchRovik([side], 'mount-peer', { ROVIK_LOG_FILE: sideLog });
+      try {
+        // A request for its project is handled only once the other UI is ready.
+        await waitFor(
+          () => heldBy(second.pid).some((claim) => claim.path === side),
+          'the peer to open its project',
+          30_000
+        );
+        const probe = launchRovik([side], 'mount-peer-probe');
+        assert((await exited(probe, 60_000)) === 0, 'the peer owns its project');
+        await waitFor(() => askedToFront(sideLog) > 0, 'the peer to handle activation');
+        assert(second.exitCode === null, 'the other window remains open');
+        const writes = toolResults().length;
+        await send(
+          'Write in the isolated view.\n@tool write {"path":"window-isolation.txt","content":"private edit\\n"}\n@thinkslow 120\n@text Written.'
+        );
+        await waitFor(() => toolResults()[writes], 'the isolated write');
+        assert(
+          readFileSync(join(view, 'window-isolation.txt'), 'utf8') === 'private edit\n',
+          'the edit is in the view'
+        );
+        assert(
+          !existsSync(join(DEMO, 'window-isolation.txt')),
+          'the pending edit is absent from the project'
+        );
+        second.kill();
+        await exited(second, 15_000);
+        assert(
+          readFileSync(join(view, 'window-isolation.txt'), 'utf8') === 'private edit\n',
+          'closing the other window preserves the mount and edit'
+        );
+        assert(
+          !existsSync(join(DEMO, 'window-isolation.txt')),
+          'closing the other window preserves isolation'
+        );
+      } finally {
+        if (second.exitCode === null && second.signalCode === null) {
+          second.kill();
+          await exited(second, 15_000);
+        }
+        await focusDrivenProject();
+        if (await d.exists('.chat-send-button.stop')) {
+          await click('.chat-send-button.stop');
+          await waitFor(
+            async () => !(await d.exists('.chat-send-button.stop')),
+            'the test run to stop'
+          );
+        }
+      }
+    });
+  }
 
   /** Settings → Agent runs → "Open the files the agent edits". */
   async function openFilesAfterAgentEdits(on) {
@@ -2080,6 +2391,7 @@ async function run() {
       );
       const told = await notIsolated();
       if (told) {
+        assert(!REQUIRE_ISOLATION, `isolation is required: ${told}`);
         note(`the chat wasn't isolated: ${told}`);
         rmSync(join(DEMO, 'hello.txt'));
         return;
@@ -2097,6 +2409,20 @@ async function run() {
         });
       await click(await buttonByText('Undo'));
       await waitFor(() => !existsSync(join(DEMO, 'hello.txt')), 'the landing undone', 30_000);
+      // Undo deleted this file; do not leave its preview in the later restart
+      // fixture, which checks that existing files are restored.
+      if ((await tabs()).includes('hello.txt')) {
+        await click(
+          await mark(
+            `return [...document.querySelectorAll('.tab')].find((t) => t.innerText.split('\\n')[0] === 'hello.txt')?.querySelector('.tab-close');`,
+            'close-deleted-tab'
+          )
+        );
+        await waitFor(
+          async () => !(await tabs()).includes('hello.txt'),
+          'the deleted file tab to close'
+        );
+      }
     }
   );
 
@@ -2564,7 +2890,27 @@ async function main() {
       await d?.close();
     } catch {}
     for (const c of children) c.kill();
+    if (REQUIRE_SHARED_BACKEND) {
+      try {
+        sharedBackendProcesses(true);
+      } catch (error) {
+        report.runnerError = String(error);
+      }
+    }
   }
+  if (REQUIRE_SHARED_BACKEND && report.steps[0]?.ok) {
+    for (const prefix of [
+      'project: open',
+      'instances: another project',
+      'tree: expand',
+      'shared backend:',
+      'restart:',
+    ]) {
+      if (!report.steps.some((step) => step.name.startsWith(prefix)))
+        report.runnerError = `Required shared-backend scenario was not run: ${prefix}`;
+    }
+  }
+  writeReport();
   const failed = report.steps.filter((s) => !s.ok && !s.optional);
   log(`${report.steps.length - failed.length}/${report.steps.length} steps passed`);
   console.log(readFileSync(join(OUT, 'report.md'), 'utf8'));

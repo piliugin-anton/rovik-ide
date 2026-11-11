@@ -187,6 +187,11 @@ pub fn stop_for_user(chat: &str, id: &str) -> bool {
     running
 }
 
+/// Whether a replacement would lose a command or its unread result.
+pub(crate) fn retains_work() -> bool {
+    !all().is_empty()
+}
+
 /// `chat`'s commands still running, oldest first, as the chat's row of
 /// background tasks shows them.
 pub fn tasks(chat: &str) -> Vec<BackgroundTask> {
@@ -680,6 +685,7 @@ mod tests {
         assert!(beats(&root));
         assert_eq!(list(chat).len(), 1);
         assert_eq!(list(chat)[0].end, None);
+        assert!(retains_work(), "an unobserved command blocks replacement");
 
         let stopped = stop(chat, &first.status.id).unwrap();
         assert_eq!(stopped.status.end, Some(End::Stopped));
@@ -697,13 +703,21 @@ mod tests {
             &root,
             "echo one; while [ ! -e go ]; do sleep 0.05; done; echo two >&2; sleep 30",
         );
-        assert_eq!(first.output.trim(), "one");
-        std::fs::write(Path::new(&root).join("go"), "").unwrap();
         let id = first.status.id;
+        // Process startup can outlast the initial polling window on a busy
+        // runner. Release the second line only after observing the first.
+        let mut initial = first.output;
+        assert!(until(|| {
+            initial.push_str(&output(chat, &id).unwrap().output);
+            initial.ends_with('\n')
+        }));
+        assert_eq!(initial.trim(), "one");
+        assert_eq!(output(chat, &id).unwrap().output, "", "already read");
+        std::fs::write(Path::new(&root).join("go"), "").unwrap();
         let mut later = String::new();
         assert!(until(|| {
-            later = output(chat, &id).unwrap().output;
-            !later.is_empty()
+            later.push_str(&output(chat, &id).unwrap().output);
+            later.ends_with('\n')
         }));
         assert_eq!(
             later.trim(),
@@ -739,8 +753,9 @@ mod tests {
         );
         // Let the shell exit after start has answered. Its startup window
         // may pass before a busy CI runner even reaches `echo up`.
-        assert!(until(|| std::fs::metadata(Path::new(&root).join("beat"))
-            .is_ok_and(|m| m.len() > 0)));
+        assert!(until(
+            || std::fs::metadata(Path::new(&root).join("beat")).is_ok_and(|m| m.len() > 0)
+        ));
         std::fs::write(Path::new(&root).join("go"), "").unwrap();
         assert!(until(|| list(chat)
             .first()
@@ -767,6 +782,10 @@ mod tests {
         assert!(until(|| list(chat)
             .first()
             .is_some_and(|s| s.end == Some(End::Exited(Some(2))))));
+        assert!(
+            retains_work(),
+            "completed unread output must survive an upgrade"
+        );
         let last = output(chat, &id).unwrap();
         assert_eq!(last.status.end, Some(End::Exited(Some(2))));
         assert_eq!(last.output.trim(), "crashed");

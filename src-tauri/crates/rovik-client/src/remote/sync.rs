@@ -51,14 +51,19 @@ pub(super) struct Snapshot {
 impl Remote {
     /// Syncs the chat before a message to it. A sync that fails says so,
     /// and the message goes all the same, to the chat as it was.
-    pub(super) async fn sync_before_send(&self, host: &str, dialog_id: &str) {
+    pub(super) async fn sync_before_send(&self, host: &str, dialog_id: &str) -> Result<(), String> {
         // A new message: its result gets its own rounds of rechecks.
-        self.lock().rechecks.remove(dialog_id);
+        {
+            let mut state = self.lock();
+            state.rechecks.remove(dialog_id);
+            state.save_decisions(dialog_id)?;
+        }
         if let Err(e) = self.sync(host, dialog_id).await {
             log::warn!("{dialog_id} didn't sync: {e}");
             let message = format!("The chat goes on with the project as it had it: {e}");
             self.notice(dialog_id, "warning", "The project didn't sync", &message);
         }
+        Ok(())
     }
 
     /// The chat's last sync.
@@ -85,6 +90,7 @@ impl Remote {
                 state.kept.remove(&chat);
             }
             state.syncs.insert(chat.clone(), sync);
+            state.save_decisions_logged(&chat);
         }
         self.changed(&chat);
     }
@@ -127,7 +133,7 @@ impl Remote {
     /// its sync waits with, and its bar stops asking until the next sync.
     /// Its landing base stays, so landing its result brings the conflicts
     /// up here.
-    pub fn keep_older_copy(&self, dialog_id: &str) {
+    pub fn keep_older_copy(&self, dialog_id: &str) -> Result<(), String> {
         {
             let mut state = self.lock();
             let waits = state
@@ -137,8 +143,10 @@ impl Remote {
             if waits {
                 state.kept.insert(dialog_id.to_string());
             }
+            state.save_decisions(dialog_id)?;
         }
         self.changed(dialog_id);
+        Ok(())
     }
 
     /// What a sync the bar asks for takes: the chat's host, its client,
@@ -267,6 +275,7 @@ impl Remote {
             state.last_sync.insert(dialog_id.to_string(), commit);
             state.kept.remove(dialog_id);
             state.syncs.insert(dialog_id.to_string(), sync.clone());
+            state.save_decisions_logged(dialog_id);
         }
         self.changed(dialog_id);
         sync

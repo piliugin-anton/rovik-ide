@@ -774,6 +774,8 @@ mod tests {
         let model = rovik_core::services::compose::read(&program, &root, "")
             .unwrap()
             .unwrap();
+        assert_eq!(model.services.len(), 1);
+        assert_eq!(model.services[0].name, "cache");
         let network = Arc::new(
             Network::start(&dir.0.join("net"), Path::new("/bin/true")).expect("a private network"),
         );

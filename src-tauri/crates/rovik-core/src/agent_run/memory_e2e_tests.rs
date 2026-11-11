@@ -2134,3 +2134,77 @@ async fn memory_remember_refuses_a_claim_it_cannot_write() {
          refused: {written:?}"
     );
 }
+
+#[tokio::test]
+async fn implementing_a_named_plan_saves_its_title_in_long_term_memory() {
+    let plan = "# Shared backend ownership\n\nUpdate the notes.\n";
+    let h = harness(&[(".rovik/plans/backend.md", plan), ("notes.txt", "before\n")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({"items": [{"title": "Update notes", "status": "in_progress"}]}),
+        },
+        write("w1", "notes.txt", "after\n"),
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({"items": [{"title": "Update notes", "status": "done"}]}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let title = "Implement \"Shared backend ownership\" plan.";
+    let start = StartKind::Send {
+        message: UserMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: title.into(),
+            meta: Some(json!({
+                "mode": "agent", "implementsPlan": true,
+                "planPath": ".rovik/plans/backend.md"
+            })),
+            attachments: Vec::new(),
+        },
+    };
+    h.start(h.request(&url, start, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let memories = recent(&h);
+    assert!(
+        memories.iter().any(|memory| memory.title == title),
+        "{memories:?}"
+    );
+    assert!(!memories
+        .iter()
+        .any(|memory| memory.title.starts_with("Implement this plan")));
+    let episode = memories
+        .iter()
+        .find(|memory| memory.title == title)
+        .unwrap();
+    assert!(episode
+        .files
+        .contains(&".rovik/plans/backend.md".to_string()));
+    assert!(episode
+        .content
+        .contains("\nPlan: .rovik/plans/backend.md\n"));
+    assert!(episode.content.contains(&format!(
+        "Plan fingerprint (SHA-256): {}",
+        plan::plan_fingerprint(plan)
+    )));
+    assert!(!episode
+        .content
+        .contains(&h.project.to_string_lossy().to_string()));
+    assert!(!episode
+        .content
+        .lines()
+        .find(|line| line.starts_with("Changed:"))
+        .unwrap()
+        .contains("backend.md"));
+    let file = h.project.join(".rovik").join("plans").join("backend.md");
+    let shown = plan::relative_plan_path(&file.to_string_lossy(), h.project.to_str());
+    let wire = plan::implementation_request(plan, Some(&shown), true);
+    assert!(seen.lock().unwrap()[0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["content"].as_str() == Some(&wire)));
+}

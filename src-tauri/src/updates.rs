@@ -265,11 +265,14 @@ pub fn update_restart(app: AppHandle, updates: State<'_, Updates>, folder: Optio
 pub fn update_at_work() -> AtWork {
     let closes_all = cfg!(windows);
     AtWork {
-        here: rovik_core::chat_hold::held_here().len(),
-        elsewhere: match closes_all {
-            true => rovik_core::chat_hold::at_work_elsewhere(),
-            false => 0,
+        // Desktop UI restarts leave execution in the shared host.
+        here: if cfg!(any(unix, windows)) {
+            0
+        } else {
+            rovik_core::chat_hold::held_here().len()
         },
+        // The Windows installer closes UI processes, not retained backend images.
+        elsewhere: 0,
         other_windows: closes_all && !rovik_core::os_lock::alone(),
         closes_all,
     }
@@ -320,11 +323,16 @@ pub fn relaunch(app: &AppHandle) {
 async fn updater(app: &AppHandle) -> Result<Updater, String> {
     // The settings and the proxies' passwords, for the closure below,
     // which can't wait for them.
-    rovik_core::net::ready().await;
+    let value = app
+        .state::<rovik_client::desktop_connection::DesktopConnection>()
+        .desktop(rovik_client::desktop_api::network::NetworkRequest::ClientSettings.into())
+        .await?;
+    let settings: rovik_core::net::ClientSettings =
+        serde_json::from_value(value).map_err(|e| e.to_string())?;
     let mut builder = app
         .updater_builder()
         .timeout(CHECK_WAIT)
-        .configure_client(|client| rovik_core::net::configure(client).read_timeout(STALL_WAIT));
+        .configure_client(move |client| settings.configure(client).read_timeout(STALL_WAIT));
     if let Some(url) = std::env::var(URL_VAR)
         .ok()
         .filter(|url| !url.trim().is_empty())
@@ -452,6 +460,17 @@ fn said(error: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn desktop_updates_do_not_report_shared_chat_work_as_stopped() {
+        let chat = format!("update-shared-{}", uuid::Uuid::new_v4());
+        let _hold = rovik_core::chat_hold::take(&chat).unwrap();
+        assert!(rovik_core::chat_hold::held_here().contains(&chat));
+        let work = update_at_work();
+        assert_eq!((work.here, work.elsewhere), (0, 0));
+        assert_eq!(work.closes_all, cfg!(windows));
+    }
 
     /// tauri.conf.json, as the app is built with it.
     fn config() -> serde_json::Value {

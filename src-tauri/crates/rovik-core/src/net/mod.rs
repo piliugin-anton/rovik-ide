@@ -197,13 +197,28 @@ struct Shared {
 }
 
 /// What the clients are built from now.
-struct Effective {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClientSettings {
     timeout: Duration,
     way: Way,
 }
 
+impl ClientSettings {
+    /// Applies the backend-resolved timeout and proxy to a native HTTP client.
+    pub fn configure(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        configured(builder, self)
+    }
+}
+
+/// Snapshot for authenticated native clients, including any proxy credential.
+/// Passwords stay in memory and are redacted by Debug through Secret.
+pub async fn client_settings() -> ClientSettings {
+    NET.current().await;
+    effective(&NET.lock())
+}
+
 /// How a kind of connection gets to its server.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Way {
     /// Directly, whatever proxy the system has.
     Direct,
@@ -862,14 +877,14 @@ fn slept(before: (SystemTime, Instant), now: (SystemTime, Instant)) -> bool {
 
 /// What the requests to model providers and the downloads are built from:
 /// on a cloud host the way the app said, in the app its settings' way.
-fn effective(state: &State) -> Effective {
+fn effective(state: &State) -> ClientSettings {
     if let Some(hosted) = &state.hosted {
         let way = match &hosted.models {
             None => Way::System,
             Some(ProxyRoute::Direct) => Way::Direct,
             Some(ProxyRoute::Proxy(proxy)) => Way::Proxy(proxy.clone()),
         };
-        return Effective {
+        return ClientSettings {
             timeout: settings::timeout_of(hosted.timeout_secs),
             way,
         };
@@ -883,20 +898,23 @@ fn effective(state: &State) -> Effective {
         },
         Route::Auto | Route::System | Route::Own => Way::System,
     };
-    Effective {
+    ClientSettings {
         timeout: settings.timeout(),
         way,
     }
 }
 
 /// The settings' timeout and way.
-fn base_builder(effective: &Effective) -> reqwest::ClientBuilder {
+fn base_builder(effective: &ClientSettings) -> reqwest::ClientBuilder {
     configured(reqwest::Client::builder(), effective)
 }
 
 /// `builder` with the settings' timeout and way. The system's proxy is
 /// reqwest's own, found as the client is built.
-fn configured(builder: reqwest::ClientBuilder, effective: &Effective) -> reqwest::ClientBuilder {
+fn configured(
+    builder: reqwest::ClientBuilder,
+    effective: &ClientSettings,
+) -> reqwest::ClientBuilder {
     let builder = builder.connect_timeout(effective.timeout);
     let on_this_computer = || reqwest::NoProxy::from_string(settings::ON_THIS_COMPUTER);
     let nowhere = || {
@@ -923,7 +941,7 @@ fn configured(builder: reqwest::ClientBuilder, effective: &Effective) -> reqwest
     }
 }
 
-fn build_shared(effective: &Effective) -> reqwest::Client {
+fn build_shared(effective: &ClientSettings) -> reqwest::Client {
     base_builder(effective)
         .pool_idle_timeout(POOL_IDLE)
         .http2_keep_alive_interval(PING_EVERY)

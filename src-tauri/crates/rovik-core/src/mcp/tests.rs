@@ -5,7 +5,9 @@
 
 use super::*;
 use crate::connectors::mcp::{McpReply, McpServer as RovikServer};
-use crate::testing::{temp_dir, NOTHING_LISTENS};
+#[cfg(unix)]
+use crate::testing::temp_dir;
+use crate::testing::NOTHING_LISTENS;
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1001,6 +1003,7 @@ async fn a_run_lists_a_server_that_answers_at_once() {
 /// the handshake half a second late, and notes that it did.
 /// What it receives, its folder and its environment go in `log`, one JSON
 /// line each.
+#[cfg(unix)]
 const FAKE_SERVER: &str = r#"
 import json, os, sys, time
 mode, log = sys.argv[1], sys.argv[2]

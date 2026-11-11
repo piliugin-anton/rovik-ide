@@ -1,0 +1,233 @@
+//! A separate test executable keeps backend process globals isolated from
+//! the client's unit tests.
+#[path = "support/desktop_browser.rs"]
+mod desktop_browser;
+#[cfg(unix)]
+#[path = "support/desktop_formatter.rs"]
+mod desktop_formatter;
+#[path = "support/desktop_git.rs"]
+mod desktop_git;
+#[path = "support/desktop_journal.rs"]
+mod desktop_journal;
+#[cfg(unix)]
+#[path = "support/desktop_lsp.rs"]
+mod desktop_lsp;
+#[path = "support/desktop_operations.rs"]
+mod desktop_operations;
+#[path = "support/desktop_pages.rs"]
+mod desktop_pages;
+#[path = "support/desktop_projects.rs"]
+mod desktop_projects;
+#[path = "support/desktop_tasks.rs"]
+mod desktop_tasks;
+#[path = "support/desktop_workload.rs"]
+mod desktop_workload;
+
+use rovik_client::desktop_backend::DesktopBackend;
+use rovik_client::desktop_connection::DesktopConnection;
+use rovik_core::agent_run::events::AgentEvent;
+use rovik_core::chat_db::{api, store::NewDialog};
+use rovik_core::{EventSink, Paths};
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+struct Events(Mutex<Vec<String>>);
+
+impl EventSink for Events {
+    fn agent(&self, event: &AgentEvent) {
+        if let AgentEvent::Notice { message, .. } = event {
+            self.0.lock().unwrap().push(message.clone());
+        }
+    }
+}
+
+#[tokio::test]
+async fn desktop_services_persist_chats_and_publish_without_a_window() {
+    let dir = tempfile::tempdir().unwrap();
+    desktop_tasks::seed_secrets(&dir.path().join("config"));
+    let paths = || Paths::new(dir.path().join("data"), dir.path().join("config"));
+    let events = Arc::new(Events::default());
+    let backend = DesktopBackend::open(paths(), events.clone(), Arc::new(|_| {}), "test")
+        .await
+        .unwrap();
+    let journal_projects = desktop_journal::seed(&backend.core.db).await;
+    let backend = Arc::new(backend);
+    backend.start_services().unwrap();
+    backend.start_services().unwrap();
+    let connection = DesktopConnection::embedded(backend.clone());
+    // Editor reports must reach the agent's process, rather than a UI-local cache.
+    let editor_root = dir.path().join("editor");
+    std::fs::create_dir(&editor_root).unwrap();
+    std::fs::write(editor_root.join("a.ts"), "const value = 1;").unwrap();
+    let editor_root = editor_root.to_string_lossy().into_owned();
+    let reporter = DesktopConnection::embedded(backend.clone());
+    reporter
+        .desktop(
+            rovik_client::desktop_api::filesystem::FilesystemRequest::ReportEditorDiagnostics {
+                root: editor_root.clone(),
+                path: "a.ts".into(),
+                markers: vec![rovik_core::agent_tools::EditorMarker {
+                    start_line: 1,
+                    start_col: 1,
+                    end_line: 1,
+                    end_col: 2,
+                    severity: "error".into(),
+                    message: "marker from UI client".into(),
+                    source: None,
+                    code: None,
+                }],
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        rovik_core::agent_tools::tool_diagnostics(editor_root.clone(), Some("a.ts".into()))
+            .unwrap()
+            .contains("marker from UI client")
+    );
+    reporter.close().await.unwrap();
+    assert!(
+        !rovik_core::agent_tools::tool_diagnostics(editor_root, Some("a.ts".into()))
+            .unwrap()
+            .contains("marker from UI client")
+    );
+    desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
+    desktop_operations::check_settings_and_chat_contract(&connection).await;
+    desktop_operations::check_disk_contract(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+    )
+    .await;
+    use rovik_client::desktop_api::vfs::VfsRequest;
+    let other = DesktopConnection::embedded(backend.clone());
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let subscription = connection
+        .desktop_stream(
+            |sink| VfsRequest::Subscribe { kinds: None, sink }.into(),
+            move |batch| sent.send(batch).is_ok(),
+        )
+        .await
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        other
+            .desktop(VfsRequest::Unsubscribe { id: subscription }.into())
+            .await
+            .unwrap(),
+        false
+    );
+    backend
+        .core
+        .vfs
+        .write_unmounted("event-test.txt", b"private delivery")
+        .unwrap();
+    let batch = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(batch.to_string().contains("event-test.txt"), "{batch}");
+    assert_eq!(
+        connection
+            .desktop(VfsRequest::Unsubscribe { id: subscription }.into())
+            .await
+            .unwrap(),
+        true
+    );
+    #[cfg(unix)]
+    desktop_operations::check_terminal_contract(&connection, &other).await;
+    desktop_git::check(&connection, &other, &[std::process::id()]).await;
+    #[cfg(unix)]
+    desktop_lsp::check(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+        &[std::process::id()],
+    )
+    .await;
+    #[cfg(unix)]
+    desktop_formatter::check(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+        &[std::process::id()],
+    )
+    .await;
+    desktop_workload::check(
+        DesktopConnection::embedded(backend.clone()),
+        DesktopConnection::embedded(backend.clone()),
+    )
+    .await;
+    desktop_browser::check(&connection, &other).await;
+    desktop_pages::check(&connection, &other).await;
+    desktop_tasks::check(&connection, &other).await;
+    desktop_journal::check(&connection, &other, journal_projects).await;
+    desktop_projects::check(&connection, other).await;
+    api::chat_create_dialog(
+        &backend.core.db,
+        NewDialog {
+            id: "shared-chat".into(),
+            title: "Saved without a window".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let status: rovik_protocol::agent::AgentStatus = connection
+        .call(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap();
+    assert!(status.runs.is_empty());
+    let _: () = connection
+        .call(rovik_protocol::Request::ChatRename {
+            dialog_id: "shared-chat".into(),
+            title: "Renamed through adapter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(connection
+        .call_on::<()>(
+            Some("missing-host"),
+            rovik_protocol::Request::ChatRename {
+                dialog_id: "shared-chat".into(),
+                title: "Must not fall back".into(),
+            }
+        )
+        .await
+        .is_err());
+    backend.core.emit(AgentEvent::Notice {
+        dialog_id: Some("shared-chat".into()),
+        kind: "info".into(),
+        title: "Backend".into(),
+        message: "ready".into(),
+    });
+    assert_eq!(*events.0.lock().unwrap(), vec!["ready"]);
+    connection.close().await.unwrap();
+    // No UI clients remain, yet the host still owns its in-memory volume.
+    let returning = DesktopConnection::embedded(backend.clone());
+    assert!(returning
+        .request(rovik_protocol::Request::AgentStatus)
+        .await
+        .is_ok());
+    assert_eq!(
+        backend.core.vfs.read_file("event-test.txt").unwrap(),
+        b"private delivery"
+    );
+    returning.close().await.unwrap();
+    drop(returning);
+    backend.shutdown().await;
+    assert!(backend.start_services().is_err());
+    drop(connection);
+    drop(backend);
+
+    let reopened = DesktopBackend::open(paths(), events, Arc::new(|_| {}), "test")
+        .await
+        .unwrap();
+    let chat = api::chat_get_dialog(&reopened.core.db, "shared-chat".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(chat.title, "Renamed through adapter");
+    reopened.shutdown().await;
+}

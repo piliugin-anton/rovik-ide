@@ -1,3 +1,4 @@
+import { isContextPath } from '../lib/contextMode';
 // ToolCallBlock.tsx
 //
 // One collapsible row per tool invocation. The header is a single readable
@@ -1044,7 +1045,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       path,
       focus: true,
       at: openTarget() ?? (written ? 'first-change' : undefined),
-      ...(written ? { dialogId: props.dialogId } : {}),
+      ...(written || isContextPath(path) ? { dialogId: props.dialogId } : {}),
     });
   };
 

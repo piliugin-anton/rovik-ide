@@ -151,6 +151,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         Request::ClmListRevisions { dialog_id } => clm::list_revisions(db, dialog_id)
             .await
             .map(Response::Revisions),
+        Request::ClmReadFile { dialog_id, path } => clm::read_file(db, vfs, &dialog_id, &path)
+            .await
+            .map(Response::Text),
         Request::ClmReadRevision { dialog_id, number } => {
             clm::revision_text(db, vfs, &dialog_id, number)
                 .await

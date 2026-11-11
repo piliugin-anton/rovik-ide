@@ -60,27 +60,143 @@ pub(super) enum Job {
     },
 }
 
+/// Counts work until it completes, including a dequeued job waiting on a pause.
+pub(super) struct Jobs {
+    sender: mpsc::UnboundedSender<Queued>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+/// One accepted job and the lifetime of its pending-work registration.
+pub(super) struct Queued {
+    job: Job,
+    pending: Pending,
+}
+struct Pending(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// Creates a result queue whose accepted work remains visible during pauses.
+pub(super) fn channel() -> (Jobs, mpsc::UnboundedReceiver<Queued>) {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    (
+        Jobs {
+            sender,
+            pending: Default::default(),
+        },
+        receiver,
+    )
+}
+impl Jobs {
+    /// Keeps accepted work registered until its handler finishes.
+    pub(super) fn send(&self, job: Job) -> Result<(), mpsc::error::SendError<()>> {
+        self.pending
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.sender
+            .send(Queued {
+                job,
+                pending: Pending(self.pending.clone()),
+            })
+            .map_err(|_| mpsc::error::SendError(()))
+    }
+
+    /// Includes jobs already dequeued by a paused worker.
+    #[cfg(any(unix, windows, test))]
+    pub(super) fn has_pending(&self) -> bool {
+        self.pending.load(std::sync::atomic::Ordering::SeqCst) != 0
+    }
+}
+
 /// The queue's task, until the app's `Remote` goes.
-pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedReceiver<Job>) {
-    while let Some(job) = jobs.recv().await {
+pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedReceiver<Queued>) {
+    while let Some(Queued {
+        job,
+        pending: _pending,
+    }) = jobs.recv().await
+    {
         let Some(remote) = me.upgrade() else { break };
+        let _turn = remote.result_turn.lock().await;
+        if remote
+            .results_closing
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            break;
+        }
         remote.work(job).await;
     }
 }
 
 impl Remote {
-    /// The project open in the app, by its id and folder: results land by
-    /// themselves only there (6.5). Those that waited for it land now.
+    /// Prevents queued imports from resuming after the shutdown pause is dropped.
+    pub(crate) fn stop_results(&self) {
+        self.results_closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Joins any accepted result import before checking upgrade eligibility.
+    #[cfg(any(unix, windows, test))]
+    pub(crate) async fn pause_results(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.result_turn.clone().lock_owned().await
+    }
+
+    /// Let accepted local work finish before pausing its worker. The host bounds
+    /// this wait while admission and maintenance stay closed. Cancelling only
+    /// cancels the wait; imports, transfers, and relays keep running.
+    #[cfg(any(unix, windows, test))]
+    pub(crate) async fn pause_for_upgrade(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        loop {
+            while self.retained_remote_work().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let pause = self.pause_results().await;
+            // A result may have arrived while acquiring the pause. Resume it
+            // rather than freezing the very queue we are waiting to drain.
+            if self.retained_remote_work().is_none() {
+                return pause;
+            }
+            drop(pause);
+        }
+    }
+
+    /// The default project for single-client callers. Desktop clients use
+    /// `set_client_project` so opening a folder cannot replace another client's.
     pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {
-        self.lock().open = project;
+        self.set_client_project("", project);
+    }
+
+    /// Registers one client's folder without replacing any other client's project.
+    pub fn set_client_project(&self, client: &str, project: Option<(String, PathBuf)>) {
+        self.lock().open.set(client, project);
         let _ = self.jobs.send(Job::Opened);
+    }
+
+    /// The project registered by one client, for lifecycle updates.
+    pub fn client_project(&self, client: &str) -> Option<(String, PathBuf)> {
+        self.lock().open.client(client)
+    }
+
+    /// The folder of a project another client is viewing, for destructive-operation guards.
+    pub fn project_open_elsewhere(
+        &self,
+        client: &str,
+        project: &str,
+        root: Option<&Path>,
+    ) -> Option<PathBuf> {
+        let local = self.lock().open.other(client, project, root);
+        local.or_else(|| {
+            self.elsewhere
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .and_then(|owner| owner.other(Some(project), root))
+        })
     }
 
     /// The user said what the folder at `root` is (a copy of another
     /// project, or one that moved), which made it `project`'s: when it's
     /// the open folder, results land there as that project's from now on.
     pub fn folder_answered(&self, root: &Path, project: &str) {
-        let open = self.lock().open.clone();
+        let open = self.lock().open.client("");
         if open.is_some_and(|(id, at)| at == root && id != project) {
             self.set_open_project(Some((project.to_string(), root.to_path_buf())));
         }
@@ -397,9 +513,7 @@ impl Remote {
 
     /// The results that waited for their project, once it's open.
     async fn land_waiting(&self) {
-        let Some((open, _)) = self.lock().open.clone() else {
-            return;
-        };
+        let open = self.lock().open.ids();
         let remote: Vec<String> = {
             let state = self.lock();
             let chats = state.chats.keys();
@@ -411,7 +525,7 @@ impl Remote {
         for chat in remote {
             let ready = chats::pending(&chat).is_some_and(|p| p.reason == import::READY);
             let project = self.project_of(&chat).await.ok().flatten();
-            if ready && project.is_some_and(|(id, _)| id == open) {
+            if ready && project.is_some_and(|(id, _)| open.contains(&id)) {
                 let _ = self.land_imported(&chat, None).await;
             }
         }
@@ -444,6 +558,7 @@ impl Remote {
                 let mut state = self.lock();
                 state.last_sync.remove(dialog_id);
                 state.rechecks.remove(dialog_id);
+                state.save_decisions_logged(dialog_id);
             }
             self.report(dialog_id, imported).await;
         }
@@ -474,9 +589,16 @@ impl Remote {
             self.notice(dialog_id, "warning", "This chat's changes didn't land", why);
             return;
         }
-        self.lock()
-            .rechecks
-            .insert(dialog_id.to_string(), rounds + 1);
+        let saved = {
+            let mut state = self.lock();
+            state.rechecks.insert(dialog_id.to_string(), rounds + 1);
+            state.save_decisions(dialog_id)
+        };
+        if let Err(error) = saved {
+            import::wait(dialog_id, &error);
+            self.notice(dialog_id, "warning", "The recheck could not start", &error);
+            return;
+        }
         let host = self.host_of(dialog_id).unwrap_or_default();
         let reason = match self.recheck(&host, dialog_id).await {
             Ok(synced) if synced.state == SyncState::Synced => format!(
@@ -580,8 +702,8 @@ impl Remote {
         let Some(project) = db.read(move |c| store::dialog_project(c, &id)).await? else {
             return Ok(None);
         };
-        let open = self.lock().open.clone();
-        if let Some((_, root)) = open.filter(|(id, _)| *id == project) {
+        let root = self.lock().open.root(&project)?;
+        if let Some(root) = root {
             return Ok(Some((project, root)));
         }
         let id = project.clone();
@@ -592,10 +714,7 @@ impl Remote {
     }
 
     fn is_open(&self, project: &str) -> bool {
-        self.lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| id == project)
+        self.lock().open.contains(project)
     }
 
     /// Tells the user of the paths of a result that stay on its host, as

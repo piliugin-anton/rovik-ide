@@ -4,17 +4,19 @@
   "version": "0.2.14",
   "type": "module",
   "scripts": {
+    "prestart": "node scripts/package-windows-backend.mjs --profile dev --if-windows",
     "start": "tauri dev",
     "dev": "vite",
     "build": "vite build",
     "serve": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.node.json",
     "tauri": "tauri",
+    "package:windows-backend": "node scripts/package-windows-backend.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "tsc -p tsconfig.test.json --noEmit && node scripts/test.mjs",
     "test:eval": "node --test scripts/eval/lib.test.mjs scripts/eval/proc.test.mjs scripts/eval/caches.test.mjs scripts/eval/memory-gates.test.mjs scripts/eval/memory-regressions.test.mjs scripts/eval/memory-instruction-scoring.test.mjs",
-    "test:scripts": "node --test scripts/release-notes.test.mjs scripts/updater-manifest.test.mjs"
+    "test:scripts": "node --test scripts/release-notes.test.mjs scripts/updater-manifest.test.mjs scripts/ci-install-packages.test.mjs"
   },
   "dependencies": {
     "@tanstack/solid-virtual": "^3.13.49",

@@ -3,6 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import App from './App';
+import { reconnectBackend } from './lib/backendSession';
+import { chatStore } from './lib/chatStore';
+import { openInEditor } from './lib/openInEditor';
 
 test('startup keeps the splash until the project and expanded folders have loaded', async (t) => {
   // happy-dom has no layout; give the virtual file tree a visible viewport.
@@ -14,6 +17,9 @@ test('startup keeps the splash until the project and expanded folders have loade
   const project = new Promise<unknown>((resolve) => (openProject = resolve));
   const folder = new Promise<unknown>((resolve) => (readFolder = resolve));
   const commands: string[] = [];
+  let recoveryProject: unknown;
+  let contextRequest: unknown;
+  const fileReads: string[] = [];
   (window as any).__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: 'main' } },
     transformCallback: () => 0,
@@ -21,6 +27,28 @@ test('startup keeps the splash until the project and expanded folders have loade
     invoke: async (cmd: string, args: any) => {
       commands.push(cmd);
       switch (cmd) {
+        case 'chat_get_dialog':
+          return { id: args.dialogId };
+        case 'clm_status':
+          return {
+            realPath:
+              args.dialogId === 'mounted-chat'
+                ? '/virtual/context/mounted-chat/LIVE_CONTEXT.md'
+                : null,
+          };
+        case 'read_editorconfigs':
+          return [];
+        case 'path_exists':
+          return true;
+        case 'read_file_content':
+          fileReads.push(args.path);
+          return '# Mounted task';
+        case 'clm_read_file':
+          contextRequest = args;
+          return '# Task for the source chat';
+        case 'desktop_reconnect':
+          recoveryProject = args;
+          throw new Error('native reconnect boundary');
         case 'plugin:event|listen':
           return 0;
         case 'plugin:event|unlisten':
@@ -84,6 +112,30 @@ test('startup keeps the splash until the project and expanded folders have loade
     await flush();
     assert.equal(splash.classList.contains('done'), true);
     assert.equal(root.querySelector('.project-switcher-name')?.textContent, 'Demo');
+    await t.test('a TASK.md link opens from its source chat without a mounted volume', async () => {
+      await openInEditor({ path: '@context/TASK.md', dialogId: 'source-chat', focus: true });
+      await flush();
+      assert.deepEqual(contextRequest, { dialogId: 'source-chat', path: '@context/TASK.md' });
+      assert.ok(root.textContent?.includes('TASK.md'));
+    });
+    await t.test('a local mounted task card still opens as a normal file', async () => {
+      const previous = contextRequest;
+      await openInEditor({
+        path: '@context/TASK.md',
+        dialogId: 'mounted-chat',
+        marks: 'none',
+        activate: false,
+      });
+      assert.deepEqual(fileReads, ['/virtual/context/mounted-chat/TASK.md']);
+      assert.equal(contextRequest, previous, 'no read-only snapshot was requested');
+    });
+    await t.test('recovery uses the open folder before the chat panel has mounted', async () => {
+      assert.equal(chatStore.projectId(), null, 'no chat project was selected');
+      // Stop at the native boundary: this regression verifies the UI's identity;
+      // the platform acceptance tests exercise the real replacement and restore.
+      await assert.rejects(reconnectBackend(), /native reconnect boundary/);
+      assert.deepEqual(recoveryProject, { root: '/p', projectId: 'p' });
+    });
   } finally {
     dispose();
     root.remove();
