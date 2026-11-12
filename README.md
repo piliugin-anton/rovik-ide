@@ -1235,6 +1235,16 @@ before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such
 failures.
 
+During repairs, a recognized test command can first run a focused selection
+from the failed check and changed files. This applies to a single enabled
+test suite with command approval off; derived commands still obey the
+allow/deny rules. An actionable failure goes back to
+the repair loop without another full test run. A passing selection proceeds
+to the configured full suite; it cannot verify the change by itself. Unknown
+commands, unavailable runners and selections that run no tests fall back to
+the full command. Focused results are recorded separately so smaller test
+counts cannot be mistaken for weakened tests or complete coverage.
+
 A connector's harness in Agent mode changes files with its own tools
 (`connectors/mod.rs`). After each of its turns, its steps that succeeded
 count as the agent's own calls would (`agent_run/harness_changes.rs`),

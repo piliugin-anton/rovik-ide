@@ -12,6 +12,10 @@ mod preflight_tests;
 #[path = "verification_reuse_e2e_tests.rs"]
 mod verification_reuse_tests;
 
+#[cfg(unix)]
+#[path = "targeted_repair_e2e_tests.rs"]
+mod targeted_repair_tests;
+
 /// Keep the command inputs stable while receipt tests compare executions.
 /// Other suites mutate the host toolchains and CARGO_HOME under this lock.
 #[cfg(unix)]

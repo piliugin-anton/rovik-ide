@@ -10,6 +10,8 @@
 
 #[path = "verification_receipt.rs"]
 mod receipt;
+#[path = "targeted_repair.rs"]
+mod targeted;
 
 use super::command_output::{
     environment_failure, error_locations, failure_keys, focus_failures, split_by_changed,
@@ -1014,6 +1016,11 @@ impl Run {
             return Ok("verify-needs-approval".into());
         }
 
+        let targeted = !preflight
+            && !p.command_approval.required
+            && self.verification.carry.last_verify_failed
+            && self.verification.writes_since_verify
+            && checks.iter().filter(|c| c.kind == "test").count() == 1;
         self.verification.checks_started();
         // The checks run: the next change review isn't "in a row".
         self.review.checks_started();
@@ -1040,6 +1047,7 @@ impl Run {
                 &record_id,
                 round,
                 &format!("round-{round}"),
+                targeted,
             )
             .await?;
 
@@ -1100,8 +1108,19 @@ impl Run {
         }
         // R01: how this round compares with the earlier ones.
         let mut now = round_failures(&results);
+        if self.verification.targeted.failed {
+            // A focused failure proves nothing about unselected tests. Keep
+            // their earlier failures outstanding, and never compare this
+            // selection's count with a full suite's count.
+            self.verification
+                .targeted
+                .keep_unobserved_failures(self.verification.carry.verify_history.last(), &mut now);
+        }
         now.own_tests = Some(self.own_test_count());
-        let mut judgement = repair::judge(&self.verification.carry.verify_history, &now);
+        let mut judgement = self
+            .verification
+            .targeted
+            .judge(&self.verification.carry.verify_history, &now);
         // T04: the adversarial tester's tests, run for the first time: what
         // fails is what they found, not a fix that broke something.
         if self.tests.has_breaker_round() {
@@ -1162,10 +1181,14 @@ impl Run {
             .last()
             .and_then(|r| r.tests_ran);
         let max_rounds = self.max_rounds();
+        let targeted_attempts = self.verification.targeted.attempts.clone();
+        let full_tests_deferred = self.verification.targeted.failed;
         let extra = |rolled_back: Option<&repair::Rollback>| {
             json!({
                 "maxRounds": max_rounds,
                 "preflight": preflight,
+                "targetedChecks": targeted_attempts,
+                "fullTestsDeferred": full_tests_deferred,
                 "progress": (judgement.verdict != Progress::First).then_some(&judgement),
                 "failureCount": now.keys.len(),
                 "testsRun": now.tests_ran,
@@ -1401,6 +1424,9 @@ impl Run {
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
         let mut notes: Vec<String> = Vec::new();
+        if full_tests_deferred {
+            notes.push("Focused repair tests still fail. The full configured test suite will run after they pass; failures outside this selection have not been rechecked.".into());
+        }
         if let Some(note) = breaker_note {
             notes.push(note);
         }
@@ -1625,7 +1651,9 @@ impl Run {
         );
         self.clean_earlier_output();
         let results = self
-            .run_checks(&root, &checks, &p, &changed, &record_id, round, &saved_as)
+            .run_checks(
+                &root, &checks, &p, &changed, &record_id, round, &saved_as, false,
+            )
             .await
             .ok()?;
         let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
@@ -1766,11 +1794,15 @@ impl Run {
         record_id: &str,
         round: u32,
         saved_as: &str,
+        targeted: bool,
     ) -> Result<Vec<CheckResult>, String> {
         let mut results: Vec<CheckResult> = ordered_checks(checks)
             .iter()
             .map(CheckResult::pending)
             .collect();
+        self.verification.targeted.start_round();
+        let mut probe_considered = false;
+        let mut active_probe: Option<CheckResult> = None;
         let progress = |results: &[CheckResult]| record("running", round, results, changed, None);
         self.update_meta(record_id, progress(&results)).await?;
         // Where the checks run, as their output names it: failure keys are
@@ -1784,7 +1816,7 @@ impl Run {
         // timed out: its index.
         let mut scoped: Option<usize> = None;
         let mut i = 0;
-        while i < results.len() {
+        'checks: while i < results.len() {
             'check: {
                 if self.stopped() {
                     results[i].skip("stopped");
@@ -1816,6 +1848,28 @@ impl Run {
                     break 'check;
                 }
 
+                if targeted && !probe_considered && results[i].kind == "test" {
+                    probe_considered = true;
+                    if let Some(command) = self
+                        .verification
+                        .targeted
+                        .command(std::path::Path::new(root), &results[i].command, changed)
+                        .filter(|command| {
+                            matches!(
+                                check_command(command, permissions),
+                                Verdict::Permitted { .. }
+                            )
+                        })
+                    {
+                        active_probe = Some(results[i].clone());
+                        results[i].command = command;
+                    }
+                }
+                let output_stem = if active_probe.is_some() {
+                    format!("{saved_as}-targeted")
+                } else {
+                    saved_as.to_string()
+                };
                 let reusable = checks
                     .iter()
                     .find(|check| {
@@ -1955,7 +2009,7 @@ impl Run {
                             if whole.chars().count() > FAILURE_OUTPUT_CHARS {
                                 r.saved_output = super::check_output::save(
                                     &self.dialog_id,
-                                    saved_as,
+                                    &output_stem,
                                     &r.kind,
                                     &whole,
                                 );
@@ -1994,6 +2048,27 @@ impl Run {
                         &roots,
                     );
                     self.update_meta(record_id, progress(&results)).await?;
+                }
+                if let Some(full) = active_probe.take() {
+                    let actionable = targeted::actionable_failure(&results[i]);
+                    self.verification.targeted.attempts.push(targeted::Attempt {
+                        suite_command: full.command.clone(),
+                        result: results[i].clone(),
+                    });
+                    if actionable && !self.stopped() {
+                        self.verification.targeted.failed = true;
+                        results[i].note = Some("Focused repair tests failed; the full suite is deferred until they pass.".into());
+                    } else {
+                        // Green, no executed test, unavailable, preexisting, or
+                        // stopped: this probe cannot replace the configured
+                        // check. Its original command runs through the same
+                        // permission and Stop checks on the next iteration.
+                        results[i] = full;
+                        self.update_meta(record_id, progress(&results)).await?;
+                        continue 'checks;
+                    }
+                } else if results[i].kind == "test" {
+                    self.verification.targeted.full_result = Some(results[i].clone());
                 }
                 if results[i].status == "passed" && !self.stopped() {
                     if let (Some(check), Some(stamp)) = (reusable, before) {
@@ -2361,6 +2436,8 @@ pub(super) struct VerificationState {
     cleaned_this_run: bool,
     /// Successful commands in this active run only; never carried across restart.
     receipts: Vec<CheckReceipt>,
+    /// A full suite's evidence and the latest focused repair attempts.
+    targeted: targeted::State,
     /// The first-review preflight was considered for this run.
     preflight_done: bool,
     /// Do not repeatedly rescan a tree whose inputs cannot be fingerprinted.
