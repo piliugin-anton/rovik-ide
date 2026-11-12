@@ -973,8 +973,13 @@ async fn shutdown_doesnt_wait_for_a_start_nobody_waits_for() {
 
 /// A server that answers at once is listed for the run as it always was:
 /// the short wait takes nothing from it.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_run_lists_a_server_that_answers_at_once() {
+    // Keep the startup budget fixed while real HTTP and keychain workers
+    // run. A blocking task prevents Tokio from auto-advancing past the
+    // deadline while waiting for I/O, even on a busy CI worker.
+    let (listed_signal, waiting) = std::sync::mpsc::channel::<()>();
+    let clock_guard = tokio::task::spawn_blocking(move || waiting.recv());
     let (rovik, _calls) = RovikServer::start(&rovik_tools(), "", None).await.unwrap();
     let state = McpState::default();
     let token = rovik.authorization();
@@ -994,6 +999,8 @@ async fn a_run_lists_a_server_that_answers_at_once() {
     let tools = listed[0].tools.clone().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["bash", "read"]);
+    drop(listed_signal);
+    let _ = clock_guard.await.unwrap();
 }
 
 /// The fake command server (Python): `legacy` speaks the handshake and asks
