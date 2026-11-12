@@ -5356,10 +5356,12 @@ dependencies = [
 name = "rovik-harness"
 version = "0.2.16"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

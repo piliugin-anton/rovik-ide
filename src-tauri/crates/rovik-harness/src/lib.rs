@@ -5,12 +5,16 @@
 //! Repository text, model responses and native reports are observations, never
 //! authority. Adapters must validate provenance before admitting evidence.
 
+pub mod artifacts;
 pub mod contract;
+pub mod evidence;
 pub mod identity;
+pub mod ledger;
 pub mod plan;
 pub mod policy;
 pub mod profile;
 pub mod scope;
+pub mod state;
 pub mod wire;
 
 /// A validation or operational error, with a stable reason and useful context.

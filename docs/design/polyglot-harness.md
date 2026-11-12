@@ -52,15 +52,15 @@ Each required milestone is a separate validated commit and push. Optional M7
 (extra languages, final-check caching, formal tools and parallel workers) is
 outside the initial implementation.
 
-| Milestone | Scope                                                           | Status                               |
-| --------- | --------------------------------------------------------------- | ------------------------------------ |
-| M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures |
-| M1        | Artifact store, ledger, state machine, gate and recovery        | Pending                              |
-| M2        | Isolated runner, registry, receipts, native normalizers         | Pending                              |
-| M3        | Provider/broker integration and Rust quota vertical slice       | Pending                              |
-| M4        | C/C++ packs, configured graphs and consumers                    | Pending                              |
-| M5        | Risk obligations, failure injection and interop                 | Pending                              |
-| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                              |
+| Milestone | Scope                                                           | Status                                  |
+| --------- | --------------------------------------------------------------- | --------------------------------------- |
+| M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures    |
+| M1        | Artifact store, ledger, state machine, gate and recovery        | Transaction, recovery and gate fixtures |
+| M2        | Isolated runner, registry, receipts, native normalizers         | Pending                                 |
+| M3        | Provider/broker integration and Rust quota vertical slice       | Pending                                 |
+| M4        | C/C++ packs, configured graphs and consumers                    | Pending                                 |
+| M5        | Risk obligations, failure injection and interop                 | Pending                                 |
+| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                 |
 
 The supplied v2 contract and result JSON schemas are preserved in
 `src-tauri/crates/rovik-harness/schemas`. The earlier blueprint's v1 schemas were
@@ -71,3 +71,24 @@ Deployment requires an operator to review this threat model, register exact
 toolchain images and dependency assets, select supported targets, and authorize
 the protected oracles and approval identities. Unit tests do not replace that
 deployment review or establish containment against arbitrary hostile code.
+
+## Durable core (M1)
+
+The store publishes synchronized blobs before registering references. Reads
+verify exact length and SHA-256, and reject symlinks and hard links. SQLite uses
+foreign keys, WAL, full synchronization, versioned migrations and immutable
+history triggers. State updates and their events share one transaction.
+Concurrent controllers must reload after a revision conflict.
+
+Operations reserve configured budget units before execution. A duplicate active
+operation key returns the same lease; different inputs cannot reuse it. Expired
+leases are fenced and abandoned without promoting files left by a runner. Lost
+usage retains its reservation until an operator reconciles it. Actual usage over
+a reservation is recorded and prevents further spending when the account limit
+is exceeded.
+
+The pure final gate checks every evidence-key field, checker/configuration,
+required case inventory, execution status, approvals and controller attestations.
+It returns ready, failed or blocked; it does not authenticate receipts itself or
+turn a model verdict into a state transition. M2 adds receipt admission and the
+isolated execution adapter.
