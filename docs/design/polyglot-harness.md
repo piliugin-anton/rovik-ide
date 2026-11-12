@@ -52,15 +52,15 @@ Each required milestone is a separate validated commit and push. Optional M7
 (extra languages, final-check caching, formal tools and parallel workers) is
 outside the initial implementation.
 
-| Milestone | Scope                                                           | Status                                  |
-| --------- | --------------------------------------------------------------- | --------------------------------------- |
-| M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures    |
-| M1        | Artifact store, ledger, state machine, gate and recovery        | Transaction, recovery and gate fixtures |
-| M2        | Isolated runner, registry, receipts, native normalizers         | Native isolation and inventory fixtures |
-| M3        | Provider/broker integration and Rust quota vertical slice       | Pending                                 |
-| M4        | C/C++ packs, configured graphs and consumers                    | Pending                                 |
-| M5        | Risk obligations, failure injection and interop                 | Pending                                 |
-| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                 |
+| Milestone | Scope                                                           | Status                                       |
+| --------- | --------------------------------------------------------------- | -------------------------------------------- |
+| M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures         |
+| M1        | Artifact store, ledger, state machine, gate and recovery        | Transaction, recovery and gate fixtures      |
+| M2        | Isolated runner, registry, receipts, native normalizers         | Native isolation and inventory fixtures      |
+| M3        | Provider/broker integration and Rust quota vertical slice       | Native patch, approval and provider fixtures |
+| M4        | C/C++ packs, configured graphs and consumers                    | Pending                                      |
+| M5        | Risk obligations, failure injection and interop                 | Pending                                      |
+| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                      |
 
 The supplied v2 contract and result JSON schemas are preserved in
 `src-tauri/crates/rovik-harness/schemas`. The earlier blueprint's v1 schemas were
@@ -133,3 +133,62 @@ The security fixtures were exercised with Alpine 3.22.0, local image configurati
 This pins test infrastructure, not a production compiler profile. These tests
 establish the documented containment properties; they do not establish protection
 against an arbitrary kernel or container-runtime exploit.
+
+## First vertical slice (M3)
+
+`rovik-core::harness::HarnessProvider` uses Rovik's shared HTTP client and stream
+parser with exactly one request per controller reservation. Credentials stay in
+the trusted host adapter. Explicit pricing and reported token usage determine
+cost; absent usage retains the reservation and blocks further advancement. One
+bounded schema repair is permitted. Tool requests and patches pass strict JSON
+validation; provider-native tools cannot execute.
+
+The broker reads immutable source, retrieves literal matches and lexical symbol
+locations, exposes admitted diagnostics, and requests only registered advisory
+checks. Proposals must map every invariant and pass complete-tree admission.
+Context retains exact mandatory policy, contract, design and target profiles;
+repository text remains attributed data. Insufficient context space blocks the
+task rather than dropping mandatory constraints.
+
+The controller advances every mandatory state. Before implementation it executes
+a relevant negative control and requires the expected behavioral case to fail.
+Compilation failure does not validate an oracle. Final checks run on a new clean
+container with the admitted patch. The gate checks current approvals and the
+repository revision again immediately before acceptance.
+
+The reference Rust fixture uses the supplied quota API and seven boundary cases,
+including zero and the full unsigned 64-bit range. A separate protected consumer
+uses the public API; implementation-local tests cannot replace it. Its toolchain
+and target are deliberately narrow: Rust 1.85.1, edition 2021, Linux x86_64,
+standard library and no external crates. These illustrative facts never fill
+unknown production profile fields.
+
+Build the operator CLI with `cargo build -p rovik-headless --bin rovik-harness`.
+Invoke `rovik-harness` without arguments for its command syntax. Keep its absolute
+state directory outside the repository. Set `ROVIK_HARNESS_DOCKER_BIN` when the
+Docker client is installed outside `/usr/bin/docker`. `import` captures tracked HEAD bytes
+without changing the worktree; `put` registers immutable assets; `create` checks a
+complete `TaskSetup`. Review the emitted exact subject, scope and policy digests,
+then use `approve` with an `ApprovalRequest` JSON file. Approval authenticates the
+local Linux UID against the setup's operator authority registration. Repository
+files and model output cannot invoke this management interface.
+
+`run` uses an explicitly selected repository, model endpoint and rates file;
+`ROVIK_HARNESS_API_KEY` supplies the credential. Rates contain `input`,
+`cached_input` and `output` microunits per million tokens. `status`, `verify` and
+`export` expose the durable result and immutable candidate. Export requires a new
+directory. Acceptance and export do not apply a patch, commit, merge or deploy.
+Existing IDE chat verification retains its current behavior; this is the opt-in
+strict workflow shared by the core and the new headless entry point.
+
+The native test image can be built from
+`src-tauri/crates/rovik-harness/fixtures/native/Dockerfile`. Resolve the resulting
+local image configuration digest with `docker image inspect --format '{{.Id}}'`
+and pass it as `ROVIK_HARNESS_IMAGE`; the harness never authorizes a mutable tag.
+Package installation happens while preparing that image, outside verification.
+Run the Rust vertical test with `ROVIK_HARNESS_DOCKER=1` and
+`cargo test -p rovik-harness --test controller -- --ignored`. The test uses a
+scripted provider to propose a real source change and actual native compiler and
+consumer execution; it makes no claim about model quality or production approval.
+Backend v2 permits execution in the size-limited build mount so compiled consumers
+can run, while temporary and report mounts remain non-executable.

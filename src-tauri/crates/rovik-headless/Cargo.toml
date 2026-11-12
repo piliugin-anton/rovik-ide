@@ -3,9 +3,11 @@ name = "rovik-headless"
 version.workspace = true
 description = "The agent without a window, for measuring it"
 edition.workspace = true
+default-run = "rovik-headless"
 
 [dependencies]
 rovik-core.workspace = true
+rovik-harness.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros"] }

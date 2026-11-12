@@ -11,6 +11,7 @@ testing = []
 
 [dependencies]
 rovik-protocol.workspace = true
+rovik-harness.workspace = true
 # The agent's long-term memory, per project (src/memory.rs).
 verified-code-memory.workspace = true
 serde.workspace = true

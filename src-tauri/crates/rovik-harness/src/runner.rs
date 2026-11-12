@@ -29,7 +29,7 @@ use std::{
 };
 
 /// Identity of the security-relevant runner implementation.
-pub const BACKEND_VERSION: &str = "rovik-docker-v1";
+pub const BACKEND_VERSION: &str = "rovik-docker-v2";
 
 /// Explicit execution environment identity, persisted before any checks run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,9 +455,12 @@ impl DockerBackend {
             ("/outputs", spec.output_limit_bytes.saturating_mul(2)),
             ("/tmp", 16 * 1024 * 1024),
         ] {
+            // Native consumers and compiler-generated helpers execute only in the
+            // bounded build mount. Docker's default tmpfs is noexec.
+            let execute = if path == "/build" { "exec" } else { "noexec" };
             create.args([
                 "--tmpfs",
-                &format!("{path}:rw,nosuid,nodev,size={size},mode=1777"),
+                &format!("{path}:rw,{execute},nosuid,nodev,size={size},mode=1777"),
             ]);
         }
         // Docker client proxy defaults are not capabilities inside an offline job.

@@ -5,15 +5,22 @@
 //! Repository text, model responses and native reports are observations, never
 //! authority. Adapters must validate provenance before admitting evidence.
 
+pub mod approvals;
 pub mod artifacts;
+pub mod broker;
+pub mod context;
 pub mod contract;
+pub mod controller;
 pub mod evidence;
+pub mod fixtures;
 pub mod identity;
 pub mod ledger;
 pub mod normalizer;
+pub mod packs;
 pub mod plan;
 pub mod policy;
 pub mod profile;
+pub mod provider;
 pub mod registry;
 pub mod runner;
 pub mod scope;

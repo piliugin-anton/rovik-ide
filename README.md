@@ -152,6 +152,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch
   mode is run once.
+- **Strict native verification (opt-in, Linux).** The `rovik-harness` headless
+  command binds proposed edits to approved contracts, protected acceptance
+  tests, immutable snapshots and sandbox receipts. The Rust quota example
+  exercises the complete workflow. See [Polyglot harness](docs/design/polyglot-harness.md)
+  for supported targets and operator setup.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has

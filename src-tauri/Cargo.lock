@@ -5268,6 +5268,7 @@ dependencies = [
  "rand 0.10.3",
  "regex",
  "reqwest",
+ "rovik-harness",
  "rovik-protocol",
  "rusqlite",
  "serde",
@@ -5370,6 +5371,7 @@ name = "rovik-headless"
 version = "0.2.16"
 dependencies = [
  "rovik-core",
+ "rovik-harness",
  "serde",
  "serde_json",
  "tokio",
