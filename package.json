@@ -1,7 +1,7 @@
 {
   "name": "rovik-ide",
   "private": true,
-  "version": "0.2.15",
+  "version": "0.2.16",
   "type": "module",
   "scripts": {
     "prestart": "node scripts/package-windows-backend.mjs --profile dev --if-windows",
