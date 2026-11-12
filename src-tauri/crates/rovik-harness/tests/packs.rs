@@ -1,3 +1,4 @@
+mod support;
 use rovik_harness::{
     fixtures,
     identity::Digest,
@@ -223,7 +224,7 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
                 output_limit_bytes: 4 * 1024 * 1024,
                 dependencies: vec![],
             };
-            let observation = DockerBackend::local(std::path::Path::new("/usr/local/bin/docker"))
+            let observation = DockerBackend::local(&crate::support::docker_path())
                 .unwrap()
                 .execute(
                     &ledger,

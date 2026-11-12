@@ -1,4 +1,5 @@
 #![cfg(target_os = "linux")]
+mod support;
 use rovik_harness::{
     approvals::{ApprovalRequest, Principal},
     broker::{Broker, FileEdit, Proposal, ToolRequest},
@@ -72,13 +73,13 @@ impl Provider for Worker {
 fn controller(path: &Path) -> Controller {
     Controller {
         ledger: Ledger::open(path).unwrap(),
-        backend: DockerBackend::local(Path::new(
-            if std::env::var("ROVIK_HARNESS_DOCKER").as_deref() == Ok("1") {
-                "/usr/local/bin/docker"
-            } else {
-                "/bin/true"
-            },
-        ))
+        backend: DockerBackend::local(&if std::env::var("ROVIK_HARNESS_DOCKER").as_deref()
+            == Ok("1")
+        {
+            crate::support::docker_path()
+        } else {
+            "/bin/true".into()
+        })
         .unwrap(),
     }
 }
@@ -128,6 +129,42 @@ fn missing_approval_blocks_before_a_model_or_native_command_can_run() {
         c.ledger.budgets(&setup.run_id).unwrap()["model_calls"].spent,
         0
     );
+}
+
+#[test]
+fn cancellation_and_expired_deadlines_stop_before_any_work_is_dispatched() {
+    for expired in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = controller(&dir.path().join("state"));
+        let mut setup = setup(&c, Digest::of(b"unavailable-image"));
+        let now = runner::now_ms().unwrap();
+        if expired {
+            setup.deadline_ms = now - 1;
+        }
+        c.create(&setup, if expired { now - 2 } else { now })
+            .unwrap();
+        let cancellation = Cancellation::default();
+        if !expired {
+            cancellation.cancel();
+        }
+        let mut worker = Worker { calls: 0 };
+        let report = c
+            .execute(&setup.run_id, &mut worker, &Repository, &cancellation)
+            .unwrap();
+        assert_eq!(
+            report.state,
+            if expired {
+                State::Stopped
+            } else {
+                State::Cancelled
+            }
+        );
+        assert_eq!(worker.calls, 0);
+        assert!(c.ledger.operations(&setup.run_id).unwrap().is_empty());
+        assert!(c
+            .resume(&Principal::current().unwrap(), &setup.run_id)
+            .is_err());
+    }
 }
 
 #[test]
@@ -220,6 +257,35 @@ fn approvals_bind_subject_scope_policy_actor_expiry_and_revocation() {
 }
 
 #[test]
+fn operator_revocation_cannot_use_another_runs_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = controller(&dir.path().join("state"));
+    let first = setup(&c, Digest::of(b"image"));
+    let second =
+        fixtures::quota_rust(&c.ledger, "other-run", Digest::of(b"image"), "fixture-base").unwrap();
+    let now = runner::now_ms().unwrap();
+    c.create(&first, now).unwrap();
+    c.create(&second, now).unwrap();
+    approve(&c, &first);
+    assert!(c.pending_approvals(&first.run_id).unwrap().is_empty());
+    let principal = Principal::current().unwrap();
+    let approval = c.ledger.approval_history(&first.run_id).unwrap().remove(0);
+    let approval_id = approval["approval"]["approval_id"].as_str().unwrap();
+    assert!(c
+        .revoke_approval(&principal, &second.run_id, approval_id, "wrong run")
+        .is_err());
+    assert!(c.pending_approvals(&first.run_id).unwrap().is_empty());
+    c.revoke_approval(
+        &principal,
+        &first.run_id,
+        approval_id,
+        "withdraw reviewed decision",
+    )
+    .unwrap();
+    assert_eq!(c.pending_approvals(&first.run_id).unwrap().len(), 1);
+}
+
+#[test]
 fn mandatory_context_and_worker_capability_boundaries_survive_untrusted_text() {
     let dir = tempfile::tempdir().unwrap();
     let c = controller(&dir.path().join("state"));
@@ -305,12 +371,37 @@ fn actual_rust_patch_passes_the_full_clean_gate_after_rejecting_a_mutant() {
     );
     c.create(&setup, runner::now_ms().unwrap()).unwrap();
     approve(&c, &setup);
+    struct LockedAcceptance {
+        database: std::path::PathBuf,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl Integration for LockedAcceptance {
+        fn current_revision(&self, _: &str) -> Result<String> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            // Intake, clean gate, readiness gate, then the final gate inside
+            // acceptance. Another writer (including revocation) must serialize.
+            if call == 4 {
+                let connection = rusqlite::Connection::open(&self.database).unwrap();
+                connection.busy_timeout(std::time::Duration::ZERO).unwrap();
+                let error = connection.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+                assert!(matches!(
+                    error.sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+                ));
+            }
+            Ok("fixture-base".into())
+        }
+    }
+    let integration = LockedAcceptance {
+        database: c.ledger.root().join("ledger.sqlite3"),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
     let mut worker = Worker { calls: 0 };
     let report = c
         .execute(
             &setup.run_id,
             &mut worker,
-            &Repository,
+            &integration,
             &Cancellation::default(),
         )
         .unwrap();
@@ -329,6 +420,10 @@ fn actual_rust_patch_passes_the_full_clean_gate_after_rejecting_a_mutant() {
         }
     }
     assert_eq!(report.state, State::Accepted, "{report:?}");
+    assert_eq!(
+        integration.calls.load(std::sync::atomic::Ordering::SeqCst),
+        4
+    );
     assert_eq!(worker.calls, 1);
     assert_eq!(report.gate.unwrap().verdict, Verdict::Ready);
     let snapshot = c.current_candidate(&setup.run_id).unwrap().unwrap();
@@ -476,4 +571,108 @@ fn a_worker_cannot_suppress_an_unsafe_risk_before_native_verification() {
         "{report:?}"
     );
     assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 1);
+}
+
+#[test]
+#[ignore = "requires ROVIK_HARNESS_DOCKER=1 and a pinned native image"]
+fn bounded_repair_requires_failure_review_and_resume_reuses_only_completed_receipts() {
+    use rovik_harness::operations::FailureResolution;
+    struct RepairWorker {
+        calls: u32,
+    }
+    impl Provider for RepairWorker {
+        fn generate(
+            &mut self,
+            request: &ModelRequest,
+            cancel: &Cancellation,
+        ) -> Result<ModelResponse> {
+            self.calls += 1;
+            let mut response = Worker { calls: 0 }.generate(request, cancel)?;
+            if self.calls == 1 {
+                let mut turn: WorkerTurn = serde_json::from_str(&response.output).unwrap();
+                turn.proposal.as_mut().unwrap().changes[0].content = Some(
+                    QUOTA_RUST.replace("requested > self.remaining", "requested >= self.remaining"),
+                );
+                response.output = serde_json::to_string(&turn).unwrap();
+            }
+            Ok(response)
+        }
+    }
+    assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("state");
+    let mut c = controller(&root);
+    let mut setup = setup(
+        &c,
+        Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap(),
+    );
+    setup.budgets.insert("repairs".into(), 1);
+    c.create(&setup, runner::now_ms().unwrap()).unwrap();
+    approve(&c, &setup);
+    let mut provider = RepairWorker { calls: 0 };
+    let report = c
+        .execute(
+            &setup.run_id,
+            &mut provider,
+            &Repository,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(report.state, State::Blocked, "{report:?}");
+    assert_eq!(provider.calls, 2);
+    assert!(
+        report
+            .reasons
+            .iter()
+            .any(|r| r.contains("prior_failures_resolved")),
+        "{report:?}"
+    );
+    let mut previous = None;
+    let mut replacement = None;
+    for operation in c
+        .ledger
+        .operations(&setup.run_id)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.kind == "check")
+    {
+        let result: rovik_harness::evidence::CheckResult =
+            rovik_harness::wire::decode(&c.ledger.read(&operation.output_digest.unwrap()).unwrap())
+                .unwrap();
+        if result.status == rovik_harness::evidence::Status::Pass {
+            replacement = Some(result.result_id);
+        } else {
+            previous = Some(result.result_id);
+        }
+    }
+    let spent = c.ledger.budgets(&setup.run_id).unwrap();
+    assert_eq!(spent["checks"].spent, 3);
+    assert_eq!(spent["repairs"].spent, 1);
+    drop(c);
+    let mut c = controller(&root);
+    let operator = Principal::current().unwrap();
+    let approval=c.resolve_failure(&operator,&setup.run_id,&FailureResolution {previous_result_id:previous.unwrap(),replacement_result_id:replacement.unwrap(),reason:"Boundary comparison was repaired; the new exact candidate passed the protected cases.".into()}).unwrap();
+    c.resume(&operator, &setup.run_id).unwrap();
+    let report = c
+        .execute(
+            &setup.run_id,
+            &mut provider,
+            &Repository,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(report.state, State::Accepted, "{report:?}");
+    assert_eq!(provider.calls, 2);
+    assert_eq!(c.ledger.budgets(&setup.run_id).unwrap(), spent);
+    c.revoke_approval(
+        &operator,
+        &setup.run_id,
+        &approval,
+        "Withdraw the historical failure disposition",
+    )
+    .unwrap();
+    assert_eq!(
+        c.verify(&setup.run_id, &Repository).unwrap().verdict,
+        Verdict::Blocked
+    );
 }

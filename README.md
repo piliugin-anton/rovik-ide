@@ -154,9 +154,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   mode is run once.
 - **Strict native verification (opt-in, Linux).** The `rovik-harness` headless
   command binds proposed edits to approved contracts, protected acceptance
-  tests, immutable snapshots and sandbox receipts. The Rust quota example
-  exercises the complete workflow. See [Polyglot harness](docs/design/polyglot-harness.md)
-  for supported targets and operator setup.
+  tests, immutable snapshots and sandbox receipts. Native C, C++ and Rust
+  fixtures exercise the workflow, with bounded repairs, approval maintenance
+  and recovery after controller loss. See [Polyglot harness](docs/design/polyglot-harness.md)
+  for supported targets, measured limits and operator setup.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has

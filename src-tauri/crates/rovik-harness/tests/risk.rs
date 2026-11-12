@@ -1,3 +1,4 @@
+mod support;
 use rovik_harness::{
     fixtures,
     identity::Digest,
@@ -124,7 +125,7 @@ fn actual_sanitizers_and_ffi_consumers_reject_resource_and_abi_mutants() {
         commands: vec![command],
     };
     setup.environment.registry_digest = Digest::of_json(&registry).unwrap();
-    let observation = DockerBackend::local(std::path::Path::new("/usr/local/bin/docker"))
+    let observation = DockerBackend::local(&crate::support::docker_path())
         .unwrap()
         .execute(
             &ledger,

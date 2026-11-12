@@ -60,7 +60,7 @@ outside the initial implementation.
 | M3        | Provider/broker integration and Rust quota vertical slice       | Native patch, approval and provider fixtures            |
 | M4        | C/C++ packs, configured graphs and consumers                    | Protocol, configured graph and native consumer fixtures |
 | M5        | Risk obligations, failure injection and interop                 | Native sanitizer, failure and ABI fixtures              |
-| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                                 |
+| M6        | Evaluation, accounting, approval maintenance and recovery       | Repeated native evaluation and process-loss rehearsal   |
 
 The supplied v2 contract and result JSON schemas are preserved in
 `src-tauri/crates/rovik-harness/schemas`. The earlier blueprint's v1 schemas were
@@ -262,3 +262,133 @@ object instrumentation. Run the native bank with the pinned image and
 `cargo test -p rovik-harness --test risk -- --ignored`; its twenty observations
 are regression evidence for this documented configuration, not arbitrary FFI or
 threading support.
+
+## Operations and recovery (M6)
+
+Backend v3 records each job and its private workspace durably before container
+creation. Ledger migration 003 adds job tracking, immutable actual-usage receipts,
+operator reconciliations and append-only failure resolutions. Existing v1/v2
+ledgers migrate on open; future schema versions block. Keep the ledger and its
+artifact directory together when backing up controller state.
+
+The controller watches the overall deadline, Ctrl-C and durable operator state
+while provider or native work is running. Cancellation terminates the whole native
+job; stopped, rejected and cancelled runs cannot accept or resume. Before final
+acceptance, the gate, approval validity and candidate revision are rechecked under
+the same SQLite write transaction that commits acceptance. Repository integration
+still needs its own revision check when an operator later applies or merges an
+exported candidate.
+
+Operator commands use the same absolute state directory as `run`:
+
+| Command                                   | Effect                                                                                                     |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `status <run>`                            | State, restart stage, exact binding, operations and reserved/actual budget units                           |
+| `approvals <run>`                         | Exact missing/expired/revoked approval requirements and approval history                                   |
+| `revoke <run> <approval-id> <reason>`     | Append an authenticated revocation for that run                                                            |
+| `cancel <run>`                            | Commit cancellation, fence work and remove registered native jobs                                          |
+| `recover <run>`                           | Block interrupted work, fence old callbacks, remove registered jobs/workspaces and verify stored artifacts |
+| `reconcile <run> <usage.json>`            | Record actual usage for an abandoned operation and release its reservation                                 |
+| `resolve-failure <run> <resolution.json>` | Review a historical result against an exact current passing replacement                                    |
+| `resume <run>`                            | Resume the recorded restart stage after prerequisites and accounting are repaired                          |
+| `retention <grace-seconds>`               | Preview aged unregistered blobs; append `--apply` to delete them                                           |
+
+The immutable intake's authority must grant `operate` for cancel/recover/resume,
+`accounting` for reconciliation and `failure-resolution` for failure disposition.
+Approval grants and revocations retain their subject-specific authority checks.
+These are trusted management capabilities, unavailable through the worker broker.
+Retention requires access to the private controller store and never runs as a
+worker tool.
+
+After controller loss, run `status`, then `recover`. Recovery also rechecks earlier
+job identities, since a daemon may finish a create request after its client loses
+the connection. If the daemon cannot confirm cleanup, recovery reports an error;
+restore its availability and repeat recovery. No leftover build output is admitted.
+Unsettled work keeps its reservation, even when the process is gone. A
+reconciliation file supplies every reserved unit and an explanation, for example:
+
+```json
+{
+  "operation_id": "exact-abandoned-operation-id",
+  "usage": { "model_calls": 1, "tokens": 1370, "cost_microunits": 42 },
+  "reason": "Actual usage from the provider receipt for this interrupted request"
+}
+```
+
+Use observed usage; the numbers above are illustrative. Unknown usage continues
+to block. Actual cost above a reservation is retained, and exceeding a task limit
+stops the run. A successful reconciliation does not turn interrupted output into
+evidence. Resume reuses only authenticated, completed checks for the exact same
+inputs; reconciled interrupted checks need a new attempt. This is same-run
+idempotence, not cross-run final-check caching.
+
+An explicitly configured `budgets.repairs` account enables a bounded implementation
+repair after an executed behavioral failure. Each attempt consumes repair and
+model budgets. Missing repair policy blocks; exhausted repair budget stops.
+Infrastructure failures do not trigger code repair. The repaired candidate goes
+through scope, risk, review and fresh final checks again. Earlier failures remain
+visible and block acceptance until an authorized operator supplies a resolution:
+
+```json
+{
+  "previous_result_id": "historical-failing-result-id",
+  "replacement_result_id": "current-passing-result-id",
+  "reason": "Reviewed the defect and its fix; the replacement covers the same obligation"
+}
+```
+
+The replacement must be authenticated current evidence for the same check and
+configuration. Revoking this approval blocks verification again. Semantic
+replanning requires a new approved intake; automatic replans are bounded at zero.
+One output-format repair is the maximum supported provider repair policy, and
+every provider request has its own actual-usage accounting.
+
+Retention initially preserves every registered blob, run, approval and historical
+result. It removes only unregistered CAS blobs older than an explicit grace period
+of at least one day. Publication/registration and garbage collection share the
+SQLite writer lock, including when an older orphan is reused, so collection cannot
+race a new reference. Build workspaces are disposable after registered jobs stop.
+
+The recovery fixture SIGKILLs a child controller during an actual Alpine native
+job, verifies that the container survives the controller, then reopens the ledger
+and exercises cleanup, fencing, retained reservations, reconciliation and resume.
+It is part of `cargo test -p rovik-harness --test operations -- --ignored` with
+the Alpine image and Docker opt-in used for isolation tests. Other regressions
+cover zero-cost abandoned work, deadline/cancellation before dispatch, repair
+reopen/resume, revocation, retention, and concurrent writers at acceptance.
+
+## Evaluation and measured limits (M6)
+
+The versioned `native-contracts-heldout-v1` bank is independent of the quota
+demonstration. It contains correct and defective implementations of checked
+addition, decimal parsing and bounded copying in each language. Two fresh native
+repetitions exercise compiler-only, public-example-only and protected-contract
+strategies: 18 variants × 2 repetitions × 3 strategies = 108 observations.
+The report binds the bank, oracle, environment and authenticated native result.
+Missing/duplicate trials, stale inputs and successful zero-case reports fail
+validation. Infrastructure errors and unsupported configurations remain separate
+from behavioral rejections.
+
+The [recorded evaluation](../evaluation/native-verifier-v1.json) contains every
+observation and measured duration. With the documented native image, each language
+had six defective trials per strategy: compilation and the happy-path example
+each accepted all six; protected checks rejected all six. All six correct trials
+per language/strategy passed. There were zero infrastructure errors and zero
+unsupported observations in this configured bank. These deliberately selected
+mutants establish regression sensitivity; two deterministic repetitions do not
+estimate a production defect rate or statistical confidence about model quality.
+
+There were **zero model calls** in this measurement. The specification's three-way
+live-model comparison (existing CI, scoped guidance, and enforced verification)
+still requires a selected model, explicit token/cost budgets, representative
+repositories and independent ground truth. Model quality, human review effort,
+sequential extension effort, monetary cost per successful task, and production
+latency are unmeasured. The initial native bank does not claim the full workload
+coverage proposed by that study; concurrency remains unsupported as above.
+No prompts, policies or permanent guidance are automatically promoted from a run.
+
+Run the native evaluation with `cargo test -p rovik-harness --test evaluation --
+--ignored` and the protected native image. Set `ROVIK_HARNESS_EVALUATION_OUTPUT` to
+save its JSON report. `.github/workflows/polyglot-harness.yml` runs the ordinary
+core tests, all supported native suites, the repeated evaluation, isolation and
+process-loss rehearsal, and uploads the evaluation report.

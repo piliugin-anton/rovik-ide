@@ -29,7 +29,7 @@ use std::{
 };
 
 /// Identity of the security-relevant runner implementation.
-pub const BACKEND_VERSION: &str = "rovik-docker-v2";
+pub const BACKEND_VERSION: &str = "rovik-docker-v3";
 
 /// Explicit execution environment identity, persisted before any checks run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +378,87 @@ impl DockerBackend {
         spec: &CheckSpec,
         cancel: &Cancellation,
     ) -> Result<Observation> {
+        self.execute_inner(
+            ledger,
+            candidate,
+            oracle,
+            dependencies,
+            environment,
+            registry,
+            spec,
+            cancel,
+            None,
+        )
+    }
+    /// Execute a durable controller operation, registering its job before process creation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_leased(
+        &self,
+        ledger: &Ledger,
+        candidate: &Snapshot,
+        oracle: &Snapshot,
+        dependencies: &Snapshot,
+        environment: &Environment,
+        registry: &CommandRegistry,
+        spec: &CheckSpec,
+        cancel: &Cancellation,
+        lease: &Lease,
+    ) -> Result<Observation> {
+        self.execute_inner(
+            ledger,
+            candidate,
+            oracle,
+            dependencies,
+            environment,
+            registry,
+            spec,
+            cancel,
+            Some(lease),
+        )
+    }
+    /// Remove a controller-created job, treating confirmed absence as idempotent cleanup.
+    pub(crate) fn remove_registered_job(&self, job: &str) -> Result<bool> {
+        require(
+            job.starts_with("rovik-harness-")
+                && job.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "invalid registered job identity",
+        )?;
+        let mut command = self.command();
+        command.args(["rm", "--force", job]);
+        let result = process(
+            command,
+            Duration::from_secs(120),
+            64 * 1024,
+            &Cancellation::default(),
+            || Ok(()),
+        )?;
+        require(
+            !result.timed_out && !result.exceeded,
+            "job cleanup did not complete",
+        )?;
+        let error = String::from_utf8_lossy(&result.stderr);
+        // Docker may report an absent container on stderr with a zero exit code.
+        if error.contains("No such container") || error.contains("No such object") {
+            return Ok(false);
+        }
+        if result.code == Some(0) {
+            return Ok(true);
+        }
+        Err(Error(format!("cannot remove registered job: {error}")))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn execute_inner(
+        &self,
+        ledger: &Ledger,
+        candidate: &Snapshot,
+        oracle: &Snapshot,
+        dependencies: &Snapshot,
+        environment: &Environment,
+        registry: &CommandRegistry,
+        spec: &CheckSpec,
+        cancel: &Cancellation,
+        lease: Option<&Lease>,
+    ) -> Result<Observation> {
         environment.validate(registry)?;
         self.validate_image(environment)?;
         let definition = registry.get(&spec.command_id)?;
@@ -397,7 +478,13 @@ impl DockerBackend {
             "dependency bundle differs from the pinned environment",
         )?;
         let argv = definition.render(&spec.validated_parameters)?;
-        let directory = tempfile::tempdir()?;
+        let directory = if lease.is_some() {
+            let root = ledger.root().join("jobs");
+            crate::artifacts::private_directory(&root)?;
+            tempfile::tempdir_in(root)?
+        } else {
+            tempfile::tempdir()?
+        };
         let source = directory.path().join("snapshot");
         let trusted = directory.path().join("oracle");
         let deps = directory.path().join("dependencies");
@@ -405,6 +492,9 @@ impl DockerBackend {
         oracle.materialize(ledger, &trusted)?;
         dependencies.materialize(ledger, &deps)?;
         let job = format!("rovik-harness-{}", uuid::Uuid::new_v4());
+        if let Some(lease) = lease {
+            ledger.record_job(lease, &job, directory.path())?;
+        }
         let mut create = self.command();
         create.args([
             "create",
@@ -422,6 +512,18 @@ impl DockerBackend {
             &definition.cwd,
             "--entrypoint=/usr/bin/env",
         ]);
+        create.args([
+            "--label",
+            &format!("org.rovik.harness.backend={BACKEND_VERSION}"),
+        ]);
+        if let Some(lease) = lease {
+            create.args([
+                "--label",
+                &format!("org.rovik.harness.operation={}", lease.operation_id),
+                "--label",
+                &format!("org.rovik.harness.generation={}", lease.generation),
+            ]);
+        }
         create.args([
             "--memory",
             &definition.limits.memory_bytes.to_string(),
@@ -479,24 +581,46 @@ impl DockerBackend {
         create
             .arg(environment.image_digest.as_str())
             .args(["-i", "/bin/sleep", "infinity"]);
-        let created = process(
-            create,
-            Duration::from_secs(120),
-            64 * 1024,
-            &Cancellation::default(),
-            || Ok(()),
-        )?;
-        require(
-            created.code == Some(0) && !created.timed_out && !created.exceeded,
-            format!(
-                "cannot create isolated job (exit {:?}, timed_out {}, output_limit {}): {}",
-                created.code,
-                created.timed_out,
-                created.exceeded,
-                String::from_utf8_lossy(&created.stderr)
-            ),
-        )?;
+        let mut observation = Observation {
+            job_id: job.clone(),
+            candidate_digest: candidate.digest()?,
+            oracle_digest: oracle.digest()?,
+            environment_digest: Digest::of_json(environment)?,
+            configuration_digest: spec.configuration_digest.clone(),
+            command_digest: Digest::of_json(definition)?,
+            parameters: spec.validated_parameters.clone(),
+            exit_code: None,
+            stdout: vec![],
+            stderr: vec![],
+            report: None,
+            timed_out: false,
+            cancelled: false,
+            output_exceeded: false,
+            oom_killed: false,
+            duration_ms: 0,
+        };
         let execution = (|| -> Result<Observation> {
+            let created = process(create, Duration::from_secs(120), 64 * 1024, cancel, || {
+                self.remove_registered_job(&job).map(|_| ())
+            })?;
+            if created.cancelled || created.timed_out || created.exceeded {
+                observation.cancelled = created.cancelled;
+                observation.timed_out = created.timed_out;
+                observation.output_exceeded = created.exceeded;
+                observation.stdout = created.stdout;
+                observation.stderr = created.stderr;
+                return Ok(observation);
+            }
+            require(
+                created.code == Some(0) && !created.timed_out && !created.exceeded,
+                format!(
+                    "cannot create isolated job (exit {:?}, timed_out {}, output_limit {}): {}",
+                    created.code,
+                    created.timed_out,
+                    created.exceeded,
+                    String::from_utf8_lossy(&created.stderr)
+                ),
+            )?;
             self.checked(&["start", &job])?;
             let started = Instant::now();
             let mut command = self.command();
@@ -537,27 +661,21 @@ impl DockerBackend {
                     "candidate changed during verification",
                 )?;
             }
-            Ok(Observation {
-                job_id: job.clone(),
-                candidate_digest: candidate.digest()?,
-                oracle_digest: oracle.digest()?,
-                environment_digest: Digest::of_json(environment)?,
-                configuration_digest: spec.configuration_digest.clone(),
-                command_digest: Digest::of_json(definition)?,
-                parameters: spec.validated_parameters.clone(),
-                exit_code: out.code,
-                stdout: out.stdout,
-                stderr: out.stderr,
-                report,
-                timed_out: out.timed_out,
-                cancelled: out.cancelled,
-                output_exceeded: out.exceeded,
-                oom_killed: String::from_utf8_lossy(&oom).trim() == "true",
-                duration_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
-            })
+            observation.exit_code = out.code;
+            observation.stdout = out.stdout;
+            observation.stderr = out.stderr;
+            observation.report = report;
+            observation.timed_out = out.timed_out;
+            observation.cancelled = out.cancelled;
+            observation.output_exceeded = out.exceeded;
+            observation.oom_killed = String::from_utf8_lossy(&oom).trim() == "true";
+            observation.duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+            Ok(observation)
         })();
-        let removed = self.checked(&["rm", "--force", &job]);
-        removed?;
+        let removed = self.remove_registered_job(&job)?;
+        if lease.is_some() && (removed || execution.is_ok()) {
+            ledger.job_removed(&job)?;
+        }
         execution
     }
 }
@@ -752,6 +870,22 @@ impl Ledger {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let state: String = tx.query_row(
+            "SELECT state FROM runs WHERE run_id=?1",
+            [&lease.run_id],
+            |r| r.get(0),
+        )?;
+        require(
+            !matches!(
+                wire::decode::<crate::state::State>(state.as_bytes())?,
+                crate::state::State::Blocked
+                    | crate::state::State::Accepted
+                    | crate::state::State::Cancelled
+                    | crate::state::State::Stopped
+                    | crate::state::State::Rejected
+            ),
+            "run paused or terminated before evidence admission",
+        )?;
         let active: String = tx.query_row(
             "SELECT binding_digest FROM runs WHERE run_id=?1",
             [&lease.run_id],
@@ -795,21 +929,46 @@ impl Ledger {
     }
     /// Load only results authenticated by immutable controller receipts.
     pub fn admitted_results(&self, run_id: &str, binding: &Digest) -> Result<Vec<CheckResult>> {
-        let mut statement=self.connection.prepare("SELECT c.result_digest,r.result_digest,r.receipt_digest,o.generation,r.generation,o.state FROM check_results c JOIN receipts r ON r.receipt_id=c.receipt_id JOIN operations o ON o.operation_id=c.operation_id WHERE c.run_id=?1 AND c.binding_digest=?2")?;
+        self.read_results(run_id, binding, false)
+    }
+    // The controller separately gates unresolved accounting and historical failures.
+    // Excluding unfinished attempts here never converts them to passing evidence.
+    pub(crate) fn completed_results(
+        &self,
+        run_id: &str,
+        binding: &Digest,
+    ) -> Result<Vec<CheckResult>> {
+        self.read_results(run_id, binding, true)
+    }
+    fn read_results(
+        &self,
+        run_id: &str,
+        binding: &Digest,
+        completed_only: bool,
+    ) -> Result<Vec<CheckResult>> {
+        let mut statement=self.connection.prepare("SELECT c.result_digest,r.result_digest,r.receipt_digest,o.generation,r.generation,o.state,o.output_digest FROM check_results c JOIN receipts r ON r.receipt_id=c.receipt_id JOIN operations o ON o.operation_id=c.operation_id WHERE c.run_id=?1 AND c.binding_digest=?2 AND (?3=0 OR o.state='completed')")?;
         let mut results = Vec::new();
-        for row in statement.query_map(rusqlite::params![run_id, binding.as_str()], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, String>(5)?,
-            ))
-        })? {
-            let (result, authenticated, receipt, generation, receipt_generation, state) = row?;
+        for row in statement.query_map(
+            rusqlite::params![run_id, binding.as_str(), completed_only],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ))
+            },
+        )? {
+            let (result, authenticated, receipt, generation, receipt_generation, state, output) =
+                row?;
             require(
-                result == authenticated && generation == receipt_generation && state == "completed",
+                result == authenticated
+                    && output.as_deref() == Some(result.as_str())
+                    && generation == receipt_generation
+                    && state == "completed",
                 "receipt is stale or operation is incomplete",
             )?;
             let result: CheckResult = wire::decode(&self.read(&Digest::parse(&result)?)?)?;

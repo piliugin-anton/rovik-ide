@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod support;
 use rovik_harness::{
     evidence::Status,
     identity::Digest,
@@ -161,7 +163,6 @@ mod docker {
         runner::{self, Cancellation, DockerBackend, Environment, ExecutionInput, BACKEND_VERSION},
         snapshot::{FileEntry, Snapshot},
     };
-    use std::path::Path;
 
     fn fixture(
         script: &str,
@@ -258,7 +259,7 @@ mod docker {
             environment,
             registry,
             spec,
-            DockerBackend::local(Path::new("/usr/local/bin/docker")).unwrap(),
+            DockerBackend::local(&crate::support::docker_path()).unwrap(),
         )
     }
 

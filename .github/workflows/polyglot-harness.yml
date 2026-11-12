@@ -1,0 +1,68 @@
+name: Polyglot harness native evidence
+
+on:
+  pull_request:
+    paths:
+      - 'src-tauri/crates/rovik-harness/**'
+      - 'src-tauri/crates/rovik-core/src/harness.rs'
+      - 'src-tauri/crates/rovik-headless/src/bin/rovik-harness.rs'
+      - 'src-tauri/crates/rovik-headless/Cargo.toml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - '.github/workflows/polyglot-harness.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polyglot-native-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      ROVIK_HARNESS_DOCKER: '1'
+      ROVIK_HARNESS_DOCKER_BIN: /usr/bin/docker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: polyglot-native
+      - name: Validate the durable core and strict protocol
+        working-directory: src-tauri
+        run: |
+          cargo test --locked -p rovik-harness
+          cargo clippy --locked -p rovik-harness --tests -- -D warnings
+      - name: Prepare protected native toolchain outside verification
+        run: |
+          docker build -t rovik-harness-native:ci src-tauri/crates/rovik-harness/fixtures/native
+          echo "ROVIK_HARNESS_IMAGE=$(docker image inspect --format '{{.Id}}' rovik-harness-native:ci)" >> "$GITHUB_ENV"
+      - name: Exercise every supported native language, risk and evaluation configuration
+        working-directory: src-tauri
+        env:
+          ROVIK_HARNESS_EVALUATION_OUTPUT: ${{ runner.temp }}/native-evaluation-v1.json
+        run: cargo test --locked -p rovik-harness --test controller --test packs --test risk --test evaluation -- --ignored --test-threads=1
+      - name: Prepare isolation fixture outside verification
+        run: |
+          docker pull alpine:3.22.0
+          echo "ROVIK_HARNESS_IMAGE=$(docker image inspect --format '{{.Id}}' alpine:3.22.0)" >> "$GITHUB_ENV"
+      - name: Rehearse process loss, isolation, cancellation and resource limits
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-harness --test execution --test operations -- --ignored --test-threads=1
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: native-verifier-evaluation
+          path: ${{ runner.temp }}/native-evaluation-v1.json
+          if-no-files-found: warn

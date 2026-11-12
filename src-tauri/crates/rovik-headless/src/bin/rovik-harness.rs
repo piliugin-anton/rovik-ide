@@ -6,6 +6,7 @@ use rovik_harness::{
     controller::{Controller, TaskSetup},
     identity::Digest,
     ledger::Ledger,
+    operations::{FailureResolution, Reconciliation},
     runner::{self, Cancellation, DockerBackend},
     wire, Error, Result,
 };
@@ -23,7 +24,7 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage="usage: rovik-harness <absolute-state-dir> import <repository-id> <repository-path> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> | status <run-id> | verify <run-id> <repository-path> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. The state directory must be outside the repository.";
+    let usage="usage: rovik-harness <absolute-state-dir> import <repository-id> <repository-path> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. The state directory must be outside the repository.";
     if args.len() < 2 {
         return Err(Error(usage.into()));
     }
@@ -97,18 +98,66 @@ fn run() -> Result<()> {
                 key,
                 read::<Rates>(&args[5])?,
             )?;
-            print(&controller.execute(
-                &args[2],
-                &mut provider,
-                &integration,
-                &Cancellation::default(),
-            )?)
+            let cancel = Cancellation::default();
+            let interrupt = cancel.clone();
+            let signal = runtime.spawn(async move {
+                if let Err(error) = tokio::signal::ctrl_c().await {
+                    eprintln!("cannot observe interrupt signal: {error}");
+                }
+                interrupt.cancel();
+            });
+            let result = controller.execute(&args[2], &mut provider, &integration, &cancel);
+            signal.abort();
+            print(&result?)
         }
         "status" if args.len() == 3 => {
             let run = controller.ledger.run(&args[2])?;
             print(
-                &serde_json::json!({"run_id":run.run_id,"state":run.state,"revision":run.revision,"restart_state":run.restart_state,"binding":run.binding_digest,"budgets":controller.ledger.budgets(&args[2])?}),
+                &serde_json::json!({"run_id":run.run_id,"state":run.state,"revision":run.revision,"restart_state":run.restart_state,"binding":run.binding_digest,"budgets":controller.ledger.budgets(&args[2])?,"operations":controller.ledger.operations(&args[2])?}),
             )
+        }
+        "approvals" if args.len() == 3 => print(
+            &serde_json::json!({"pending":controller.pending_approvals(&args[2])?,"history":controller.ledger.approval_history(&args[2])?}),
+        ),
+        "revoke" if args.len() == 5 => {
+            controller.revoke_approval(&Principal::current()?, &args[2], &args[3], &args[4])?;
+            print(&serde_json::json!({"revoked":args[3]}))
+        }
+        "resume" if args.len() == 3 => {
+            controller.resume(&Principal::current()?, &args[2])?;
+            print(&controller.ledger.run(&args[2])?)
+        }
+        "cancel" if args.len() == 3 => {
+            controller.cancel(&Principal::current()?, &args[2])?;
+            let removed = controller.recover(&Principal::current()?, &args[2])?;
+            print(
+                &serde_json::json!({"state":controller.ledger.run(&args[2])?.state,"removed_jobs":removed,"budgets":controller.ledger.budgets(&args[2])?}),
+            )
+        }
+        "recover" if args.len() == 3 => {
+            let removed = controller.recover(&Principal::current()?, &args[2])?;
+            print(
+                &serde_json::json!({"state":controller.ledger.run(&args[2])?.state,"removed_jobs":removed,"budgets":controller.ledger.budgets(&args[2])?}),
+            )
+        }
+        "reconcile" if args.len() == 4 => {
+            controller.reconcile(
+                &Principal::current()?,
+                &args[2],
+                &read::<Reconciliation>(&args[3])?,
+            )?;
+            print(&controller.ledger.budgets(&args[2])?)
+        }
+        "resolve-failure" if args.len() == 4 => print(&controller.resolve_failure(
+            &Principal::current()?,
+            &args[2],
+            &read::<FailureResolution>(&args[3])?,
+        )?),
+        "retention" if args.len() == 3 || (args.len() == 4 && args[3] == "--apply") => {
+            let grace = args[2]
+                .parse::<u64>()
+                .map_err(|_| Error("retention grace must be seconds".into()))?;
+            print(&controller.ledger.retention(grace, args.len() == 4)?)
         }
         "verify" if args.len() == 4 => {
             let setup = controller.setup(&args[2])?;

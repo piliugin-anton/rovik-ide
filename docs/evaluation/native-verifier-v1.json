@@ -1,0 +1,1158 @@
+{
+  "bank": {
+    "bank_id": "native-contracts-heldout-v1",
+    "cases": [
+      {
+        "case_id": "rust-checked-add-correct",
+        "expected_correct": true,
+        "language": "rust",
+        "required_cases": 4
+      },
+      {
+        "case_id": "rust-checked-add-mutant",
+        "expected_correct": false,
+        "language": "rust",
+        "required_cases": 4
+      },
+      {
+        "case_id": "rust-decimal-correct",
+        "expected_correct": true,
+        "language": "rust",
+        "required_cases": 5
+      },
+      {
+        "case_id": "rust-decimal-mutant",
+        "expected_correct": false,
+        "language": "rust",
+        "required_cases": 5
+      },
+      {
+        "case_id": "rust-copy-correct",
+        "expected_correct": true,
+        "language": "rust",
+        "required_cases": 4
+      },
+      {
+        "case_id": "rust-copy-mutant",
+        "expected_correct": false,
+        "language": "rust",
+        "required_cases": 4
+      },
+      {
+        "case_id": "cpp-checked-add-correct",
+        "expected_correct": true,
+        "language": "cpp",
+        "required_cases": 4
+      },
+      {
+        "case_id": "cpp-checked-add-mutant",
+        "expected_correct": false,
+        "language": "cpp",
+        "required_cases": 4
+      },
+      {
+        "case_id": "cpp-decimal-correct",
+        "expected_correct": true,
+        "language": "cpp",
+        "required_cases": 5
+      },
+      {
+        "case_id": "cpp-decimal-mutant",
+        "expected_correct": false,
+        "language": "cpp",
+        "required_cases": 5
+      },
+      {
+        "case_id": "cpp-copy-correct",
+        "expected_correct": true,
+        "language": "cpp",
+        "required_cases": 4
+      },
+      {
+        "case_id": "cpp-copy-mutant",
+        "expected_correct": false,
+        "language": "cpp",
+        "required_cases": 4
+      },
+      {
+        "case_id": "c-checked-add-correct",
+        "expected_correct": true,
+        "language": "c",
+        "required_cases": 4
+      },
+      {
+        "case_id": "c-checked-add-mutant",
+        "expected_correct": false,
+        "language": "c",
+        "required_cases": 4
+      },
+      {
+        "case_id": "c-decimal-correct",
+        "expected_correct": true,
+        "language": "c",
+        "required_cases": 5
+      },
+      {
+        "case_id": "c-decimal-mutant",
+        "expected_correct": false,
+        "language": "c",
+        "required_cases": 5
+      },
+      {
+        "case_id": "c-copy-correct",
+        "expected_correct": true,
+        "language": "c",
+        "required_cases": 4
+      },
+      {
+        "case_id": "c-copy-mutant",
+        "expected_correct": false,
+        "language": "c",
+        "required_cases": 4
+      }
+    ],
+    "repetitions": 2,
+    "schema_version": 1
+  },
+  "bank_digest": "sha256:6facc3da58d5d9453a72fa0c28a3582d4c45827af17116130f23bc74f9c320f5",
+  "environment": {
+    "backend_version": "rovik-docker-v3",
+    "dependency_digest": "sha256:fd98c7dded2bda10bff80fa4de2e0fff44169a2f135546dd8c0f5f65b24c0cf4",
+    "image_digest": "sha256:8d1fbde3653040b924da1182145e46821de5b5c3e1cad7c910148d28aef8760a",
+    "locale": "C",
+    "registry_digest": "sha256:81553e06eb6c822f50e3924fda996a6bcf3cdca12fce9b1b7dffb898a47281b2",
+    "schema_version": 1,
+    "timezone": "UTC",
+    "toolchain_digest": "sha256:25e1db03f676e6dd68a9a3338d6be0d3ec9d4f1a430101a8aa4f87f9dde5ae10"
+  },
+  "methodology": "native-verifier-ablation; no model calls",
+  "model_calls": 0,
+  "model_cost_microunits": 0,
+  "native_result": {
+    "check_id": "rust-quota-contract",
+    "checker_digest": "sha256:7ba4567f65756a3b0e5f6e9e1d418f7cd44ea069908d7dc80e2369cee13ece21",
+    "configuration_digest": "sha256:f8713b329238134a54cfc05a1124610c0fea60307570bc1c23c6c6585060a6c5",
+    "diagnostics": [],
+    "evidence": [
+      "sha256:2806f8452790236bf5971ba735f759945cac1bec46bf6ac1f42cee79b37f2f5f",
+      "sha256:372ef4b20e2aea3bd362a46077eabce19761591aa2399b0928fd2556a7df912e",
+      "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "evidence_key": {
+      "candidate_digest": "sha256:b3ffea5e6f3491f6e4e30240b9785de74157c74af8b7c4da8f77acefe1d5af67",
+      "contract_digest": "sha256:6facc3da58d5d9453a72fa0c28a3582d4c45827af17116130f23bc74f9c320f5",
+      "design_digest": "sha256:6facc3da58d5d9453a72fa0c28a3582d4c45827af17116130f23bc74f9c320f5",
+      "environment_digest": "sha256:7ef6e13ce931ac271ac72859da4964d2b23a97e90575ccb06b3cae4f52505926",
+      "oracle_digest": "sha256:b0128608967bd3e89b091836652cd92809d21bca18479350aa650dc97ab3d170",
+      "plan_digest": "sha256:b12d9892e8b8c35d40416c9a4f0bee2f2bf3c7aedb07e035c1b33c02d669aeca",
+      "policy_digest": "sha256:81553e06eb6c822f50e3924fda996a6bcf3cdca12fce9b1b7dffb898a47281b2"
+    },
+    "executed_test_count": 0,
+    "exit_code": 0,
+    "failed_case_ids": [],
+    "operation_id": "5076e285-27e4-45f6-938a-025cf7861556",
+    "passed_case_ids": [],
+    "result_id": "0ca4e10c-652a-4cb8-aeb7-0f98a0564649",
+    "run_id": "bank-run",
+    "runner_receipt_id": "8e70b380-4599-424a-b982-72078684ad8f",
+    "schema_version": 2,
+    "skipped_case_ids": [],
+    "status": "pass"
+  },
+  "observations": [
+    {
+      "case_id": "rust-checked-add-correct",
+      "duration_ms": 466,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-checked-add-correct",
+      "duration_ms": 467,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-checked-add-correct",
+      "duration_ms": 467,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-checked-add-correct",
+      "duration_ms": 420,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-checked-add-correct",
+      "duration_ms": 423,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-checked-add-correct",
+      "duration_ms": 421,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-checked-add-mutant",
+      "duration_ms": 365,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-checked-add-mutant",
+      "duration_ms": 366,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-checked-add-mutant",
+      "duration_ms": 366,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-checked-add-mutant",
+      "duration_ms": 319,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-checked-add-mutant",
+      "duration_ms": 320,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-checked-add-mutant",
+      "duration_ms": 320,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-decimal-correct",
+      "duration_ms": 214,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-decimal-correct",
+      "duration_ms": 215,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-decimal-correct",
+      "duration_ms": 215,
+      "executed_cases": 5,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-decimal-correct",
+      "duration_ms": 267,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-decimal-correct",
+      "duration_ms": 271,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-decimal-correct",
+      "duration_ms": 269,
+      "executed_cases": 5,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-decimal-mutant",
+      "duration_ms": 265,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-decimal-mutant",
+      "duration_ms": 267,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-decimal-mutant",
+      "duration_ms": 267,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-decimal-mutant",
+      "duration_ms": 317,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-decimal-mutant",
+      "duration_ms": 326,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-decimal-mutant",
+      "duration_ms": 318,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-copy-correct",
+      "duration_ms": 317,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-copy-correct",
+      "duration_ms": 318,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-copy-correct",
+      "duration_ms": 318,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-copy-correct",
+      "duration_ms": 214,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-copy-correct",
+      "duration_ms": 215,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-copy-correct",
+      "duration_ms": 214,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-copy-mutant",
+      "duration_ms": 264,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-copy-mutant",
+      "duration_ms": 266,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-copy-mutant",
+      "duration_ms": 265,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "rust-copy-mutant",
+      "duration_ms": 317,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "rust-copy-mutant",
+      "duration_ms": 318,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "rust-copy-mutant",
+      "duration_ms": 318,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-checked-add-correct",
+      "duration_ms": 666,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-checked-add-correct",
+      "duration_ms": 668,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-checked-add-correct",
+      "duration_ms": 667,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-checked-add-correct",
+      "duration_ms": 617,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-checked-add-correct",
+      "duration_ms": 620,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-checked-add-correct",
+      "duration_ms": 618,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-checked-add-mutant",
+      "duration_ms": 1338,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-checked-add-mutant",
+      "duration_ms": 1346,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-checked-add-mutant",
+      "duration_ms": 1341,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-checked-add-mutant",
+      "duration_ms": 616,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-checked-add-mutant",
+      "duration_ms": 621,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-checked-add-mutant",
+      "duration_ms": 626,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-decimal-correct",
+      "duration_ms": 924,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-decimal-correct",
+      "duration_ms": 926,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-decimal-correct",
+      "duration_ms": 926,
+      "executed_cases": 5,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-decimal-correct",
+      "duration_ms": 668,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-decimal-correct",
+      "duration_ms": 670,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-decimal-correct",
+      "duration_ms": 669,
+      "executed_cases": 5,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-decimal-mutant",
+      "duration_ms": 716,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-decimal-mutant",
+      "duration_ms": 719,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-decimal-mutant",
+      "duration_ms": 721,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-decimal-mutant",
+      "duration_ms": 1293,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-decimal-mutant",
+      "duration_ms": 1299,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-decimal-mutant",
+      "duration_ms": 1298,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-copy-correct",
+      "duration_ms": 767,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-copy-correct",
+      "duration_ms": 769,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-copy-correct",
+      "duration_ms": 767,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-copy-correct",
+      "duration_ms": 1128,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-copy-correct",
+      "duration_ms": 1134,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-copy-correct",
+      "duration_ms": 1129,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-copy-mutant",
+      "duration_ms": 767,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-copy-mutant",
+      "duration_ms": 768,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-copy-mutant",
+      "duration_ms": 768,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "cpp-copy-mutant",
+      "duration_ms": 1154,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "cpp-copy-mutant",
+      "duration_ms": 1157,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "cpp-copy-mutant",
+      "duration_ms": 1155,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-checked-add-correct",
+      "duration_ms": 114,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-checked-add-correct",
+      "duration_ms": 115,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-checked-add-correct",
+      "duration_ms": 115,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-checked-add-correct",
+      "duration_ms": 115,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-checked-add-correct",
+      "duration_ms": 116,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-checked-add-correct",
+      "duration_ms": 117,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-checked-add-mutant",
+      "duration_ms": 64,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-checked-add-mutant",
+      "duration_ms": 64,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-checked-add-mutant",
+      "duration_ms": 65,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-checked-add-mutant",
+      "duration_ms": 64,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-checked-add-mutant",
+      "duration_ms": 66,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-checked-add-mutant",
+      "duration_ms": 64,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-decimal-correct",
+      "duration_ms": 64,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-decimal-correct",
+      "duration_ms": 66,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-decimal-correct",
+      "duration_ms": 66,
+      "executed_cases": 5,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-decimal-correct",
+      "duration_ms": 65,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-decimal-correct",
+      "duration_ms": 66,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-decimal-correct",
+      "duration_ms": 66,
+      "executed_cases": 5,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-decimal-mutant",
+      "duration_ms": 64,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-decimal-mutant",
+      "duration_ms": 65,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-decimal-mutant",
+      "duration_ms": 65,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-decimal-mutant",
+      "duration_ms": 64,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-decimal-mutant",
+      "duration_ms": 65,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-decimal-mutant",
+      "duration_ms": 65,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-copy-correct",
+      "duration_ms": 114,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-copy-correct",
+      "duration_ms": 115,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-copy-correct",
+      "duration_ms": 115,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-copy-correct",
+      "duration_ms": 64,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-copy-correct",
+      "duration_ms": 65,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-copy-correct",
+      "duration_ms": 65,
+      "executed_cases": 4,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-copy-mutant",
+      "duration_ms": 66,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-copy-mutant",
+      "duration_ms": 67,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 0,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-copy-mutant",
+      "duration_ms": 66,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 0,
+      "strategy": "protected_contract"
+    },
+    {
+      "case_id": "c-copy-mutant",
+      "duration_ms": 115,
+      "executed_cases": 0,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "compile_only"
+    },
+    {
+      "case_id": "c-copy-mutant",
+      "duration_ms": 116,
+      "executed_cases": 1,
+      "outcome": "accepted",
+      "repetition": 1,
+      "strategy": "example_only"
+    },
+    {
+      "case_id": "c-copy-mutant",
+      "duration_ms": 115,
+      "executed_cases": 2,
+      "outcome": "rejected",
+      "repetition": 1,
+      "strategy": "protected_contract"
+    }
+  ],
+  "oracle_digest": "sha256:b0128608967bd3e89b091836652cd92809d21bca18479350aa650dc97ab3d170",
+  "schema_version": 1,
+  "strata": [
+    {
+      "language": "rust",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 0,
+        "duration_ms": 3745,
+        "errors": 0,
+        "false_accepts": 6,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "compile_only"
+    },
+    {
+      "language": "rust",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 0,
+        "duration_ms": 3772,
+        "errors": 0,
+        "false_accepts": 6,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "example_only"
+    },
+    {
+      "language": "rust",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 6,
+        "duration_ms": 3758,
+        "errors": 0,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "protected_contract"
+    },
+    {
+      "language": "cpp",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 0,
+        "duration_ms": 10654,
+        "errors": 0,
+        "false_accepts": 6,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "compile_only"
+    },
+    {
+      "language": "cpp",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 0,
+        "duration_ms": 10697,
+        "errors": 0,
+        "false_accepts": 6,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "example_only"
+    },
+    {
+      "language": "cpp",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 6,
+        "duration_ms": 10685,
+        "errors": 0,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "protected_contract"
+    },
+    {
+      "language": "c",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 0,
+        "duration_ms": 973,
+        "errors": 0,
+        "false_accepts": 6,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "compile_only"
+    },
+    {
+      "language": "c",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 0,
+        "duration_ms": 986,
+        "errors": 0,
+        "false_accepts": 6,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "example_only"
+    },
+    {
+      "language": "c",
+      "metrics": {
+        "correct_accepts": 6,
+        "correct_rejects": 6,
+        "duration_ms": 984,
+        "errors": 0,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "trials": 12,
+        "unsupported": 0
+      },
+      "strategy": "protected_contract"
+    }
+  ]
+}

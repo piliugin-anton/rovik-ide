@@ -188,6 +188,9 @@ pub fn quota_rust(
                 "design".into(),
                 "oracle".into(),
                 "revoke".into(),
+                "operate".into(),
+                "accounting".into(),
+                "failure-resolution".into(),
             ]
             .into(),
         )]
@@ -226,7 +229,7 @@ pub fn quota_rust(
         ]
         .into(),
         worker: WorkerLimits {
-            model_id: "operator-must-select-model".into(),
+            model_id: "fixture-scripted".into(),
             context_bytes: 64 * 1024,
             output_tokens: 8192,
             timeout_ms: 120_000,

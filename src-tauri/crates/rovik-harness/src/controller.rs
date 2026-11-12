@@ -284,6 +284,11 @@ impl TaskSetup {
             "oracle needs a relevant registered negative control",
         )?;
         require(
+            !self.worker.model_id.trim().is_empty()
+                && self.worker.model_id != "operator-must-select-model",
+            "select an explicit model identity",
+        )?;
+        require(
             self.worker.context_bytes > 0
                 && self.worker.context_bytes <= wire::MAX_JSON_BYTES
                 && self.worker.output_tokens > 0
@@ -309,6 +314,24 @@ impl TaskSetup {
             )?;
         }
         Ok(())
+    }
+    /// All current subject requirements, including reviews bound to a selected candidate.
+    pub fn approval_requirements(
+        &self,
+        candidate: Option<&Snapshot>,
+    ) -> Result<Vec<ApprovalRequirement>> {
+        let mut requirements = self.mandatory_approvals()?;
+        requirements.extend(self.plan.approval_requirements.iter().cloned());
+        if let Some(candidate) = candidate {
+            for kind in &self.plan.review_requirements {
+                requirements.push(ApprovalRequirement {
+                    subject_digest: candidate.digest()?,
+                    approval_type: kind.clone(),
+                    obligation_ids: vec![],
+                });
+            }
+        }
+        Ok(requirements)
     }
     /// Exact approval requirements that cannot be removed by a model plan.
     pub fn mandatory_approvals(&self) -> Result<Vec<ApprovalRequirement>> {
@@ -471,17 +494,7 @@ impl Controller {
     ) -> Result<bool> {
         let scope = Digest::of_json(&setup.contract.scope)?;
         let policy = Digest::of_json(&setup.policy)?;
-        let mut requirements = setup.mandatory_approvals()?;
-        requirements.extend(setup.plan.approval_requirements.iter().cloned());
-        if let Some(candidate) = candidate {
-            for kind in &setup.plan.review_requirements {
-                requirements.push(ApprovalRequirement {
-                    subject_digest: candidate.digest()?,
-                    approval_type: kind.clone(),
-                    obligation_ids: vec![],
-                });
-            }
-        }
+        let requirements = setup.approval_requirements(candidate)?;
         for requirement in requirements {
             if !self.ledger.approval_current(
                 &setup.run_id,
@@ -514,18 +527,43 @@ impl Controller {
             },
             now,
         )?;
-        let operation_key = Digest::of_json(&(kind, &input.digest))?;
+        let base_key = Digest::of_json(&(kind, &input.digest))?.to_string();
+        let operations = self.ledger.operations(&setup.run_id)?;
+        let attempts: Vec<_> = operations
+            .iter()
+            .filter(|o| {
+                o.operation_key == base_key || o.operation_key.starts_with(&format!("{base_key}:"))
+            })
+            .collect();
+        if let Some(last) = attempts.last() {
+            if let Some(result) =
+                self.ledger
+                    .completed_check(&setup.run_id, &last.operation_key, &input.digest)?
+            {
+                return Ok(result);
+            }
+            require(
+                last.state == "failed",
+                "unfinished check requires recovery and actual-usage reconciliation",
+            )?;
+        }
+        let operation_key = if attempts.is_empty() {
+            base_key
+        } else {
+            format!("{base_key}:{}", attempts.len())
+        };
+        let owner = format!("controller-{}", uuid::Uuid::new_v4());
         let lease = self.ledger.claim(
             &setup.run_id,
-            operation_key.as_str(),
+            &operation_key,
             kind,
             &input.digest,
-            "local-controller",
+            &owner,
             now,
             spec.timeout_ms.saturating_add(720_000),
             &[("checks".into(), 1)].into(),
         )?;
-        let observation = self.backend.execute(
+        let observation = self.backend.execute_leased(
             &self.ledger,
             candidate,
             &setup.oracle,
@@ -534,6 +572,7 @@ impl Controller {
             &setup.registry,
             spec,
             cancel,
+            &lease,
         )?;
         let result = runner::admit_observation(
             &mut self.ledger,
@@ -670,11 +709,20 @@ impl Controller {
         setup: &TaskSetup,
         provider: &mut dyn Provider,
         cancel: &Cancellation,
+        candidate: Snapshot,
+        mut feedback: Vec<serde_json::Value>,
     ) -> Result<Snapshot> {
-        let candidate = setup.base.clone();
         let context = self.context(setup, &candidate)?;
-        let mut feedback = Vec::new();
-        let mut diagnostics = BTreeSet::new();
+        let mut diagnostics: BTreeSet<_> =
+            if let Some(binding) = self.ledger.run(&setup.run_id)?.binding_digest {
+                self.ledger
+                    .completed_results(&setup.run_id, &binding)?
+                    .into_iter()
+                    .flat_map(|r| r.evidence)
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
         let mut format_repairs = 0;
         loop {
             require(!cancel.is_cancelled(), "worker cancelled")?;
@@ -708,7 +756,7 @@ impl Controller {
                 &request.request_id,
                 "model",
                 &input.digest,
-                "local-controller",
+                &format!("controller-{}", uuid::Uuid::new_v4()),
                 now,
                 setup.worker.timeout_ms.saturating_add(10_000),
                 &reservation,
@@ -825,15 +873,24 @@ impl Controller {
         let key = self.key(&setup, &candidate)?;
         let required: Vec<_> = setup.plan.required_final().cloned().collect();
         let binding = Digest::of_json(&key)?;
-        let all = self.ledger.admitted_results(run_id, &binding)?;
+        let all = self.ledger.completed_results(run_id, &binding)?;
+        let resolved = self.resolved_failures(&setup, &all)?;
         let admitted: Vec<_> = all
             .into_iter()
-            .filter(|r| required.iter().any(|s| s.identity() == r.identity()))
+            .filter(|r| {
+                !resolved.contains(&r.result_id)
+                    && required.iter().any(|s| s.identity() == r.identity())
+            })
             .collect();
         let approvals = self.approvals_current(&setup, Some(&candidate), runner::now_ms()?)?;
-        let prior_failures:i64=self.ledger.connection.query_row(
-            "SELECT COUNT(*) FROM check_results c JOIN operations o ON c.operation_id=o.operation_id WHERE o.run_id=?1 AND o.kind!='negative_control' AND (o.state!='completed' OR c.status!='pass')",
-            [run_id],|r|r.get(0)).map_err(|e|Error(e.to_string()))?;
+        let prior_failures = {
+            let mut statement=self.ledger.connection.prepare("SELECT c.result_id FROM check_results c JOIN operations o ON c.operation_id=o.operation_id WHERE o.run_id=?1 AND o.kind!='negative_control' AND (o.state!='completed' OR c.status!='pass')")?;
+            let rows = statement.query_map([run_id], |r| r.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|id| !resolved.contains(id))
+                .count()
+        };
         let trusted = TrustedPreconditions {
             evidence_provenance_verified: true,
             artifacts_present_and_verified: self.ledger.verify_artifacts().is_ok(),
@@ -865,6 +922,21 @@ impl Controller {
             integration_candidate_current: integration.current_revision(&setup.repository_id)?
                 == candidate.base_revision,
             prior_failures_resolved: prior_failures == 0,
+            accounting_complete: self
+                .ledger
+                .budgets(run_id)?
+                .values()
+                .all(|b| b.reserved == 0 && b.spent <= b.limit)
+                && self
+                    .ledger
+                    .operations(run_id)?
+                    .iter()
+                    .all(|o| o.state == "completed" || o.state == "failed"),
+            run_eligible: {
+                let state = self.ledger.run(run_id)?.state;
+                !matches!(state, State::Cancelled | State::Stopped | State::Rejected)
+                    && (state == State::Accepted || runner::now_ms()? < setup.deadline_ms)
+            },
         };
         Ok(evidence::evaluate(
             run_id, &key, &required, &admitted, &trusted,
@@ -879,11 +951,41 @@ impl Controller {
         cancel: &Cancellation,
     ) -> Result<RunReport> {
         let setup = self.setup(run_id)?;
-        let result = self.execute_stages(&setup, provider, integration, cancel);
+        let (active_cancel, _monitor) = ExecutionMonitor::start(
+            self.ledger.root(),
+            run_id,
+            cancel.clone(),
+            setup.deadline_ms,
+        )?;
+        if cancel.is_cancelled() {
+            active_cancel.cancel();
+        }
+        let result = self.execute_stages(&setup, provider, integration, &active_cancel);
         let report = match result {
             Ok(report) => report,
             Err(error) => {
-                let current = self.ledger.run(run_id)?;
+                let mut current = self.ledger.run(run_id)?;
+                if !current.state.terminal() && current.state != State::Blocked {
+                    let next = if runner::now_ms()? >= setup.deadline_ms
+                        || error.0.contains("budget unavailable")
+                        || error.0.contains("exhausted the budget")
+                    {
+                        Some(State::Stopped)
+                    } else if active_cancel.is_cancelled() {
+                        Some(State::Cancelled)
+                    } else {
+                        None
+                    };
+                    if let Some(next) = next {
+                        self.advance(
+                            run_id,
+                            next,
+                            "execution_stopped",
+                            serde_json::json!({"reason":error.to_string()}),
+                        )?;
+                        current = self.ledger.run(run_id)?;
+                    }
+                }
                 let restart = if current.state == State::ReadyForApproval {
                     State::CleanCi
                 } else {
@@ -895,6 +997,59 @@ impl Controller {
         self.ledger
             .store_json("report", &report, runner::now_ms()?)?;
         Ok(report)
+    }
+    fn accept_atomically(
+        &self,
+        run_id: &str,
+        integration: &dyn Integration,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        let current = self.ledger.run(run_id)?;
+        require(
+            current.state == State::ReadyForApproval,
+            "run is not ready for acceptance",
+        )?;
+        let event = self.ledger.store_json(
+            "event",
+            &serde_json::json!({"kind":"acceptance_committed","binding":current.binding_digest}),
+            runner::now_ms()?,
+        )?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.ledger.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let gate = self.verify(run_id, integration)?;
+        require(
+            gate.verdict == Verdict::Ready && !cancel.is_cancelled(),
+            "final authority or execution state changed before acceptance",
+        )?;
+        let now = runner::now_ms()?;
+        require(
+            now < self.setup(run_id)?.deadline_ms,
+            "task deadline exhausted before acceptance",
+        )?;
+        let revision = current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error("run revision overflow".into()))?;
+        let before =
+            serde_json::to_string(&State::ReadyForApproval).map_err(|e| Error(e.to_string()))?;
+        let after = serde_json::to_string(&State::Accepted).map_err(|e| Error(e.to_string()))?;
+        let changed=tx.execute("UPDATE runs SET state=?1,revision=?2,restart_state=NULL,updated_ms=?3 WHERE run_id=?4 AND revision=?5 AND state=?6 AND binding_digest=?7",rusqlite::params![after,revision as i64,now as i64,run_id,current.revision as i64,before,current.binding_digest.as_ref().map(Digest::as_str)])?;
+        require(changed == 1, "concurrent acceptance transition")?;
+        tx.execute(
+            "INSERT INTO events VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                run_id,
+                revision as i64,
+                before,
+                after,
+                event.digest.as_str(),
+                now as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
     fn execute_stages(
         &mut self,
@@ -917,20 +1072,20 @@ impl Controller {
                     reasons: vec![],
                 });
             }
-            if cancel.is_cancelled() {
-                self.advance(
-                    &setup.run_id,
-                    State::Cancelled,
-                    "cancelled",
-                    serde_json::json!({}),
-                )?;
-                continue;
-            }
             if runner::now_ms()? >= setup.deadline_ms {
                 self.advance(
                     &setup.run_id,
                     State::Stopped,
                     "deadline_exhausted",
+                    serde_json::json!({}),
+                )?;
+                continue;
+            }
+            if cancel.is_cancelled() {
+                self.advance(
+                    &setup.run_id,
+                    State::Cancelled,
+                    "cancelled",
                     serde_json::json!({}),
                 )?;
                 continue;
@@ -1010,7 +1165,7 @@ impl Controller {
                     self.advance(&setup.run_id,State::Implement,"negative_control_verified",serde_json::json!({"result":result.result_id,"cases":setup.negative_control_cases}))?;
                 }
                 State::Implement => {
-                    let candidate = self.implement(setup, provider, cancel)?;
+                    let candidate = self.implement(setup, provider, cancel, setup.base.clone(), Vec::new())?;
                     self.select_binding(setup, &candidate)?;
                     self.advance(
                         &setup.run_id,
@@ -1068,6 +1223,23 @@ impl Controller {
                         let spec = pending.remove(at);
                         let result = self.check(setup, &candidate, &key, spec, "check", cancel)?;
                         if result.status != Status::Pass {
+                            if cancel.is_cancelled() {
+                                let state=self.ledger.run(&setup.run_id)?.state;
+                                if !state.terminal() && state!=State::Blocked {
+                                    self.advance(&setup.run_id,if runner::now_ms()? >= setup.deadline_ms {State::Stopped}else{State::Cancelled},"verification_interrupted",serde_json::json!({"result":result.result_id}))?;
+                                }
+                                break;
+                            }
+                            if result.status == Status::Fail {
+                                if let Some(budget)=self.ledger.budgets(&setup.run_id)?.get("repairs") {
+                                    if budget.spent < budget.limit && budget.reserved == 0 {
+                                        self.advance(&setup.run_id,State::Repair,"repair_requested",serde_json::json!({"result":result.result_id}))?;
+                                        break;
+                                    }
+                                    self.advance(&setup.run_id,State::Stopped,"repair_budget_exhausted",serde_json::json!({"result":result.result_id}))?;
+                                    break;
+                                }
+                            }
                             return self.block(
                                 &setup.run_id,
                                 current.state,
@@ -1076,6 +1248,7 @@ impl Controller {
                         }
                         done.insert((spec.check_id.clone(), spec.configuration_digest.clone()));
                     }
+                    if self.ledger.run(&setup.run_id)?.state != current.state { continue; }
                     let next = match current.state {
                         State::FastChecks => State::RiskChecks,
                         State::RiskChecks => State::Review,
@@ -1123,12 +1296,7 @@ impl Controller {
                         report.gate = Some(gate);
                         return Ok(report);
                     }
-                    self.advance(
-                        &setup.run_id,
-                        State::Accepted,
-                        "acceptance_committed",
-                        serde_json::to_value(&gate).map_err(|e| Error(e.to_string()))?,
-                    )?;
+                    self.accept_atomically(&setup.run_id,integration,cancel)?;
                     return Ok(RunReport {
                         run_id: setup.run_id.clone(),
                         state: State::Accepted,
@@ -1140,13 +1308,102 @@ impl Controller {
                         reasons: vec![],
                     });
                 }
-                State::Repair | State::Replan => {
-                    return Err(Error(
-                        "repair or replan requires an explicit new candidate or approved intake"
-                            .into(),
-                    ))
+                State::Repair => {
+                    let candidate=self.current_candidate(&setup.run_id)?.ok_or_else(||Error("repair has no candidate".into()))?;
+                    let before=candidate.digest()?;
+                    let binding=self.ledger.run(&setup.run_id)?.binding_digest.ok_or_else(||Error("repair has no binding".into()))?;
+                    let results=self.ledger.completed_results(&setup.run_id,&binding)?;
+                    let feedback=results.into_iter().map(|r|serde_json::to_value(r).map_err(|e|Error(e.to_string()))).collect::<Result<Vec<_>>>()?;
+                    let input=self.ledger.store_json("operation",&serde_json::json!({"repair_of":before}),runner::now_ms()?)?;
+                    let lease=self.ledger.claim(&setup.run_id,&uuid::Uuid::new_v4().to_string(),"repair",&input.digest,&uuid::Uuid::new_v4().to_string(),runner::now_ms()?,setup.deadline_ms.saturating_sub(runner::now_ms()?).max(1),&[("repairs".into(),1)].into())?;
+                    let outcome=self.implement(setup,provider,cancel,candidate,feedback);
+                    let output=self.ledger.store_json("operation",&serde_json::json!({"repaired":outcome.is_ok(),"error":outcome.as_ref().err().map(ToString::to_string)}),runner::now_ms()?)?;
+                    require(self.ledger.complete(&lease,&output.digest,&[("repairs".into(),1)].into(),runner::now_ms()?)?,"repair exhausted the budget")?;
+                    let candidate=outcome?;
+                    require(candidate.digest()?!=before,"repair produced no changed candidate")?;
+                    self.select_binding(setup,&candidate)?;
+                    self.advance(&setup.run_id,State::FastChecks,"repair_admitted",serde_json::json!({"candidate":candidate.digest()?}))?;
                 }
+                State::Replan => return Err(Error("semantic replanning requires a newly approved intake; automatic replans are disabled".into())),
                 _ => return Err(Error("unhandled workflow state".into())),
+            }
+        }
+    }
+}
+
+// A separate read connection observes operator cancellation/recovery while a native
+// command or provider request blocks the controller thread. No worker owns this token.
+struct ExecutionMonitor {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl ExecutionMonitor {
+    fn start(
+        root: &std::path::Path,
+        run_id: &str,
+        parent: Cancellation,
+        deadline: u64,
+    ) -> Result<(Cancellation, Self)> {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        let cancel = Cancellation::default();
+        let observed = cancel.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let path = root.join("ledger.sqlite3");
+        let run_id = run_id.to_string();
+        let thread = std::thread::Builder::new()
+            .name("harness-control".into())
+            .spawn(move || {
+                let connection = rusqlite::Connection::open_with_flags(
+                    path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                );
+                let Ok(connection) = connection else {
+                    observed.cancel();
+                    return;
+                };
+                if connection
+                    .busy_timeout(std::time::Duration::from_millis(200))
+                    .is_err()
+                {
+                    observed.cancel();
+                    return;
+                }
+                while !stopping.load(Ordering::SeqCst) {
+                    let state = connection
+                        .query_row("SELECT state FROM runs WHERE run_id=?1", [&run_id], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .map_err(Error::from)
+                        .and_then(|s| wire::decode::<State>(s.as_bytes()));
+                    if parent.is_cancelled()
+                        || runner::now_ms().map_or(true, |now| now >= deadline)
+                        || state.map_or(true, |s| s.terminal() || s == State::Blocked)
+                    {
+                        observed.cancel();
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            })?;
+        Ok((
+            cancel,
+            Self {
+                stop,
+                thread: Some(thread),
+            },
+        ))
+    }
+}
+impl Drop for ExecutionMonitor {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                eprintln!("harness control monitor terminated unexpectedly");
             }
         }
     }

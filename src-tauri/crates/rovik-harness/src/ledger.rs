@@ -91,6 +91,7 @@ pub struct BudgetAccount {
 
 /// One durable controller store and its immutable blob storage.
 pub struct Ledger {
+    pub(crate) root: std::path::PathBuf,
     pub(crate) connection: Connection,
     pub(crate) artifacts: ArtifactStore,
 }
@@ -112,7 +113,7 @@ impl Ledger {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: u32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        require(version <= 2, "ledger schema is newer than this controller")?;
+        require(version <= 3, "ledger schema is newer than this controller")?;
         if version == 0 {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             // Recheck after acquiring the write lock: another controller may have migrated.
@@ -132,7 +133,16 @@ impl Ledger {
             }
             tx.commit()?;
         }
+        if version < 3 {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if current == 2 {
+                tx.execute_batch(include_str!("../migrations/003_operations.sql"))?;
+            }
+            tx.commit()?;
+        }
         Ok(Self {
+            root: root.to_path_buf(),
             connection,
             artifacts: ArtifactStore::open(&root.join("artifacts"), 64 * 1024 * 1024)?,
         })
@@ -145,6 +155,9 @@ impl Ledger {
         bytes: &[u8],
         now: u64,
     ) -> Result<ArtifactRef> {
+        // Serialize publication with retention, including reuse of an aged orphan.
+        let tx =
+            rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let reference = self.artifacts.put(kind, media_type, bytes)?;
         self.connection.execute(
             "INSERT OR IGNORE INTO artifacts VALUES(?1,?2,?3,?4,?5)",
@@ -169,6 +182,7 @@ impl Ledger {
                 reference.media_type
             ],
         )?;
+        tx.commit()?;
         Ok(reference)
     }
     /// Store canonical JSON, preserving exact bytes used for its digest.
@@ -289,7 +303,10 @@ impl Ledger {
     /// Select new immutable evidence inputs and record the invalidation event.
     pub fn bind(&mut self, expected: &RunRecord, binding: &Digest, now: u64) -> Result<RunRecord> {
         self.read(binding)?;
-        require(!expected.state.terminal(), "cannot rebind a terminal run")?;
+        require(
+            !expected.state.terminal() && expected.state != State::Blocked,
+            "cannot rebind a blocked or terminal run",
+        )?;
         let event = self.store_json(
             "event",
             &serde_json::json!({"kind":"binding_changed", "binding":binding}),
@@ -364,8 +381,15 @@ impl Ledger {
                 r.get(0)
             })?;
         require(
-            !wire::decode::<State>(state.as_bytes())?.terminal(),
-            "cannot schedule a terminal run",
+            !matches!(
+                wire::decode::<State>(state.as_bytes())?,
+                State::Blocked
+                    | State::Accepted
+                    | State::Cancelled
+                    | State::Stopped
+                    | State::Rejected
+            ),
+            "cannot schedule a blocked or terminal run",
         )?;
         let existing: Option<StoredOperation> = tx.query_row("SELECT operation_id,state,input_digest,generation,lease_owner,lease_expires_ms,kind,reservation_json FROM operations WHERE run_id=?1 AND operation_key=?2", params![run_id,key], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,number(r,3)?,r.get(4)?,number(r,5)?,r.get(6)?,r.get(7)?))).optional()?;
         if let Some((
@@ -428,7 +452,10 @@ impl Ledger {
     pub fn verify_lease(&self, lease: &Lease, now: u64) -> Result<()> {
         let found: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN runs r ON r.run_id=o.run_id WHERE o.operation_id=?1 AND o.run_id=?2 AND generation=?3 AND lease_owner=?4 AND lease_expires_ms=?5 AND lease_expires_ms>?6 AND o.state='running')", params![lease.operation_id,lease.run_id,integer(lease.generation)?,lease.owner,integer(lease.expires_ms)?,integer(now)?], |r|r.get(0))?;
         require(
-            found && !self.run(&lease.run_id)?.state.terminal(),
+            found && {
+                let state = self.run(&lease.run_id)?.state;
+                !state.terminal() && state != State::Blocked
+            },
             "stale or unauthenticated operation lease",
         )
     }
@@ -442,6 +469,7 @@ impl Ledger {
     ) -> Result<bool> {
         self.read(output)?;
         self.verify_lease(lease, now)?;
+        let usage_receipt = self.store_json("receipt", &serde_json::json!({"operation_id":lease.operation_id,"generation":lease.generation,"actual":usage}), now)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -451,8 +479,15 @@ impl Ledger {
             |r| r.get(0),
         )?;
         require(
-            !wire::decode::<State>(state.as_bytes())?.terminal(),
-            "run terminated before operation completion",
+            !matches!(
+                wire::decode::<State>(state.as_bytes())?,
+                State::Blocked
+                    | State::Accepted
+                    | State::Cancelled
+                    | State::Stopped
+                    | State::Rejected
+            ),
+            "run paused or terminated before operation completion",
         )?;
         let reservation: String = tx.query_row(
             "SELECT reservation_json FROM operations WHERE operation_id=?1",
@@ -473,6 +508,14 @@ impl Ledger {
         }
         let changed = tx.execute("UPDATE operations SET state='completed',output_digest=?1 WHERE operation_id=?2 AND generation=?3 AND lease_owner=?4 AND lease_expires_ms>?5 AND state='running'", params![output.as_str(),lease.operation_id,integer(lease.generation)?,lease.owner,integer(now)?])?;
         require(changed == 1, "operation fenced during completion")?;
+        tx.execute(
+            "INSERT INTO usage_receipts VALUES(?1,?2,?3)",
+            params![
+                lease.operation_id,
+                usage_receipt.digest.as_str(),
+                integer(now)?
+            ],
+        )?;
         tx.commit()?;
         Ok(self
             .budgets(&lease.run_id)?

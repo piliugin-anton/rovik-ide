@@ -150,6 +150,10 @@ pub struct TrustedPreconditions {
     pub integration_candidate_current: bool,
     /// All earlier failures have an explicit disposition.
     pub prior_failures_resolved: bool,
+    /// No unknown reservations or exhausted accounts.
+    pub accounting_complete: bool,
+    /// The run has not been cancelled, stopped, rejected, or timed out before acceptance.
+    pub run_eligible: bool,
 }
 
 /// Deterministic gate verdict, distinct from an accepted workflow state.
@@ -209,6 +213,8 @@ pub fn evaluate(
             trusted.integration_candidate_current,
         ),
         ("prior_failures_resolved", trusted.prior_failures_resolved),
+        ("accounting_complete", trusted.accounting_complete),
+        ("run_eligible", trusted.run_eligible),
     ] {
         if !passed {
             blockers.push(format!("precondition:{name}"));

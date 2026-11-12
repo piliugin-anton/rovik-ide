@@ -60,6 +60,8 @@ fn fixture() -> (EvidenceKey, CheckSpec, CheckResult, TrustedPreconditions) {
         approvals_current: true,
         integration_candidate_current: true,
         prior_failures_resolved: true,
+        accounting_complete: true,
+        run_eligible: true,
     };
     (key, spec, result, trusted)
 }
@@ -175,11 +177,13 @@ fn missing_trusted_preconditions_block_even_when_every_test_passes() {
         &TrustedPreconditions::default(),
     );
     assert_eq!(decision.verdict, Verdict::Blocked);
-    assert_eq!(decision.reasons.len(), 9);
+    assert_eq!(decision.reasons.len(), 11);
     for reason in [
         "approvals_current",
         "integration_candidate_current",
         "prior_failures_resolved",
+        "accounting_complete",
+        "run_eligible",
     ] {
         assert!(decision.reasons.contains(&format!("precondition:{reason}")));
     }
