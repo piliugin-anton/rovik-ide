@@ -56,7 +56,7 @@ outside the initial implementation.
 | --------- | --------------------------------------------------------------- | --------------------------------------- |
 | M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures    |
 | M1        | Artifact store, ledger, state machine, gate and recovery        | Transaction, recovery and gate fixtures |
-| M2        | Isolated runner, registry, receipts, native normalizers         | Pending                                 |
+| M2        | Isolated runner, registry, receipts, native normalizers         | Native isolation and inventory fixtures |
 | M3        | Provider/broker integration and Rust quota vertical slice       | Pending                                 |
 | M4        | C/C++ packs, configured graphs and consumers                    | Pending                                 |
 | M5        | Risk obligations, failure injection and interop                 | Pending                                 |
@@ -92,3 +92,44 @@ required case inventory, execution status, approvals and controller attestations
 It returns ready, failed or blocked; it does not authenticate receipts itself or
 turn a model verdict into a state transition. M2 adds receipt admission and the
 isolated execution adapter.
+
+## Isolated execution (M2)
+
+The initial backend requires a local Linux Docker daemon and a preloaded image
+identified by its immutable configuration digest. It never pulls an image during
+verification or falls back to host execution. Each check uses a fresh container,
+a separate unprivileged uid, no network, no capabilities, a read-only root and
+read-only source/oracle/dependency mounts. Memory (including swap), CPU, process,
+build-space, output and execution-time limits are explicit registered inputs.
+Setup/control operations have a separate bounded deadline for slow storage drivers.
+
+Reports are collected inside the live sandbox because Docker's archive API does
+not expose tmpfs outputs. The collector accepts only its fixed regular output
+file; bounded bytes go directly to deterministic Rust, CTest/JUnit or protected
+JSON inventory parsers. DTDs, inconsistent counts, missing outcomes and malformed
+reports cannot become passing evidence. Whole-container termination and removal
+also stop background descendants.
+
+Receipts are created by the controller after actual execution and bind the
+materialized candidate, oracle, environment, command, parameters, configuration
+and active operation lease. Merely storing a worker-supplied result JSON creates
+no accepted evidence. An unfinished or abandoned operation cannot supply final
+results.
+
+Patch admission checks complete trees, including deletions, rename endpoints,
+case collisions and modes. Binary, executable and build-input changes require
+explicit additional scope. Symlink/submodule file modes are currently unsupported
+and block admission; this is not silently treated as verified support.
+
+Native isolation regression tests are opt-in because they invoke Docker:
+
+```sh
+ROVIK_HARNESS_DOCKER=1 ROVIK_HARNESS_IMAGE=sha256:<local-image-config-digest> \
+  cargo test -p rovik-harness --test execution -- --ignored --test-threads=1
+```
+
+The security fixtures were exercised with Alpine 3.22.0, local image configuration
+`sha256:cea2ff433c610f5363017404ce989632e12b953114fefc6f597a58e813c15d61`.
+This pins test infrastructure, not a production compiler profile. These tests
+establish the documented containment properties; they do not establish protection
+against an arbitrary kernel or container-runtime exploit.

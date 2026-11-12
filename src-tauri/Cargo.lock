@@ -5356,6 +5356,7 @@ dependencies = [
 name = "rovik-harness"
 version = "0.2.16"
 dependencies = [
+ "quick-xml",
  "rusqlite",
  "serde",
  "serde_json",

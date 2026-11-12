@@ -10,10 +10,14 @@ pub mod contract;
 pub mod evidence;
 pub mod identity;
 pub mod ledger;
+pub mod normalizer;
 pub mod plan;
 pub mod policy;
 pub mod profile;
+pub mod registry;
+pub mod runner;
 pub mod scope;
+pub mod snapshot;
 pub mod state;
 pub mod wire;
 

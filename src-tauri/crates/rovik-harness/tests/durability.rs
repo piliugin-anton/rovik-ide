@@ -89,6 +89,24 @@ fn crash_after_blob_publication_has_no_dangling_run_reference() {
 }
 
 #[test]
+fn identical_source_and_log_bytes_keep_their_registered_reference_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = init(&dir.path().join("state"));
+    let source = ledger
+        .store("source", "application/octet-stream", b"", 1)
+        .unwrap();
+    let log = ledger
+        .store("log", "application/octet-stream", b"", 2)
+        .unwrap();
+    assert_eq!(source.digest, log.digest);
+    ledger.verify_reference(&source).unwrap();
+    ledger.verify_reference(&log).unwrap();
+    let mut forged = source;
+    forged.kind = "receipt".into();
+    assert!(ledger.verify_reference(&forged).is_err());
+}
+
+#[test]
 fn a_failed_event_insert_rolls_back_the_state_update() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("state");

@@ -62,11 +62,26 @@ const flush = async () => {
   for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-/** What the `index`th terminal shows, once xterm has drawn it (on an animation frame). */
-async function screen(root: HTMLElement, index: number): Promise<string> {
-  await new Promise((resolve) => setTimeout(resolve, 50));
+/** Wait for xterm's asynchronous write and render, even when the test host is busy. */
+async function screen(root: HTMLElement, index: number, expected: RegExp): Promise<string> {
   const terminal = root.querySelectorAll('.terminal-instance')[index];
-  return terminal?.querySelector('.xterm-rows')?.textContent ?? '';
+  assert.ok(terminal, 'the terminal exists');
+  const read = () => terminal.querySelector('.xterm-rows')?.textContent ?? '';
+  if (expected.test(read())) return read();
+  return new Promise((resolve, reject) => {
+    const observer = new MutationObserver(() => {
+      const text = read();
+      if (!expected.test(text)) return;
+      clearTimeout(deadline);
+      observer.disconnect();
+      resolve(text);
+    });
+    const deadline = setTimeout(() => {
+      observer.disconnect();
+      reject(new Error(`Terminal did not render ${expected}: ${JSON.stringify(read())}`));
+    }, 2_000);
+    observer.observe(terminal, { childList: true, characterData: true, subtree: true });
+  });
 }
 const sent = (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args);
 
@@ -301,13 +316,13 @@ test('a remote terminal says it connects until its shell says something, and whe
   await flush();
   menuItems(root)[1].click();
   await flush();
-  assert.match(await screen(root, 1), /Connecting to Build…/);
+  assert.match(await screen(root, 1, /Connecting to Build…/), /Connecting to Build…/);
   send(1, { type: 'output', data: 'me@build:~$ ' });
-  const shown = await screen(root, 1);
+  const shown = await screen(root, 1, /me@build:~\$/);
   assert.match(shown, /me@build:~\$/);
   assert.doesNotMatch(shown, /Connecting/, 'the line goes once the shell speaks');
   send(1, { type: 'exit', code: null });
-  assert.match(await screen(root, 1), /\[connection closed\]/);
+  assert.match(await screen(root, 1, /\[connection closed\]/), /\[connection closed\]/);
   assert.deepEqual(labels(root), ['bash (local)', 'zsh (Build (remote))'], 'kept to be read');
 });
 
@@ -321,7 +336,7 @@ test("a host that can't be reached: its terminal says so", async () => {
   await flush();
   menuItems(root)[1].click();
   await flush();
-  const shown = await screen(root, 1);
+  const shown = await screen(root, 1, /Couldn't open a shell on Build/);
   assert.match(shown, /Couldn't open a shell on Build: The host couldn't be reached/);
   assert.doesNotMatch(shown, /Connecting/);
 });

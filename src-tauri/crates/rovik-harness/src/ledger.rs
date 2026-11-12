@@ -112,7 +112,7 @@ impl Ledger {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: u32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        require(version <= 1, "ledger schema is newer than this controller")?;
+        require(version <= 2, "ledger schema is newer than this controller")?;
         if version == 0 {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             // Recheck after acquiring the write lock: another controller may have migrated.
@@ -121,6 +121,14 @@ impl Ledger {
                 tx.execute_batch(include_str!("../migrations/001_initial.sql"))?;
                 tx.execute("INSERT INTO schema_versions VALUES(1, 0)", [])?;
                 tx.execute_batch("PRAGMA user_version=1;")?;
+            }
+            tx.commit()?;
+        }
+        if version < 2 {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if current == 1 {
+                tx.execute_batch(include_str!("../migrations/002_artifact_types.sql"))?;
             }
             tx.commit()?;
         }
@@ -149,7 +157,18 @@ impl Ledger {
             ],
         )?;
         let stored = self.reference(&reference.digest)?;
-        require(stored == reference, "conflicting artifact metadata")?;
+        require(
+            stored.byte_count == reference.byte_count,
+            "conflicting artifact length",
+        )?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO artifact_types VALUES(?1,?2,?3)",
+            params![
+                reference.digest.as_str(),
+                reference.kind,
+                reference.media_type
+            ],
+        )?;
         Ok(reference)
     }
     /// Store canonical JSON, preserving exact bytes used for its digest.
@@ -173,6 +192,13 @@ impl Ledger {
     /// Read and integrity-check a registered artifact.
     pub fn read(&self, digest: &Digest) -> Result<Vec<u8>> {
         self.artifacts.read(&self.reference(digest)?)
+    }
+    /// Check both content integrity and the independently registered reference type.
+    pub fn verify_reference(&self, reference: &ArtifactRef) -> Result<()> {
+        let registered: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM artifact_types WHERE digest=?1 AND kind=?2 AND media_type=?3)", params![reference.digest.as_str(), reference.kind, reference.media_type], |r|r.get(0))?;
+        require(registered, "artifact reference type is not registered")?;
+        self.artifacts.read(reference)?;
+        Ok(())
     }
     /// Create an intake with explicit budgets. A duplicate run is an error.
     pub fn create_run(
