@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "id": "quota.reserve.v1",
+  "bounded_context": "quota",
+  "intent": "Reserve a strictly positive quantity without overdraw; preserve state on failure.",
+  "scope": {
+    "allow_write": [
+      "implementations/quota/**",
+      "tests/quota/**"
+    ],
+    "protected": [
+      ".harness/**",
+      "acceptance/**",
+      "ci/**"
+    ]
+  },
+  "numeric_contract": {
+    "domain": "unsigned 64-bit integers",
+    "wire_encoding": "decimal strings",
+    "overflow": "reject invalid ranges; check before subtraction"
+  },
+  "invariants": [
+    {
+      "id": "Q-1",
+      "statement": "Successful reservation reduces remaining by exactly amount.",
+      "owner": "quota core",
+      "case_ids": [
+        "reserve-success",
+        "reserve-exact",
+        "reserve-maximum"
+      ]
+    },
+    {
+      "id": "Q-2",
+      "statement": "Amount greater than remaining is rejected without state change.",
+      "owner": "quota core",
+      "case_ids": [
+        "reserve-insufficient",
+        "reserve-empty",
+        "reserve-insufficient-maximum"
+      ]
+    },
+    {
+      "id": "Q-3",
+      "statement": "Zero amount is rejected without state change.",
+      "owner": "quota validated input boundary",
+      "case_ids": [
+        "reserve-zero"
+      ]
+    }
+  ],
+  "constraints": {
+    "concurrency": "caller serializes operations on the same quota; concurrent atomic reservation is a separate contract",
+    "domain_io": "none",
+    "new_dependencies": "approval required"
+  },
+  "risk_tags": [
+    "integer-boundaries",
+    "state-mutation"
+  ],
+  "unknowns": [],
+  "profile_ids": [
+    "quota-rust-host",
+    "quota-cpp-host",
+    "quota-c-host"
+  ],
+  "acceptance_suite_ids": [
+    "quota.reserve.cases.v1"
+  ]
+}

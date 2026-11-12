@@ -5353,6 +5353,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rovik-harness"
+version = "0.2.16"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+]
+
+[[package]]
 name = "rovik-headless"
 version = "0.2.16"
 dependencies = [
