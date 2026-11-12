@@ -687,7 +687,9 @@ impl Run {
                 .await?;
         // Launched first (round 3): the question goes in its chat only
         // when the follow-up really starts, so a failed one leaves none.
-        let mut run = self.launch_child(child.id.clone(), &tc.id, goal, sub)?;
+        let mut run = self
+            .launch_child(child.id.clone(), &tc.id, goal, sub)
+            .await?;
         if asked {
             // Round 3: resumed, it goes on with the calls it already made.
             let id = child.id.clone();
@@ -769,7 +771,7 @@ impl Run {
 
     /// Registers a child under this run and prepares its run; the chat
     /// hears it started.
-    pub(super) fn launch_child(
+    pub(super) async fn launch_child(
         &self,
         child_id: String,
         call_id: &str,
@@ -779,6 +781,17 @@ impl Run {
         #[cfg(test)]
         if FAIL_LAUNCH.lock().unwrap().contains(call_id) {
             return Err("Error: that subagent is already running.".into());
+        }
+        let focus: Vec<String> = sub
+            .scope
+            .as_ref()
+            .map(|s| s.files.iter().chain(&s.folders).cloned().collect())
+            .unwrap_or_default();
+        // Prepare before registration: cancelling this await leaves no
+        // registered child or start event behind.
+        let map = self.kind_map(sub.kind, &focus).await;
+        if self.stopped() {
+            return Err("Error: the run stopped before the subagent started.".into());
         }
         let Some(controls) = self.core.agents.register_child(
             &child_id,
@@ -791,12 +804,6 @@ impl Run {
         };
         sub.run_id = controls.run_id.clone();
         sub.registered = Some(self.core.agents.registered(&child_id, &controls.run_id));
-        let focus: Vec<String> = sub
-            .scope
-            .as_ref()
-            .map(|s| s.files.iter().chain(&s.folders).cloned().collect())
-            .unwrap_or_default();
-        let map = self.kind_map(sub.kind, &focus);
         let writes = sub.kind.writes();
         self.core.agents.describe_child(
             &child_id,
@@ -834,7 +841,11 @@ impl Run {
 
     /// S18: a kind's own repository map, when it isn't the lead's: around
     /// the files this run changed, smaller. None: the lead's map.
-    fn kind_map(&self, kind: Kind, focus_files: &[String]) -> Option<(Option<String>, usize)> {
+    async fn kind_map(
+        &self,
+        kind: Kind,
+        focus_files: &[String],
+    ) -> Option<(Option<String>, usize)> {
         let subagent::MapScope::Changed { fraction_percent } = kind.map_scope() else {
             return None;
         };
@@ -842,17 +853,25 @@ impl Run {
         let chars = (self.map.budget() * fraction_percent / 100).max(500);
         let mut touched: Vec<String> = self.touched_keys().into_iter().collect();
         touched.extend(focus_files.iter().cloned());
-        let root_path = std::path::Path::new(&root);
-        let focus = crate::repo_map::focus_from(root_path, "", &touched);
-        let options = crate::repo_map::Options {
-            max_chars: chars,
-            restricted: self.restricted.clone(),
-            ..Default::default()
-        };
-        Some((
-            crate::repo_map::repo_map(root_path, &focus, &options),
-            chars,
-        ))
+        let restricted = self.restricted.clone();
+        let map = crate::rt::spawn_blocking(move || {
+            let root_path = std::path::Path::new(&root);
+            let focus = crate::repo_map::focus_from(root_path, "", &touched);
+            let options = crate::repo_map::Options {
+                max_chars: chars,
+                restricted,
+                ..Default::default()
+            };
+            crate::repo_map::repo_map(root_path, &focus, &options)
+        })
+        .await;
+        match map {
+            Ok(map) => Some((map, chars)),
+            Err(error) => {
+                eprintln!("rovik: couldn't prepare the subagent's repository map: {error}");
+                Some((None, chars))
+            }
+        }
     }
 
     /// A subagent the IDE starts itself (a reviewer), for `call_id` (the
@@ -906,7 +925,9 @@ impl Run {
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
         // One that couldn't launch leaves no chat behind (`launched`).
-        let launched = self.launch_child(child_id.clone(), call_id, goal, sub);
+        let launched = self
+            .launch_child(child_id.clone(), call_id, goal, sub)
+            .await;
         let child = self.launched(launched, &child_id, false).await?;
         let result = run_child(child).await;
         if let Some(r) = &result {
@@ -943,7 +964,9 @@ impl Run {
                 let child_id = uuid::Uuid::new_v4().to_string();
                 self.store_child(&child_id, &job.call_id, kind, &job.goal, job.message)
                     .await?;
-                let child = self.launch_child(child_id.clone(), &job.call_id, &job.goal, sub);
+                let child = self
+                    .launch_child(child_id.clone(), &job.call_id, &job.goal, sub)
+                    .await;
                 Ok::<_, String>((child_id, child))
             };
             // One that couldn't launch leaves no chat behind (`launched`).
@@ -1786,7 +1809,9 @@ impl Run {
                 None => self.close_child_calls(child_id).await?,
                 Some(m) => self.store_child(child_id, call_id, kind, goal, m).await?,
             }
-            let launched = self.launch_child(child_id.to_string(), call_id, goal, sub);
+            let launched = self
+                .launch_child(child_id.to_string(), call_id, goal, sub)
+                .await;
             self.launched(launched, child_id, resumed).await
         }
         .await;

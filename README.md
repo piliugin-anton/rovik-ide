@@ -1921,6 +1921,13 @@ drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
 
+Repository maps, `callers` and `neighbours` share a bounded structural graph
+cache. Each query still collects the current visible source files and checks
+their versions and access rules before reusing graph data. Task-specific
+ranking stays separate, and different workspace views keep separate entries.
+This avoids rebuilding unchanged relationships; it does not eliminate the
+directory walk. Subagent map preparation runs off the async execution thread.
+
 Agent `search_code` calls stop searching file contents after enough matches
 are found in path order. Incomplete totals are labeled as lower bounds;
 `count_all: true` requests exhaustive counting, subject to the search limit.

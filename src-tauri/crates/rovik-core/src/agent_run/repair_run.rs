@@ -521,7 +521,7 @@ impl Run {
             self.close_child_calls(&child).await?;
             // Launched first (P3.10): its chat gets the fix's brief only when
             // the fixer really starts.
-            let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
+            let mut run = self.launch_child(child.clone(), &call_id, &goal, sub).await?;
             let text = fixer_message(cause, round, results);
             self.append_follow_up(&child, Kind::Worker, &call_id, &text, true)
                 .await?;
