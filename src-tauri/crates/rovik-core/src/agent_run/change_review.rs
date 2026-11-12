@@ -76,7 +76,16 @@ Severity: high (wrong results, data loss, a crash in normal use), medium (wrong 
 
 pub static REVIEWER: KindSpec = KindSpec {
     label: "Change reviewer",
-    tools: &BuiltinTool::READS,
+    tools: &[
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
+        BuiltinTool::Diagnostics,
+        BuiltinTool::SubmitReview,
+    ],
     default_budget: Budget {
         tool_calls: 30,
         wall: Duration::from_secs(300),
@@ -558,8 +567,17 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         let step = STEP.captures(&location).and_then(|c| c[1].parse().ok());
         let (path, line) = match AT_LINE.captures(&location) {
             // A step, or words ("Validation section"), aren't a path.
-            _ if step.is_some() || location.contains(char::is_whitespace) => (None, None),
+            // A source path with a directory or extension may contain spaces,
+            // but several path:line references are still words, not one path.
+            _ if step.is_some() => (None, None),
+            Some(c)
+                if location.contains(char::is_whitespace)
+                    && (!c[1].contains(['/', '.']) || c[1].contains(':')) =>
+            {
+                (None, None)
+            }
             Some(c) => (Some(c[1].to_string()), c[2].parse().ok()),
+            _ if location.contains(char::is_whitespace) => (None, None),
             None if location.contains('/') || location.contains('.') => {
                 (Some(location.clone()), None)
             }

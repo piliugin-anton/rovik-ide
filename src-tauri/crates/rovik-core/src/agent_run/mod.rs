@@ -81,6 +81,7 @@ pub mod review;
 mod run;
 pub mod server;
 pub mod steer;
+mod structured_report;
 pub mod subagent;
 mod subagent_run;
 pub mod test_writer;

@@ -1955,6 +1955,16 @@ impl Run {
                 tools.push(super::worker::extend_scope_schema());
             }
             let mut prompt = format!("{}\n\n{}", spec.prompt(&sub.budget), self.project_context);
+            if sub.kind == subagent::Kind::Reviewer
+                && !sub.view_only
+                && !sub.legacy_review
+                && !self.profile.no_tools
+                && !context_only
+            {
+                tools.push(super::structured_report::schema());
+                prompt.push_str("\n\n");
+                prompt.push_str(super::structured_report::INSTRUCTION);
+            }
             if let Some(section) = &mcp_section {
                 prompt = format!("{prompt}\n\n{section}");
             }

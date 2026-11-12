@@ -210,6 +210,22 @@ impl Run {
             .note(super::steer::Doing::Calls, self.guard.tool_calls);
         let mut rest = calls;
         while !rest.is_empty() {
+            // A final review closes the evidence snapshot. Settle every call
+            // ID in a mixed reply, but do not execute work after acceptance.
+            if self.sub().is_some_and(|sub| sub.accepted_review.is_some()) {
+                for tc in rest {
+                    self.calls.start(&tc.id);
+                    self.answer_unrun(
+                        tc,
+                        "Error: not run: this review was already submitted.".into(),
+                        Outcome::Failed,
+                        true,
+                        None,
+                    )
+                    .await?;
+                }
+                break;
+            }
             // P2.2: a subagent's time runs out within a reply too: what's
             // left of it isn't run.
             if self.wall_left() == Some(std::time::Duration::ZERO) {
@@ -692,6 +708,12 @@ impl Run {
             // The plan (Plan mode): checked, then saved; problems go back to the model.
             Some(BuiltinTool::SubmitPlan) => {
                 return self.submit_plan(tc, &args).await;
+            }
+            Some(BuiltinTool::SubmitReview) => {
+                let result = self.submit_review(&args);
+                return self
+                    .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
+                    .await;
             }
             // S06: the answers to the change review's findings.
             Some(BuiltinTool::AnswerReview) if self.sub().is_none() => {

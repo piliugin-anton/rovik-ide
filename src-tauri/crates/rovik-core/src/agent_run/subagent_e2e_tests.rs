@@ -4,6 +4,9 @@
 
 use super::*;
 
+#[path = "structured_review_e2e_tests.rs"]
+mod structured_review_tests;
+
 #[cfg(unix)]
 #[path = "preflight_e2e_tests.rs"]
 mod preflight_tests;

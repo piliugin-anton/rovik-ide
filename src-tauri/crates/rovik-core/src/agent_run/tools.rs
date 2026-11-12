@@ -3470,6 +3470,7 @@ a.rs (3 matches)
             super::super::subagent::task_schema(&[super::super::subagent::Kind::Scout], false),
             super::super::worker::extend_scope_schema(),
             super::super::change_review::answer_review_schema(),
+            super::super::structured_report::schema(),
             super::super::mcp_tool::schema(),
         ]);
         schemas

@@ -117,6 +117,10 @@ pub(super) struct SubCtx {
     /// missing verdict is only asked for on one of them, or on a finding
     /// about the plan as a whole. Empty: no such filter.
     pub earlier_changed: Vec<usize>,
+    /// A validated final change review: returning it needs no extra model turn.
+    pub accepted_review: Option<String>,
+    /// This provider rejected the final report schema; use the text path once.
+    pub legacy_review: bool,
     /// T08: one turn without tools in its chat as it was, its words the
     /// result, in no format (a change reviewer's view of the task's end).
     pub view_only: bool,
@@ -160,6 +164,8 @@ impl SubCtx {
             other_steps: Vec::new(),
             earlier_findings: Vec::new(),
             earlier_changed: Vec::new(),
+            accepted_review: None,
+            legacy_review: false,
             view_only: false,
         }
     }
@@ -1377,6 +1383,12 @@ impl Run {
                 if !turn.text.trim().is_empty() {
                     last_text = turn.text.clone();
                 }
+                if turn.text.trim().is_empty()
+                    && turn.tool_calls.is_empty()
+                    && self.retry_legacy_review(&error)
+                {
+                    continue;
+                }
                 if error.kind == ErrorKind::Cancelled || self.stopped() {
                     return Ok((SubStatus::Stopped, last_text, None));
                 }
@@ -1441,6 +1453,11 @@ impl Run {
             }
             if self.stopped() {
                 return Ok((SubStatus::Stopped, last_text, None));
+            }
+            // A typed final report has already been validated and does not
+            // need a words-only turn.
+            if let Some(report) = self.sub_mut().and_then(|sub| sub.accepted_review.take()) {
+                return Ok((SubStatus::Done, report, None));
             }
             // No checkpoints for a subagent; a loop it was already warned
             // about ends it, with a report (K03).

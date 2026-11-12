@@ -197,6 +197,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the agent's own context. A change reviewer always reads each finished
   change that hasn't landed, with fresh eyes, before the checks run; its
   model and budget are set in Settings → Subagents, and it has no switch.
+  Change reviewers can submit a validated report with findings, evidence and
+  explicit verdicts on earlier findings, finishing without an extra formatting
+  turn. Invalid submissions are returned for correction. Existing text reports
+  remain readable, and providers that reject the report tool use the text path.
   Each finding is ranked
   by its severity, how sure the reviewer is and whether it's about code
   the change touched: the agent fixes or answers the ones that weigh
