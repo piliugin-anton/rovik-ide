@@ -28,6 +28,8 @@ pub enum Operation {
     Probe,
     /// Collect configured dependencies and validate boundaries.
     Index,
+    /// Run protected runtime tests and return their complete native report.
+    Test,
     /// Propose checks for independent core validation.
     PlanChecks,
     /// Attribute native diagnostics without changing their outcome.
@@ -245,7 +247,13 @@ impl Graph {
             self.precision
                 == match input.profile.language {
                     Language::Rust => Precision::CargoResolved,
-                    _ => Precision::ConfiguredBuild,
+                    Language::C | Language::Cpp => Precision::ConfiguredBuild,
+                    _ => {
+                        return Err(Error(
+                            "configured import graphs are not supported for this runtime pack"
+                                .into(),
+                        ))
+                    }
                 },
             "graph precision is insufficient",
         )?;
@@ -286,7 +294,7 @@ impl Graph {
                 .all(|id| self.test_inventory.contains(id)),
             "required native test disappeared from discovery",
         )?;
-        if input.profile.language != Language::Rust {
+        if matches!(input.profile.language, Language::C | Language::Cpp) {
             let config = input
                 .profile
                 .configurations

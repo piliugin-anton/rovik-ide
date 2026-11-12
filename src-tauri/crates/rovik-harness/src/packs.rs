@@ -95,6 +95,23 @@ pub fn graph_command(requests: std::collections::BTreeSet<String>) -> Result<Com
     command.report_file = None;
     Ok(command)
 }
+
+/// Register protected Node.js, TypeScript or Python tests with complete native reports.
+pub fn runtime_test_command(
+    requests: std::collections::BTreeSet<String>,
+) -> Result<CommandDefinition> {
+    let mut command = graph_command(requests)?;
+    command.id = "runtime-protected-tests".into();
+    command.parser = Parser::PackTests;
+    command.checker_digest = normalizer::checker_digest(command.parser);
+    command.kind = CheckKind::Behavioral;
+    command.environment.extend([
+        ("PYTEST_DISABLE_PLUGIN_AUTOLOAD".into(), "1".into()),
+        ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
+        ("PIP_CONFIG_FILE".into(), "/dev/null".into()),
+    ]);
+    Ok(command)
+}
 fn native_command(id: &str, parser: Parser) -> CommandDefinition {
     CommandDefinition {
         schema_version: 1,

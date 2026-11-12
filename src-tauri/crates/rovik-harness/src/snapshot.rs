@@ -149,11 +149,28 @@ pub fn is_build_input(path: &str) -> bool {
             | "Makefile"
             | "package.json"
             | "package-lock.json"
+            | "npm-shrinkwrap.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | ".npmrc"
+            | "pyproject.toml"
+            | "requirements.lock"
+            | "uv.lock"
+            | "poetry.lock"
+            | "Pipfile"
+            | "Pipfile.lock"
+            | "setup.py"
+            | "setup.cfg"
+            | "pytest.ini"
+            | "tox.ini"
+            | "conftest.py"
             | ".clang-tidy"
     ) || path
         .split('/')
         .any(|p| matches!(p, ".cargo" | ".github" | "ci"))
         || name.ends_with(".cmake")
+        || (name.starts_with("tsconfig") && name.ends_with(".json"))
+        || (name.starts_with("requirements") && (name.ends_with(".txt") || name.ends_with(".lock")))
 }
 
 /// Compare a complete proposed tree against its approved baseline, including removals.

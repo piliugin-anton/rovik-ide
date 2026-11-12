@@ -123,6 +123,11 @@ fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
                 .unwrap_or_default()
                 .into()
         }
+        _ => {
+            return Err(Error(
+                "runtime packs support protected tests, not configured native graphs".into(),
+            ))
+        }
     };
     Ok((config, version))
 }
@@ -450,6 +455,10 @@ fn dispatch(request: &Request) -> Result<Value> {
     )?;
     crate::id(&request.request_id)?;
     match request.operation {
+        Operation::Test => {
+            let input = crate::runtime::input(request)?;
+            serde_json::to_value(super::runtime::check(&input)?).map_err(|e| Error(e.to_string()))
+        }
         Operation::Explain => {
             let input: Explanation = wire::decode(&wire::canonical(&request.payload)?)?;
             require(
@@ -491,6 +500,7 @@ fn dispatch(request: &Request) -> Result<Value> {
 }
 pub(super) fn protocol(request_id: &str) -> Result<i32> {
     let mut identity = "invalid-request".to_string();
+    let mut test_exit = 0;
     let result = (|| -> Result<Value> {
         let bytes = if request_id == "-" {
             let mut data = Vec::new();
@@ -516,7 +526,12 @@ pub(super) fn protocol(request_id: &str) -> Result<i32> {
         if request_id != "-" {
             require(identity == request_id, "request ID mismatch")?;
         }
-        dispatch(&request)
+        let result = dispatch(&request)?;
+        if request.operation == Operation::Test {
+            let output: crate::runtime::TestOutput = wire::decode(&wire::canonical(&result)?)?;
+            test_exit = output.exit_code;
+        }
+        Ok(result)
     })();
     let response = Response {
         protocol_version: 1,
@@ -533,5 +548,5 @@ pub(super) fn protocol(request_id: &str) -> Result<i32> {
     output.push(b'\n');
     require(output.len() <= LIMIT, "native response exceeds limit")?;
     std::io::stdout().write_all(&output)?;
-    Ok(if result.is_ok() { 0 } else { 2 })
+    Ok(if result.is_ok() { test_exit } else { 2 })
 }

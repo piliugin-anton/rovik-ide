@@ -13,9 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn checker_digest(parser: Parser) -> crate::identity::Digest {
     crate::identity::Digest::of(
         format!(
-            "rovik-normalizer-v2:{parser:?}:{}:{}",
+            "rovik-normalizer-v3:{parser:?}:{}:{}:{}:{}",
             include_str!("normalizer.rs"),
-            include_str!("pack_protocol.rs")
+            include_str!("pack_protocol.rs"),
+            include_str!("runtime.rs"),
+            include_str!("node_report.rs")
         )
         .as_bytes(),
     )
@@ -92,7 +94,7 @@ pub fn normalize(
     success_codes: &[i32],
 ) -> Normalized {
     let parsed = match parser {
-        Parser::PackProtocol => Err(Error(
+        Parser::PackProtocol | Parser::PackTests => Err(Error(
             "pack response requires protected request validation".into(),
         )),
         Parser::ExitCode => Ok(Inventory {
@@ -235,7 +237,7 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
     Ok(inventory)
 }
 
-fn attributes(event: &BytesStart<'_>) -> Result<BTreeMap<String, String>> {
+pub(crate) fn attributes(event: &BytesStart<'_>) -> Result<BTreeMap<String, String>> {
     let mut fields = BTreeMap::new();
     for attr in event.attributes() {
         let attr = attr.map_err(|e| Error(format!("malformed JUnit attribute: {e}")))?;
@@ -366,6 +368,18 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
                 e.xml_content()
                     .map_err(|_| Error("invalid XML text".into()))?;
             }
+            Event::GeneralRef(e) => {
+                let reference = e.decode().map_err(|e| Error(e.to_string()))?;
+                require(
+                    !stack.is_empty()
+                        && (e.is_char_ref()
+                            || ["amp", "lt", "gt", "apos", "quot"].contains(&reference.as_ref())),
+                    "unknown JUnit XML entity",
+                )?;
+                if e.is_char_ref() {
+                    e.resolve_char_ref().map_err(|e| Error(e.to_string()))?;
+                }
+            }
             Event::Decl(_) | Event::Comment(_) | Event::CData(_) => {}
             _ => return Err(Error("unsupported XML instruction or entity".into())),
         }
@@ -386,7 +400,10 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
     Ok(inventory)
 }
 
-fn finish_case(inventory: &mut Inventory, test: &mut Option<(String, u8)>) -> Result<()> {
+pub(crate) fn finish_case(
+    inventory: &mut Inventory,
+    test: &mut Option<(String, u8)>,
+) -> Result<()> {
     let (name, status) = test
         .take()
         .ok_or_else(|| Error("JUnit testcase ended without starting".into()))?;

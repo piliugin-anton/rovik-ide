@@ -42,6 +42,26 @@ pub fn assess(
     candidate: &Snapshot,
     declared: &[String],
 ) -> Result<Assessment> {
+    assess_for_languages(ledger, base, candidate, declared, &[])
+}
+
+/// Attribute managed-language signals only when approved profiles establish that family.
+/// Mixed native/runtime tasks retain the conservative native ownership scan.
+pub fn assess_for_languages(
+    ledger: &Ledger,
+    base: &Snapshot,
+    candidate: &Snapshot,
+    declared: &[String],
+    languages: &[crate::profile::Language],
+) -> Result<Assessment> {
+    use crate::profile::Language;
+    let managed_profiles = !languages.is_empty()
+        && languages.iter().all(|language| {
+            matches!(
+                language,
+                Language::JavaScript | Language::TypeScript | Language::Python
+            )
+        });
     let mut assessment = Assessment {
         risks: declared.iter().cloned().collect(),
         sources: BTreeMap::new(),
@@ -61,6 +81,12 @@ pub fn assess(
         }
         let text = texts.join("\n");
         let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        // Managed constructors do not have C++ new/delete ownership semantics.
+        // This is lexical risk attribution only; extensions never grant tool support.
+        let managed = managed_profiles
+            && [".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py"]
+                .iter()
+                .any(|extension| path.ends_with(extension));
         for (risk, tokens) in [
             (
                 "resource-lifetime",
@@ -103,14 +129,15 @@ pub fn assess(
             ),
         ] {
             if tokens.iter().any(|token| {
-                text.contains(token)
-                    || (token.contains('(')
-                        && compact.contains(
-                            &token
-                                .chars()
-                                .filter(|c| !c.is_whitespace())
-                                .collect::<String>(),
-                        ))
+                !(managed && ["new ", "delete "].contains(token))
+                    && (text.contains(token)
+                        || (token.contains('(')
+                            && compact.contains(
+                                &token
+                                    .chars()
+                                    .filter(|c| !c.is_whitespace())
+                                    .collect::<String>(),
+                            )))
             }) {
                 assessment.risks.insert(risk.into());
                 assessment
@@ -120,7 +147,57 @@ pub fn assess(
                     .insert(path.clone());
             }
         }
-        if path.ends_with(".h") || path.ends_with(".hpp") || path.ends_with(".rs") {
+        if managed {
+            for (risk, tokens) in [
+                (
+                    "resource-lifetime",
+                    &[
+                        "open(",
+                        "openSync(",
+                        "createReadStream(",
+                        "createWriteStream(",
+                        "new WebSocket(",
+                        "subprocess.Popen(",
+                    ][..],
+                ),
+                (
+                    "ffi",
+                    &[
+                        "import ctypes",
+                        "from ctypes",
+                        "import cffi",
+                        "from cffi",
+                        "ffi-napi",
+                        "process.dlopen(",
+                    ][..],
+                ),
+                (
+                    "concurrency",
+                    &[
+                        "new Worker(",
+                        "worker_threads",
+                        "threading.",
+                        "multiprocessing.",
+                        "asyncio.create_task(",
+                        "ThreadPoolExecutor",
+                        "ProcessPoolExecutor",
+                    ][..],
+                ),
+            ] {
+                if tokens.iter().any(|token| {
+                    text.contains(token)
+                        || (token.contains('(') && compact.contains(&token.replace(' ', "")))
+                }) {
+                    assessment.risks.insert(risk.into());
+                    assessment
+                        .sources
+                        .entry(risk.into())
+                        .or_default()
+                        .insert(path.clone());
+                }
+            }
+        }
+        if managed || path.ends_with(".h") || path.ends_with(".hpp") || path.ends_with(".rs") {
             let before = texts.first().map(String::as_str).unwrap_or("");
             let after = if texts.len() == 2 {
                 texts[1].as_str()
@@ -141,6 +218,13 @@ pub fn assess(
                             "extern ",
                             "struct ",
                             "class ",
+                            "export function ",
+                            "export class ",
+                            "export interface ",
+                            "export type ",
+                            "export const ",
+                            "def ",
+                            "async def ",
                         ]
                         .iter()
                         .any(|token| l.starts_with(token))

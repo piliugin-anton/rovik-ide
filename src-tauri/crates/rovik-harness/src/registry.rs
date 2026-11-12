@@ -18,6 +18,8 @@ pub enum Parser {
     InventoryJson,
     /// Configured graph protocol, independently checked against protected inputs.
     PackProtocol,
+    /// Runtime test protocol checked against protected profiles and native reports.
+    PackTests,
 }
 
 /// Parameter types validate entire argv elements before process launch.

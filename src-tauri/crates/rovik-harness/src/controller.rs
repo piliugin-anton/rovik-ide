@@ -225,7 +225,10 @@ impl TaskSetup {
         for check in &self.plan.checks {
             let definition = self.registry.get(&check.command_id)?;
             definition.render(&check.validated_parameters)?;
-            if definition.parser == crate::registry::Parser::PackProtocol {
+            if matches!(
+                definition.parser,
+                crate::registry::Parser::PackProtocol | crate::registry::Parser::PackTests
+            ) {
                 let request_id = check
                     .validated_parameters
                     .get("request_id")
@@ -240,13 +243,38 @@ impl TaskSetup {
                     })?;
                 let request: crate::pack_protocol::Request =
                     wire::decode(&ledger.read(&entry.content.digest)?)?;
-                let input = request.native_input()?;
+                let (profile, configuration_id) =
+                    if definition.parser == crate::registry::Parser::PackTests {
+                        let input = crate::runtime::input(&request)?;
+                        require(
+                            input
+                                .test_files
+                                .iter()
+                                .chain(input.typescript_project.iter())
+                                .all(|path| self.oracle.files.contains_key(path)),
+                            "runtime tests and compiler project must be protected oracle assets",
+                        )?;
+                        require(
+                            check
+                                .expected_case_ids
+                                .iter()
+                                .all(|id| input.required_test_ids.contains(id)),
+                            "runtime request omits approved cases",
+                        )?;
+                        (input.profile, input.configuration_id)
+                    } else {
+                        let input = request.native_input()?;
+                        require(
+                            request.operation == crate::pack_protocol::Operation::Index,
+                            "advisory operation cannot authorize a check",
+                        )?;
+                        (input.profile, input.configuration_id)
+                    };
                 require(
                     request.request_id == *request_id
-                        && request.operation == crate::pack_protocol::Operation::Index
-                        && self.profiles.contains(&input.profile)
-                        && input.profile.configurations.iter().any(|c| {
-                            c.id == input.configuration_id
+                        && self.profiles.contains(&profile)
+                        && profile.configurations.iter().any(|c| {
+                            c.id == configuration_id
                                 && c.digest().ok().as_ref() == Some(&check.configuration_digest)
                         }),
                     "pack request does not match the approved profile matrix",
@@ -903,11 +931,16 @@ impl Controller {
             )
             .is_ok(),
             plan_obligations_complete: setup.validate(&self.ledger).is_ok()
-                && crate::risk::assess(
+                && crate::risk::assess_for_languages(
                     &self.ledger,
                     &setup.base,
                     &candidate,
                     &setup.contract.risk_tags,
+                    &setup
+                        .profiles
+                        .iter()
+                        .map(|profile| profile.language)
+                        .collect::<Vec<_>>(),
                 )
                 .and_then(|assessment| {
                     setup
@@ -1179,11 +1212,12 @@ impl Controller {
                         .current_candidate(&setup.run_id)?
                         .ok_or_else(|| Error("candidate missing".into()))?;
                     let key = self.key(setup, &candidate)?;
-                    let assessment = crate::risk::assess(
+                    let assessment = crate::risk::assess_for_languages(
                         &self.ledger,
                         &setup.base,
                         &candidate,
                         &setup.contract.risk_tags,
+                        &setup.profiles.iter().map(|profile| profile.language).collect::<Vec<_>>(),
                     )?;
                     self.ledger
                         .store_json("report", &assessment, runner::now_ms()?)?;

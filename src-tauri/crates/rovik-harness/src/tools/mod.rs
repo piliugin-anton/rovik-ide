@@ -3,6 +3,7 @@ mod consumer;
 mod evaluation;
 mod interop;
 mod native;
+mod runtime;
 
 use crate::{
     process::{process, ProcessOutput},
@@ -40,6 +41,12 @@ fn run(argv: &[String], cwd: &Path, environment: &[(&str, &str)]) -> Result<Proc
 }
 fn checked(argv: &[String], cwd: &Path) -> Result<String> {
     let output = run(argv, cwd, &[])?;
+    if output.code != Some(0) {
+        use std::io::Write;
+        // Several compilers report diagnostics on stdout. Keep protocol stdout
+        // clean while preserving those diagnostics in the runner's bounded log.
+        std::io::stderr().write_all(&output.stdout)?;
+    }
     require(
         output.code == Some(0),
         format!("native command failed: {}", argv.join(" ")),

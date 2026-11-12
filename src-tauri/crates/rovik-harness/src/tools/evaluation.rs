@@ -110,6 +110,11 @@ pub(super) fn check() -> Result<i32> {
             Language::Rust => "rust",
             Language::C => "c",
             Language::Cpp => "cpp",
+            _ => {
+                return Err(Error(
+                    "native bank v1 does not contain runtime-language cases".into(),
+                ))
+            }
         };
         let (name, variant) = case
             .case_id

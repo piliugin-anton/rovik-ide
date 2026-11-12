@@ -4,7 +4,7 @@ use crate::{id, identity::Digest, require, unique, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// First-release native language families.
+/// Registered language families; each profile declares its exact runtime policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -14,6 +14,14 @@ pub enum Language {
     Cpp,
     /// CMake and a registered C compiler.
     C,
+    /// Node.js ESM with node:test.
+    #[serde(rename = "javascript")]
+    JavaScript,
+    /// Strict TypeScript compilation followed by Node.js tests.
+    #[serde(rename = "typescript")]
+    TypeScript,
+    /// CPython with isolated pytest and hashed offline wheels.
+    Python,
 }
 impl Language {
     /// Facts that must be explicit before this profile can authorize execution.
@@ -44,6 +52,28 @@ impl Language {
                 "hosted_or_freestanding",
                 "allocation_policy",
                 "threading_and_interrupt_policy",
+            ],
+            Self::JavaScript => &[
+                "node_version",
+                "npm_version",
+                "module_system",
+                "test_runner",
+                "dependency_policy",
+            ],
+            Self::TypeScript => &[
+                "node_version",
+                "npm_version",
+                "typescript_version",
+                "module_system",
+                "test_runner",
+                "dependency_policy",
+            ],
+            Self::Python => &[
+                "python_version",
+                "pytest_version",
+                "test_runner",
+                "dependency_policy",
+                "import_policy",
             ],
         }
     }

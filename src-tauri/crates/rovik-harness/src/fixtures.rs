@@ -1,5 +1,7 @@
 //! Explicitly illustrative quota fixture. These facts are not production defaults.
 
+pub use crate::runtime_fixtures::{quota_runtime, runtime_quota_source};
+
 use crate::{
     approvals::{AuthorityPolicy, Principal},
     contract::{DesignRecord, ExistingCode, TaskContract},

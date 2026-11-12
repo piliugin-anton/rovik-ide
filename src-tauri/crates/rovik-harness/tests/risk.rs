@@ -1,4 +1,92 @@
 mod support;
+
+#[test]
+fn managed_constructors_do_not_hide_real_runtime_resource_ffi_or_concurrency_risks() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = rovik_harness::ledger::Ledger::open(&dir.path().join("state")).unwrap();
+    for (path, before, after, expected) in [
+        (
+            "quota.mjs",
+            "",
+            "const error = new RangeError('bad input');",
+            None,
+        ),
+        (
+            "quota.ts",
+            "",
+            "const error = new Error('bad input');",
+            None,
+        ),
+        (
+            "quota.cpp",
+            "",
+            "auto value = new Quota();",
+            Some("resource-lifetime"),
+        ),
+        (
+            "handles.py",
+            "handle = open('data')\nhandle.close()",
+            "",
+            Some("resource-lifetime"),
+        ),
+        (
+            "handles.mjs",
+            "",
+            "fs.openSync('data');",
+            Some("resource-lifetime"),
+        ),
+        ("ffi.py", "", "import ctypes", Some("ffi")),
+        ("ffi.mjs", "", "import ffi from 'ffi-napi';", Some("ffi")),
+        (
+            "workers.ts",
+            "",
+            "const worker = new Worker ('job');",
+            Some("concurrency"),
+        ),
+        (
+            "workers.py",
+            "",
+            "threading.Thread(target=work).start()",
+            Some("concurrency"),
+        ),
+    ] {
+        let base = rovik_harness::fixtures::snapshot(&ledger, "base", &[(path, before)]).unwrap();
+        let candidate =
+            rovik_harness::fixtures::snapshot(&ledger, "candidate", &[(path, after)]).unwrap();
+        let result = rovik_harness::risk::assess_for_languages(
+            &ledger,
+            &base,
+            &candidate,
+            &[],
+            &[rovik_harness::profile::Language::JavaScript],
+        )
+        .unwrap();
+        if let Some(expected) = expected {
+            assert!(result.risks.contains(expected), "{path}: {result:?}");
+        } else {
+            assert!(result.risks.is_empty(), "{path}: {result:?}");
+        }
+    }
+    let base = rovik_harness::fixtures::snapshot(&ledger, "base", &[("renamed.mjs", "")]).unwrap();
+    let candidate = rovik_harness::fixtures::snapshot(
+        &ledger,
+        "candidate",
+        &[("renamed.mjs", "auto value = new Quota();")],
+    )
+    .unwrap();
+    let native = rovik_harness::risk::assess_for_languages(
+        &ledger,
+        &base,
+        &candidate,
+        &[],
+        &[rovik_harness::profile::Language::Cpp],
+    )
+    .unwrap();
+    assert!(
+        native.risks.contains("resource-lifetime"),
+        "a file extension cannot override the approved native profile"
+    );
+}
 use rovik_harness::{
     fixtures,
     identity::Digest,

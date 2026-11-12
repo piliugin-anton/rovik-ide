@@ -236,6 +236,70 @@ precision, transitive boundary violations and omitted consumers. Declaring a
 required doctest still requires its separate registered behavioral command; a
 Cargo dependency graph alone never establishes doctest execution.
 
+### JavaScript, TypeScript and Python
+
+The same Rust executable also handles protocol-v1 `test` requests. Register a
+behavioral command with `packs::runtime_test_command`, add its request to the
+protected oracle, and include the command in the profile's public consumers and
+every required final configuration. `runtime::TestInput` binds the complete
+profile, configuration, protected test files and required case IDs. TypeScript
+also requires a protected compiler project. `fixtures::quota_runtime` provides
+unapproved illustrative setups for all three languages.
+
+| Language   | Tested toolchain                          | Verification                                                                                                     |
+| ---------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| JavaScript | Node.js 24.19.0, npm 11.17.0, ESM         | Offline npm installation and protected `node:test` consumers                                                     |
+| TypeScript | TypeScript 7.0.2 with the same Node image | Strict compilation with emit blocked on errors, followed by protected Node consumers of the generated JavaScript |
+| Python     | CPython 3.11.2, pytest 7.2.1              | Hashed offline wheel installation, syntax compilation and isolated pytest consumers                              |
+
+Runtime versions are exact profile facts and checked against installed tools.
+Node projects need `package.json` with `type: module` and `package-lock.json` v3.
+Dependencies need integrity hashes; registry packages use a prepared npm cache
+under `/dependencies/npm`, while pinned local archives may live under
+`/dependencies/packages`. Verification runs `npm ci --offline --ignore-scripts`.
+Workspace links and dependency install scripts are not supported by this profile.
+
+Python projects need `requirements.lock`: one exact `name==version` requirement
+per line with one or more `--hash=sha256:...` values; comments and an empty lock
+are allowed. Include every transitive dependency and its wheel under
+`/dependencies/wheels`. Installation uses `--no-index --require-hashes
+--only-binary=:all:` into an isolated build directory. Source distributions,
+editable installs and requirement-file options are rejected. Pytest starts with
+Python's isolated mode, disabled plugin autoload and no repository conftest or
+pytest configuration; the Rust driver selects the project and installed-package
+import roots after startup. Python is needed to verify Python code, with all
+harness orchestration remaining Rust.
+
+Native Node and pytest reports are independently parsed by the controller.
+Malformed or truncated reports, missing required cases, zero executed tests,
+tool-version mismatches, dependency failures and TypeScript errors cannot count
+as a successful check or a behavioral negative control. Skipped required cases
+block acceptance. Test names must be unique within each check. These packs do
+not yet provide configured import-graph assertions, browser/Deno/Bun runners,
+Jest/Vitest integrations or Python type checking; such obligations need separately
+registered and validated checks.
+
+Risk attribution distinguishes managed constructors from C++ ownership. It still
+routes changed file handles, FFI and worker/thread signals to their required
+evidence and reviews, inspecting removed code as well as additions. This remains
+a conservative lexical supplement, not proof that a program has no other risks.
+
+All six languages use the existing Linux Docker backend, immutable input mounts,
+network denial, resource limits, approvals and evidence bindings. The feature is
+enabled by creating and approving a strict harness task with the corresponding
+profile and registry; there is no new Autopilot toggle or replacement for its
+prepare stage. It runs on the machine executing the headless harness and requires
+no separately deployed controller service.
+
+Build the tool and image as described above, then run
+`cargo test -p rovik-harness --test runtimes -- --ignored --test-threads=1`
+with `ROVIK_HARNESS_DOCKER=1` and the pinned image digest. The fixtures execute
+real offline npm packages and Python wheels, reject behavioral mutants, accept
+repairs through the full controller, and reject compiler, runtime-version and
+dependency corruption failures. The original 108-observation native evaluation
+bank remains scoped to Rust, C and C++; these runtime conformance tests are
+separate evidence.
+
 ## Risk and interop (M5)
 
 The core unions declared risks with signals from both sides of the immutable

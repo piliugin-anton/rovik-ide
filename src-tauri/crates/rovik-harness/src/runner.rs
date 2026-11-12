@@ -657,7 +657,10 @@ pub fn admit_observation(
         observation.report.as_deref(),
         &spec.success_exit_codes,
     );
-    if definition.parser == crate::registry::Parser::PackProtocol {
+    if matches!(
+        definition.parser,
+        crate::registry::Parser::PackProtocol | crate::registry::Parser::PackTests
+    ) {
         let checked = (|| -> Result<()> {
             let oracle: Snapshot = wire::decode(&ledger.read(&key.oracle_digest)?)?;
             let request_id = spec
@@ -675,19 +678,32 @@ pub fn admit_observation(
                 request.request_id == *request_id,
                 "protected pack request identity mismatch",
             )?;
-            crate::pack_protocol::verify_index(
-                &request,
-                &observation.stdout,
-                &spec.configuration_digest,
-            )?;
+            if definition.parser == crate::registry::Parser::PackTests {
+                normalized = crate::runtime::verify(
+                    &request,
+                    &observation.stdout,
+                    &spec.configuration_digest,
+                    observation.exit_code,
+                )?;
+            } else {
+                crate::pack_protocol::verify_index(
+                    &request,
+                    &observation.stdout,
+                    &spec.configuration_digest,
+                )?;
+                require(
+                    observation.exit_code == Some(0),
+                    "configured graph process failed",
+                )?;
+                normalized.status = Status::Pass;
+                normalized.diagnostic = None;
+            }
             Ok(())
         })();
-        normalized.status = if checked.is_ok() && observation.exit_code == Some(0) {
-            Status::Pass
-        } else {
-            Status::Error
-        };
-        normalized.diagnostic = checked.err().map(|e| e.to_string());
+        if let Err(error) = checked {
+            normalized.status = Status::Error;
+            normalized.diagnostic = Some(error.to_string());
+        }
     }
     if observation.incomplete() {
         normalized.status = if observation.timed_out {

@@ -152,10 +152,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch
   mode is run once.
-- **Strict native verification (opt-in, Linux).** The `rovik-harness` headless
+- **Strict polyglot verification (opt-in, Linux).** The `rovik-harness` headless
   command binds proposed edits to approved contracts, protected acceptance
-  tests, immutable snapshots and sandbox receipts. Native C, C++ and Rust
-  fixtures exercise the workflow, with bounded repairs, approval maintenance
+  tests, immutable snapshots and sandbox receipts. C, C++, Rust, Node.js JavaScript,
+  strict TypeScript and Python/pytest fixtures exercise the workflow, with
+  offline dependencies, bounded repairs, approval maintenance
   and recovery after controller loss. See [Polyglot harness](docs/design/polyglot-harness.md)
   for supported targets, measured limits and operator setup.
 - **Dev servers keep running.** The agent starts a server or watcher it
