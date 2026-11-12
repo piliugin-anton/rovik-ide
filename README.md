@@ -558,6 +558,10 @@ Rovik's agent too.
   can't be turned off, in a read-only sandbox. Each of its calls of
   Rovik's tools is a reply of Rovik's, run under Permissions & approval in
   the chat's copy of the project, its result given to Codex while it waits.
+  Codex's built-in mode instructions are disabled for these runs and
+  one-off helpers. New and resumed threads get Rovik's workflow instructions,
+  which supersede older Codex mode messages and explain that Rovik's tools
+  save plans under Rovik's permissions.
   Rovik's checks, checklist, Plan mode (Rovik's own, not Codex's),
   Autopilot and subagents work as with any model.
 

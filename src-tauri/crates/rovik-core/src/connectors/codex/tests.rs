@@ -193,6 +193,10 @@ async fn the_app_server_s_arguments_name_rovik_s_servers_and_the_settings_own_la
     assert!(setting(&args, "hooks.PreToolUse").is_some());
     // Codex's own tools stay on with its own tools.
     assert_eq!(setting(&args, "features.shell_tool"), None);
+    assert_eq!(
+        setting(&args, "include_collaboration_mode_instructions"),
+        None
+    );
     assert_eq!(args.last().unwrap(), "model_reasoning_summary=\"detailed\"");
     // An API key goes over the input, kept in memory: never stored.
     let keyed = settings(json!({ "auth": "apiKey" }));
@@ -227,6 +231,10 @@ fn with_rovik_s_tools_codex_s_own_are_off_and_rovik_s_are_functions_of_their_own
     }
     assert_eq!(setting(&args, "web_search"), Some("\"disabled\""));
     assert_eq!(setting(&args, "project_doc_max_bytes"), Some("0"));
+    assert_eq!(
+        setting(&args, "include_collaboration_mode_instructions"),
+        Some("false")
+    );
     let code_mode = setting(&args, "features.code_mode").unwrap();
     assert!(code_mode.contains("enabled=false"), "{code_mode}");
     assert!(
@@ -241,6 +249,10 @@ fn with_rovik_s_tools_codex_s_own_are_off_and_rovik_s_are_functions_of_their_own
     let args = args_for(&settings(json!({})), &one_off, &[], &[], "");
     assert_eq!(setting(&args, "features.shell_tool"), Some("false"));
     assert_eq!(setting(&args, "features.code_mode"), None);
+    assert_eq!(
+        setting(&args, "include_collaboration_mode_instructions"),
+        Some("false")
+    );
 }
 
 /// Its web search runs on OpenAI's servers, where the user's allowed hosts
