@@ -146,4 +146,5 @@ windows = { workspace = true, features = [
 
 # The tests' settings (KindConfig::extra_tools).
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 rovik-protocol = { workspace = true, features = ["testing"] }

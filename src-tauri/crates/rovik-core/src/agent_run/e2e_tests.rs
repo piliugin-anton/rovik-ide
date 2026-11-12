@@ -3086,6 +3086,41 @@ async fn a_bad_plan_is_sent_back_and_a_written_out_plan_nudged_once() {
 }
 
 #[tokio::test]
+async fn submit_plan_saves_a_single_step_game_without_changing_its_contents() {
+    let h = harness(&[]).await;
+    let plan = include_str!("plan/fixtures/tic-tac-toe.md");
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": plan }),
+        },
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        plan_send("Plan a single-page tic-tac-toe game"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = result_of(&messages, "p1");
+    assert!(!result.content.starts_with("Error:"), "{}", result.content);
+    let plans: Vec<_> = std::fs::read_dir(h.project.join(".rovik/plans"))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(std::fs::read_to_string(plans[0].path()).unwrap(), plan);
+    assert!(
+        !h.project.join("index.html").exists(),
+        "submitting must not implement the plan"
+    );
+}
+
+#[tokio::test]
 async fn a_revised_plan_replaces_the_chats_plan_file() {
     let h = harness(&[("src/a.rs", ""), ("src/b.rs", "")]).await;
     let plan = |title: &str| {

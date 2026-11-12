@@ -32,6 +32,9 @@ use tokio::sync::{mpsc, watch};
 const ROVIK_TOOLS_NOTE: &str = "## Your tools\n\nYour tools are Rovik IDE's: the functions of the `mcp__rovik` namespace, which this prompt names by their names alone (`read`). Rovik runs each call in the project: its permissions apply, a call may wait for the user's approval, and one that isn't allowed comes back saying so. Codex's own tools aren't yours here: a call of one is refused.";
 /// The MCP server's instructions, for the model.
 const MCP_INSTRUCTIONS: &str = "Rovik IDE's tools for the open project: reading, searching and editing its files, running commands, and the agent's checklist. Rovik runs every call under its own permissions.";
+/// Resumed threads can retain Codex's old mode messages. A new mode block
+/// explicitly retires them while the process config stops new injections.
+const ROVIK_WORKFLOW: &str = "<collaboration_mode>\nRovik IDE's instructions define the active workflow for this run. Follow its Plan, Autopilot or subagent instructions and the tools offered for this turn. Earlier Codex Default or Plan mode instructions are no longer active.\n\nCodex's read-only sandbox applies to its native tools. Rovik executes the offered MCP tools under its own permissions, including saving plans with submit_plan.\n</collaboration_mode>";
 
 /// The runs waiting for Rovik's results, by chat.
 pub(super) static LIVE: LiveRuns<Live> = LiveRuns::new();
@@ -128,16 +131,16 @@ async fn start(
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         Vec::new(),
     )?;
+    let context = turn.system_context.as_deref().unwrap_or_default().trim();
+    let developer = match context.is_empty() {
+        true => ROVIK_WORKFLOW.to_string(),
+        false => format!("{ROVIK_WORKFLOW}\n\n{context}"),
+    };
     let opening = super::Opening {
         policy: policy(settings, turn),
         resume: thread,
         base: Some(system_text(turn)),
-        developer: turn
-            .system_context
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(str::to_string),
+        developer: Some(developer),
         hooks: &events,
         ephemeral: false,
     };

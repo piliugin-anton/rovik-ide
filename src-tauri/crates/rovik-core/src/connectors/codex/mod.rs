@@ -325,6 +325,9 @@ fn args_for(
         set("web_search", json!("disabled"));
         set("include_permissions_instructions", json!(false));
         set("include_apps_instructions", json!(false));
+        // Codex's Default-mode block cancels earlier Plan instructions.
+        // Rovik supplies the workflow for its tools and one-off helpers.
+        set("include_collaboration_mode_instructions", json!(false));
         set("project_doc_max_bytes", json!(0));
     } else if turn.allowed_hosts_on {
         // OpenAI's servers run its web search, where the user's allowed

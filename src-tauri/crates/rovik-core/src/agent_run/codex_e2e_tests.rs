@@ -569,7 +569,11 @@ async fn in_plan_mode_codex_is_rovik_s_agent_and_rovik_runs_its_calls() {
 #[tokio::test]
 async fn codex_plans_in_rovik_s_plan_mode() {
     let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
-    let scenario = json!({ "steps": [{ "text": "# Plan\n1. Make alpha return 43." }] });
+    let plan = include_str!("plan/fixtures/tic-tac-toe.md");
+    let scenario = json!({ "steps": [
+        { "rovik": "submit_plan", "arguments": { "plan": plan }, "id": "p1" },
+        { "text": "Saved the game plan." },
+    ] });
     let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
         eprintln!("no python3 with tomllib: skipped");
         return;
@@ -579,14 +583,23 @@ async fn codex_plans_in_rovik_s_plan_mode() {
         &h,
         &program,
         "plan",
-        "Plan a change to alpha",
+        "Plan a single-page tic-tac-toe game",
         settings,
         quiet_permissions(),
     );
     h.start(request).await.unwrap();
     assert_eq!(h.run_end().await, "done");
-    let reply = h.messages().await.last().unwrap().content.clone();
-    assert!(reply.contains("Make alpha return 43."), "{reply}");
+    let messages = h.messages().await;
+    let result = result_of(&messages, "p1");
+    assert!(!result.content.starts_with("Error:"), "{}", result.content);
+    assert_eq!(messages.last().unwrap().content, "Saved the game plan.");
+    let plans: Vec<_> = std::fs::read_dir(h.project.join(".rovik/plans"))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(std::fs::read_to_string(plans[0].path()).unwrap(), plan);
+    assert!(!h.project.join("index.html").exists());
     let record = record(&h);
     assert!(request_of(&record, "turn/start")
         .get("collaborationMode")
@@ -602,6 +615,105 @@ async fn codex_plans_in_rovik_s_plan_mode() {
         developer.contains("The user chose Plan mode"),
         "{developer}"
     );
+    assert!(record["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|arg| arg == "include_collaboration_mode_instructions=false"));
+}
+
+/// The mode belongs to Rovik on both a fresh thread and a resumed one.
+/// Autopilot carries its instructions in the base prompt, ordinary Plan
+/// mode in developerInstructions; neither is superseded by Codex's mode.
+/// Autopilot's report then resumes without the planning instructions.
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_keeps_rovik_s_plan_and_autopilot_instructions_on_resume() {
+    for (mode, mode_instruction, question_instruction) in [
+        (
+            "plan",
+            "The user chose Plan mode",
+            "with the ask_user tool, early",
+        ),
+        (
+            "autopilot",
+            "This is the plan stage of an Autopilot task",
+            "Nobody answers questions in Autopilot",
+        ),
+    ] {
+        let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 { 42 }\n")]).await;
+        let scenario = json!({
+            "threads": ["th-1"],
+            "steps": [{ "text": "Alpha returns 42." }],
+        });
+        let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
+            eprintln!("no python3 with tomllib: skipped");
+            return;
+        };
+        for text in ["What does alpha return?", "Explain that again"] {
+            h.events.lock().unwrap().clear();
+            let mut request = codex_send(&h, &program, mode, text, json!({}), quiet_permissions());
+            // This fixture checks the planning prompt with one scripted
+            // reply. Autopilot ends without retrying its missing plan.
+            request
+                .config
+                .as_mut()
+                .unwrap()
+                .autopilot
+                .plan_fix
+                .max_retries = 0;
+            h.start(request).await.unwrap();
+            assert_eq!(h.run_end().await, "done");
+            super::autopilot_tests::quiet(&h).await;
+        }
+        let requests = all_requests(&h);
+        let threads: Vec<_> = requests
+            .iter()
+            .filter(|r| r["method"] == "thread/start" || r["method"] == "thread/resume")
+            .collect();
+        // Autopilot writes a report after each task's planning run.
+        let expected = if mode == "autopilot" { 4 } else { 2 };
+        assert_eq!(threads.len(), expected, "{mode}: {requests:#?}");
+        assert_eq!(threads[0]["method"], "thread/start");
+        for thread in &threads[1..] {
+            assert_eq!(thread["method"], "thread/resume");
+        }
+        for (i, thread) in threads.into_iter().enumerate() {
+            let params = &thread["params"];
+            assert_eq!(params["sandbox"], "read-only");
+            assert_eq!(params["approvalPolicy"], "never");
+            // A resumed thread may already contain Codex's Default-mode
+            // block from an older connector. Retire it explicitly.
+            let developer = params["developerInstructions"].as_str().unwrap();
+            assert!(developer.starts_with("<collaboration_mode>\n"));
+            assert!(developer
+                .contains("Earlier Codex Default or Plan mode instructions are no longer active"));
+            assert!(developer.contains("saving plans with submit_plan"));
+            let prompt = format!(
+                "{}\n{}",
+                params["baseInstructions"].as_str().unwrap(),
+                developer,
+            );
+            if mode == "plan" || i % 2 == 0 {
+                for instruction in [
+                    mode_instruction,
+                    question_instruction,
+                    "Save the plan with the submit_plan tool",
+                ] {
+                    assert!(prompt.contains(instruction), "{mode}: {prompt}");
+                }
+            } else {
+                assert!(prompt.contains("Nobody is there to answer questions"));
+                assert!(!prompt.contains("This is the plan stage of an Autopilot task"));
+                assert!(!prompt.contains("Save the plan with the submit_plan tool"));
+            }
+        }
+        assert!(record(&h)["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "include_collaboration_mode_instructions=false"));
+    }
 }
 
 /// A chat whose Codex thread is gone (another computer, a cleared folder)

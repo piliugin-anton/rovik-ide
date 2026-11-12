@@ -951,6 +951,77 @@ fn save_plan_file_normalises_line_endings() {
     assert_eq!(saved, "# P\n\n## Steps\n1. x\n");
 }
 
+/// A complete single-file task can be one reviewable step. Inline HTML, CSS,
+/// selectors and function names are prose, not additional files or steps.
+#[test]
+fn a_single_step_tic_tac_toe_plan_passes_submission_checks() {
+    let plan = include_str!("fixtures/tic-tac-toe.md");
+    let root = Tree::new(&[]);
+    for text in [plan.to_string(), plan.replace('\n', "\r\n")] {
+        let doc = PlanDoc::parse(&text);
+        let steps = doc.steps();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].number, 1);
+        assert_eq!(steps[0].title, "Create the game page");
+        assert_eq!(
+            steps[0].files,
+            vec![PlanFile {
+                path: "index.html".into(),
+                new: true,
+                read_only: false,
+            }]
+        );
+        let problems = doc.plan_problems_for(Some(&root.0), false);
+        assert!(problems.is_empty(), "{problems:?}");
+        // Autopilot still needs its explicit acceptance criteria.
+        assert_eq!(
+            doc.plan_problems_for(Some(&root.0), true),
+            doc.criteria_problems(),
+        );
+        assert!(!doc.criteria_problems().is_empty());
+        let with_criteria = format!(
+            "{text}\n## Criteria\n\n1. Two players can finish and reset the game.\n\n\
+             **Out of scope**: AI opponents.\n\n**Assumptions**: Two local players.\n"
+        );
+        let problems = PlanDoc::parse(&with_criteria).plan_problems_for(Some(&root.0), true);
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+}
+
+#[test]
+fn single_step_plans_still_need_files_changes_and_validation() {
+    let plan = include_str!("fixtures/tic-tac-toe.md");
+    for (text, expected) in [
+        (
+            plan.replace("   - Files: `index.html` (new)\n", ""),
+            "Step 1 names no file",
+        ),
+        (
+            plan.replace("`index.html` (new)", "`../index.html` (new)"),
+            "never with `..`",
+        ),
+        (
+            plan.split("\n## Validation").next().unwrap().to_string(),
+            "Add a \"## Validation\" section",
+        ),
+        (
+            "# Game\n## Steps\n1. Board\n   - Files: `index.html`\n\n## Validation\nOpen the game.\n".into(),
+            "Step 1 is too vague",
+        ),
+    ] {
+        let problems = plan_problems(&text);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains(expected), "{problems:?}");
+    }
+}
+
+#[test]
+fn a_steps_section_without_steps_is_rejected() {
+    let problems = plan_problems("# Game\n## Steps\nNo changes.\n## Validation\nOpen the game.\n");
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].starts_with("List the steps under \"## Steps\""));
+}
+
 #[test]
 fn plan_checks() {
     assert!(
@@ -960,7 +1031,11 @@ fn plan_checks() {
     );
     let bad = "Some plan\n## Steps\n1. Only one";
     let problems = plan_problems(bad);
-    assert_eq!(problems.len(), 3, "title, steps, validation: {problems:?}");
+    assert_eq!(
+        problems.len(),
+        4,
+        "title, files, changes, validation: {problems:?}"
+    );
     assert_eq!(plan_problems("  "), vec!["The plan is empty."]);
     let code = format!("{GOOD_PLAN}\n```\n{}```", "x\n".repeat(20));
     assert_eq!(plan_problems(&code).len(), 1);
@@ -1693,6 +1768,7 @@ fn checks_and_steps_read_the_same_steps_from_every_plan() {
         GOOD_PLAN.to_string(),
         REAL_PLAN.to_string(),
         CRITERIA_PLAN.to_string(),
+        include_str!("fixtures/tic-tac-toe.md").to_string(),
     ];
     for heading in [
         "## 3. Steps",
@@ -1728,23 +1804,20 @@ fn checks_and_steps_read_the_same_steps_from_every_plan() {
             .collect();
         let parsed = PlanDoc::parse(&no_files);
         let steps = parsed.steps();
-        if steps.len() < 2 {
-            continue;
-        }
+        assert!(!steps.is_empty(), "{sample}");
         let expected: Vec<_> = steps.iter().map(PlanStep::named).collect();
         let names: Vec<_> = expected.iter().map(String::as_str).collect();
         let problem = parsed
             .plan_problems()
             .into_iter()
-            .find(|p| p.contains("name no file"))
+            .find(|p| p.contains("no file:"))
             .unwrap();
-        assert!(
-            problem.starts_with(&format!(
-                "Steps {} name no file",
-                super::check::list_steps(&names)
-            )),
-            "{problem}\n{sample}"
-        );
+        let expected = if steps.len() == 1 {
+            format!("Step {} names no file", names[0])
+        } else {
+            format!("Steps {} name no file", super::check::list_steps(&names))
+        };
+        assert!(problem.starts_with(&expected), "{problem}\n{sample}");
         for step in &steps {
             assert!(
                 parsed.text().contains(&step.body),

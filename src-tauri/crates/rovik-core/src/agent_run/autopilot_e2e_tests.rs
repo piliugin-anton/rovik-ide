@@ -396,7 +396,7 @@ async fn stages_until(
 /// Waits until nothing goes on in the chat: no run, its driver not at
 /// work. A delivery's record ends inside its run, before that run's own end
 /// (its line in the log, `runEnded`), and the driver's turn ends after it.
-async fn quiet(h: &Harness) {
+pub(super) async fn quiet(h: &Harness) {
     let agents = &h.core.agents;
     for _ in 0..1200 {
         if !agents.is_running(&h.dialog_id) && !agents.is_driving(&h.dialog_id) {
