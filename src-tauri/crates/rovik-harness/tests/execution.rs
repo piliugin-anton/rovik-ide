@@ -160,7 +160,7 @@ mod docker {
     use rovik_harness::{
         identity::EvidenceKey,
         ledger::Ledger,
-        runner::{self, Cancellation, DockerBackend, Environment, ExecutionInput, BACKEND_VERSION},
+        runner::{self, Cancellation, DockerBackend, Environment, ExecutionInput},
         snapshot::{FileEntry, Snapshot},
     };
 
@@ -178,9 +178,9 @@ mod docker {
         CheckSpec,
         DockerBackend,
     ) {
-        assert_eq!(
-            std::env::var("ROVIK_HARNESS_DOCKER").as_deref(),
-            Ok("1"),
+        let podman = std::env::var("ROVIK_HARNESS_PODMAN").as_deref() == Ok("1");
+        assert!(
+            podman || std::env::var("ROVIK_HARNESS_DOCKER").as_deref() == Ok("1"),
             "explicit native-test opt-in required"
         );
         let image = Digest::parse(
@@ -188,6 +188,16 @@ mod docker {
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
+        let backend = if podman {
+            let binary = std::env::var_os("ROVIK_HARNESS_PODMAN_BIN")
+                .unwrap_or_else(|| "/usr/bin/podman".into());
+            let state = std::env::var_os("ROVIK_HARNESS_PODMAN_STATE")
+                .expect("private Podman state with the test image loaded");
+            DockerBackend::podman(std::path::Path::new(&binary), std::path::Path::new(&state))
+                .unwrap()
+        } else {
+            DockerBackend::local(&crate::support::docker_path()).unwrap()
+        };
         let ledger = Ledger::open(&dir.path().join("controller")).unwrap();
         let source = ledger
             .store("source", "application/octet-stream", b"readonly-source", 0)
@@ -243,7 +253,7 @@ mod docker {
         let environment = Environment {
             schema_version: 1,
             image_digest: image,
-            backend_version: BACKEND_VERSION.into(),
+            backend_version: backend.version().into(),
             toolchain_digest: Digest::of(b"native-fixture-tools"),
             dependency_digest: dependencies.digest().unwrap(),
             registry_digest: Digest::of_json(&registry).unwrap(),
@@ -259,7 +269,7 @@ mod docker {
             environment,
             registry,
             spec,
-            DockerBackend::local(&crate::support::docker_path()).unwrap(),
+            backend,
         )
     }
 

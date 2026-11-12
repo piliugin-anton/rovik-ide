@@ -7,7 +7,7 @@ use rovik_harness::{
     identity::Digest,
     ledger::Ledger,
     operations::{FailureResolution, Reconciliation},
-    runner::{self, Cancellation, DockerBackend},
+    runner::{self, Cancellation, ContainerBackend},
     wire, Error, Result,
 };
 use std::path::Path;
@@ -24,18 +24,38 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage="usage: rovik-harness <absolute-state-dir> import <repository-id> <repository-path> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. The state directory must be outside the repository.";
+    let usage="usage: rovik-harness <absolute-state-dir> import <repository-id> <repository-path> | load-image <archive.tar> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. ROVIK_HARNESS_ENGINE selects docker (default) or podman; ROVIK_HARNESS_DOCKER_BIN and ROVIK_HARNESS_PODMAN_BIN select absolute client paths. The state directory must be outside the repository.";
     if args.len() < 2 {
         return Err(Error(usage.into()));
     }
     let state = Path::new(&args[0]);
-    let docker =
-        std::env::var("ROVIK_HARNESS_DOCKER_BIN").unwrap_or_else(|_| "/usr/bin/docker".into());
-    let mut controller = Controller {
-        ledger: Ledger::open(state)?,
-        backend: DockerBackend::local(Path::new(&docker))?,
+    let ledger = Ledger::open(state)?;
+    let backend = match std::env::var("ROVIK_HARNESS_ENGINE")
+        .as_deref()
+        .unwrap_or("docker")
+    {
+        "docker" => {
+            let path = std::env::var("ROVIK_HARNESS_DOCKER_BIN")
+                .unwrap_or_else(|_| "/usr/bin/docker".into());
+            ContainerBackend::local(Path::new(&path))?
+        }
+        "podman" => {
+            let path = std::env::var("ROVIK_HARNESS_PODMAN_BIN")
+                .unwrap_or_else(|_| "/usr/bin/podman".into());
+            ContainerBackend::podman(Path::new(&path), &state.join("podman"))?
+        }
+        _ => {
+            return Err(Error(
+                "ROVIK_HARNESS_ENGINE must be docker or podman".into(),
+            ))
+        }
     };
+    let mut controller = Controller { ledger, backend };
     match args[1].as_str() {
+        "load-image" if args.len() == 3 => {
+            controller.backend.import_image(Path::new(&args[2]))?;
+            print(&serde_json::json!({"loaded":true,"backend":controller.backend.version()}))
+        }
         "import" if args.len() == 4 => {
             let repository = Path::new(&args[3]).canonicalize()?;
             if state.canonicalize()?.starts_with(&repository) {

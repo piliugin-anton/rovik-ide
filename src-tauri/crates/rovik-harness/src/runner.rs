@@ -1,4 +1,4 @@
-//! Linux Docker execution boundary with immutable mounts and bounded whole jobs.
+//! Linux container execution boundary with immutable mounts and bounded whole jobs.
 //!
 //! The daemon is a trusted host capability and is never mounted in the container.
 //! Images and dependencies must be prepared separately; execution never pulls.
@@ -18,7 +18,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -27,8 +27,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod engine;
+
 /// Identity of the security-relevant runner implementation.
 pub const BACKEND_VERSION: &str = "rovik-docker-v1";
+
+/// Rootless Podman has a distinct identity; Docker approvals cannot authorize it.
+pub const PODMAN_BACKEND_VERSION: &str = "rovik-podman-v1";
 
 /// Explicit execution environment identity, persisted before any checks run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +41,7 @@ pub const BACKEND_VERSION: &str = "rovik-docker-v1";
 pub struct Environment {
     /// Exactly 1.
     pub schema_version: u32,
-    /// Locally present immutable Docker image config digest, not a tag.
+    /// Locally present immutable container image config digest, not a tag.
     pub image_digest: Digest,
     /// Exact execution backend revision.
     pub backend_version: String,
@@ -55,7 +60,9 @@ impl Environment {
     /// Validate the supported backend; host defaults never resolve a profile.
     pub fn validate(&self, registry: &CommandRegistry) -> Result<()> {
         require(
-            self.schema_version == 1 && self.backend_version == BACKEND_VERSION,
+            self.schema_version == 1
+                && [BACKEND_VERSION, PODMAN_BACKEND_VERSION]
+                    .contains(&self.backend_version.as_str()),
             "unsupported execution environment",
         )?;
         require(
@@ -156,40 +163,55 @@ pub struct RunnerReceipt {
     pub evidence: Vec<Digest>,
 }
 
-/// A local Docker backend; no host fallback is ever used when isolation fails.
+/// A local container backend; failed isolation never falls back to host execution.
 #[derive(Debug, Clone)]
-pub struct DockerBackend {
-    executable: PathBuf,
+pub struct ContainerBackend {
+    engine: Arc<dyn engine::Engine>,
 }
 
-impl DockerBackend {
+/// Compatibility name for callers that select the Docker constructor.
+pub type DockerBackend = ContainerBackend;
+
+impl ContainerBackend {
     /// Register an absolute Docker client path. Endpoint selectors cannot redirect it.
     pub fn local(executable: &Path) -> Result<Self> {
-        require(
-            cfg!(target_os = "linux"),
-            "secure execution currently requires Linux",
-        )?;
-        require(
-            executable.is_absolute() && executable.is_file(),
-            "registered Docker client is missing",
-        )?;
+        validate_executable(executable)?;
         Ok(Self {
-            executable: executable.into(),
+            engine: Arc::new(engine::Docker(executable.into())),
         })
     }
+    /// Select local rootless Podman with its own private image store, outside the project.
+    /// The host must delegate cgroup v2 memory, CPU and process controllers.
+    pub fn podman(executable: &Path, state: &Path) -> Result<Self> {
+        validate_executable(executable)?;
+        Ok(Self {
+            engine: Arc::new(engine::Podman::new(executable, state)?),
+        })
+    }
+    /// Exact engine identity to bind into the approved execution environment.
+    pub fn version(&self) -> &'static str {
+        self.engine.version()
+    }
+    /// Reject an engine change before executing or recovering any registered work.
+    pub fn require_environment(&self, environment: &Environment) -> Result<()> {
+        require(
+            environment.backend_version == self.version(),
+            "selected container engine differs from the approved environment",
+        )
+    }
+    /// Prepare an explicitly supplied image archive outside verification.
+    /// Checks still require its approved immutable configuration digest.
+    pub fn import_image(&self, archive: &Path) -> Result<()> {
+        let archive = archive.canonicalize()?;
+        require(archive.is_file(), "image archive is not a regular file")?;
+        let path = archive
+            .to_str()
+            .ok_or_else(|| Error("image archive path is not UTF-8".into()))?;
+        self.checked(&["load", "--input", path])?;
+        Ok(())
+    }
     fn command(&self) -> Command {
-        let mut command = Command::new(&self.executable);
-        for key in [
-            "DOCKER_HOST",
-            "DOCKER_CONTEXT",
-            "DOCKER_TLS",
-            "DOCKER_TLS_VERIFY",
-            "DOCKER_CERT_PATH",
-        ] {
-            command.env_remove(key);
-        }
-        command.arg("--host=unix:///var/run/docker.sock");
-        command
+        self.engine.command()
     }
     fn control(&self, args: &[&str], limit: usize) -> Result<ProcessOutput> {
         let mut command = self.command();
@@ -207,7 +229,7 @@ impl DockerBackend {
         require(
             out.code == Some(0) && !out.timed_out && !out.exceeded,
             format!(
-                "Docker control failed: {}",
+                "Container control failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             ),
         )?;
@@ -215,6 +237,10 @@ impl DockerBackend {
     }
     /// Confirm the exact local image exists without fetching or trusting a tag.
     pub fn validate_image(&self, environment: &Environment) -> Result<()> {
+        self.require_environment(environment)?;
+        if self.engine.needs_cgroup_probe() {
+            engine::validate_podman_host(&self.checked(&["info", "--format=json"])?)?;
+        }
         let actual = self.checked(&[
             "image",
             "inspect",
@@ -222,8 +248,14 @@ impl DockerBackend {
             "{{.Id}}",
             environment.image_digest.as_str(),
         ])?;
+        let actual = String::from_utf8_lossy(&actual);
+        let actual = actual.trim();
         require(
-            String::from_utf8_lossy(&actual).trim() == environment.image_digest.as_str(),
+            actual.strip_prefix("sha256:").unwrap_or(actual)
+                == environment
+                    .image_digest
+                    .as_str()
+                    .trim_start_matches("sha256:"),
             "pinned execution image unavailable or mismatched",
         )
     }
@@ -322,6 +354,34 @@ impl DockerBackend {
             "invalid registered job identity",
         )?;
         let mut command = self.command();
+        // Existence is queried independently: engines disagree about rm's
+        // status and wording for absent containers.
+        command.args([
+            "ps",
+            "--all",
+            "--filter",
+            &format!("name=^{job}$"),
+            "--format",
+            "{{.Names}}",
+        ]);
+        let known = process(
+            command,
+            Duration::from_secs(120),
+            64 * 1024,
+            &Cancellation::default(),
+            || Ok(()),
+        )?;
+        require(
+            known.code == Some(0) && !known.timed_out && !known.exceeded,
+            "cannot establish whether registered container exists",
+        )?;
+        if String::from_utf8_lossy(&known.stdout)
+            .lines()
+            .all(|name| name.trim() != job)
+        {
+            return Ok(false);
+        }
+        let mut command = self.command();
         command.args(["rm", "--force", job]);
         let result = process(
             command,
@@ -410,9 +470,10 @@ impl DockerBackend {
             &definition.cwd,
             "--entrypoint=/usr/bin/env",
         ]);
+        self.engine.create_options(&mut create);
         create.args([
             "--label",
-            &format!("org.rovik.harness.backend={BACKEND_VERSION}"),
+            &format!("org.rovik.harness.backend={}", self.version()),
         ]);
         if let Some(lease) = lease {
             create.args([
@@ -520,6 +581,11 @@ impl DockerBackend {
                 ),
             )?;
             self.checked(&["start", &job])?;
+            if self.engine.needs_cgroup_probe() {
+                let limits =
+                    self.checked(&["exec", &job, "/bin/sh", "-c", engine::CGROUP_PROBE])?;
+                engine::validate_cgroup_limits(&limits, &definition.limits)?;
+            }
             let started = Instant::now();
             let mut command = self.command();
             command.args([
@@ -576,6 +642,17 @@ impl DockerBackend {
         }
         execution
     }
+}
+
+fn validate_executable(executable: &Path) -> Result<()> {
+    require(
+        cfg!(target_os = "linux"),
+        "secure execution currently requires Linux",
+    )?;
+    require(
+        executable.is_absolute() && executable.is_file(),
+        "registered container client is missing",
+    )
 }
 
 /// Current UTC milliseconds for leases and durable timestamps.

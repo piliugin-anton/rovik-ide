@@ -228,9 +228,9 @@ impl Controller {
     /// Fence interrupted work, kill only its registered jobs and retain unknown usage.
     /// This explicit management action also interrupts any still-running controller.
     pub fn recover(&mut self, principal: &Principal, run_id: &str) -> Result<Vec<String>> {
-        self.setup(run_id)?
-            .authority
-            .authorize(principal, "operate")?;
+        let setup = self.setup(run_id)?;
+        setup.authority.authorize(principal, "operate")?;
+        self.backend.require_environment(&setup.environment)?;
         let current = self.ledger.run(run_id)?;
         require(
             current.state != State::Accepted,

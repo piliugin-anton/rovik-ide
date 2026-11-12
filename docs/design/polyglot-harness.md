@@ -97,13 +97,40 @@ isolated execution adapter.
 
 ## Isolated execution (M2)
 
-The initial backend requires a local Linux Docker daemon and a preloaded image
+The Docker backend requires a local Linux Docker daemon and a preloaded image
 identified by its immutable configuration digest. It never pulls an image during
 verification or falls back to host execution. Each check uses a fresh container,
 a separate unprivileged uid, no network, no capabilities, a read-only root and
 read-only source/oracle/dependency mounts. Memory (including swap), CPU, process,
 build-space, output and execution-time limits are explicit registered inputs.
 Setup/control operations have a separate bounded deadline for slow storage drivers.
+
+Rootless Podman is also supported on Linux with the distinct environment identity
+`rovik-podman-v1`. Select it with `ROVIK_HARNESS_ENGINE=podman`; optionally set
+`ROVIK_HARNESS_PODMAN_BIN` to its absolute executable path. Docker remains the
+default (`ROVIK_HARNESS_ENGINE=docker`, identity `rovik-docker-v1`). A run cannot
+switch engines after approval, including during recovery.
+
+Podman uses a private store under `<state-dir>/podman`, local execution only,
+explicit user mappings and cgroup v2. It requires subordinate UID/GID ranges,
+the distro's rootless Podman prerequisites and init binary (`catatonit`), and
+delegated memory, CPU and pids controllers. Before any check starts, the runner
+reads the container's actual cgroup limits and rejects missing or unenforced
+limits. Disabled cgroups are unsupported. The cloud project-services store,
+which deliberately shares per-user limits, is separate from this verification
+store. Cloud daemon routing still needs the IDE integration described below;
+merely having project services available does not establish strict readiness.
+
+Prepare images separately, then import an archive into the selected engine with
+`rovik-harness <absolute-state-dir> load-image <archive.tar>`. The task environment
+must still pin the resulting image configuration digest; loading a tag does not
+authorize it. Both engines use the same protected mounts, offline execution,
+bounded output, whole-container cleanup and authenticated receipt admission.
+
+The isolation tests can exercise either engine. For Podman, set
+`ROVIK_HARNESS_PODMAN=1`, `ROVIK_HARNESS_PODMAN_STATE` to a private prepared Podman
+directory and `ROVIK_HARNESS_IMAGE` to its loaded immutable image ID, then run
+`cargo test -p rovik-harness --test execution -- --ignored --test-threads=1`.
 
 Reports are collected inside the live sandbox because Docker's archive API does
 not expose tmpfs outputs. The collector accepts only its fixed regular output
@@ -239,7 +266,9 @@ already supplies provider and Git adapters, but UI service routing and task
 construction still need implementation.
 
 The first release of this IDE mode should require isolation and use the existing
-Linux Docker backend, locally or on a connected Linux host. Capture the actual
+Linux Docker or rootless Podman backend, locally or on a connected Linux host.
+Check the selected host's per-job isolation and resource capabilities before
+offering strict mode. Capture the actual
 intended starting tree: the current Git importer captures committed HEAD only,
 so unsaved buffers and uncommitted edits need an explicit saved snapshot before
 execution. Before applying a result, check both the destination revision and
@@ -336,7 +365,7 @@ routes changed file handles, FFI and worker/thread signals to their required
 evidence and reviews, inspecting removed code as well as additions. This remains
 a conservative lexical supplement, not proof that a program has no other risks.
 
-All six languages use the existing Linux Docker backend, immutable input mounts,
+All six languages use the Linux container backend, immutable input mounts,
 network denial, resource limits, approvals and evidence bindings. The feature is
 enabled by creating and approving a strict harness task with the corresponding
 profile and registry; there is no new Autopilot toggle or replacement for its

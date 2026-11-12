@@ -14,7 +14,7 @@ use crate::{
     provider::{ModelRequest, Provider, WorkerTurn, WORKER_CONTROL},
     registry::CommandRegistry,
     require,
-    runner::{self, Cancellation, DockerBackend, Environment, ExecutionInput},
+    runner::{self, Cancellation, ContainerBackend, Environment, ExecutionInput},
     snapshot::{AdmissionRules, Snapshot},
     state::State,
     wire, Error, Result,
@@ -410,13 +410,14 @@ pub struct Controller {
     /// Durable storage, available to trusted management commands.
     pub ledger: Ledger,
     /// Isolated execution adapter.
-    pub backend: DockerBackend,
+    pub backend: ContainerBackend,
 }
 
 impl Controller {
     /// Register exact intake artifacts and create the durable run.
     pub fn create(&mut self, setup: &TaskSetup, now: u64) -> Result<RunRecord> {
         setup.validate(&self.ledger)?;
+        self.backend.require_environment(&setup.environment)?;
         require(setup.deadline_ms > now, "task deadline already exhausted")?;
         for (kind, value) in [
             ("contract", serde_json::to_value(&setup.contract)),
@@ -984,6 +985,7 @@ impl Controller {
         cancel: &Cancellation,
     ) -> Result<RunReport> {
         let setup = self.setup(run_id)?;
+        self.backend.require_environment(&setup.environment)?;
         let (active_cancel, _monitor) = ExecutionMonitor::start(
             self.ledger.root(),
             run_id,
