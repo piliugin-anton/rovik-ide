@@ -31,7 +31,7 @@ fn run(core: &Core, dialog: &str, root: &Path, reuse: bool) -> Run {
     run.project_root = run.root.clone();
     run.checks = vec![ProjectCheck {
         kind: "lint".into(),
-        command: "printf checkpoint-pass".into(),
+        command: "echo checkpoint-pass".into(),
         enabled: true,
         reuse_success: reuse,
     }];
@@ -176,7 +176,7 @@ async fn completed_default_checks_run_again_after_restart() {
 async fn unknown_command_boundary_is_paused_for_approval_without_replay() {
     let (host, mut original) = fixture(false).await;
     let marker = host.dir.0.join("must-not-run");
-    original.checks[0].command = format!("printf ran > '{}'", marker.display());
+    original.checks[0].command = format!("echo ran > \"{}\"", marker.display());
     let dialog = original.dialog_id.clone();
     let id = record(&original, "running").await;
     INTERRUPT_AT
@@ -253,7 +253,7 @@ async fn changed_check_configuration_requires_new_approval_and_keeps_consumed_bu
     drop(original);
     let core = reopened(&host);
     let mut fresh = run(&core, &dialog, Path::new(&root), false);
-    fresh.checks[0].command = "printf newly-configured".into();
+    fresh.checks[0].command = "echo newly-configured".into();
     fresh.restore_verify_state(&id).await;
     assert!(fresh.verification.approval_changed);
     assert_eq!(fresh.ledger.tokens, 700);
@@ -269,7 +269,7 @@ async fn changed_check_configuration_requires_new_approval_and_keeps_consumed_bu
         .unwrap();
     assert_eq!(
         rows.last().unwrap().meta.as_ref().unwrap()["verification"]["checks"][0]["command"],
-        "printf newly-configured"
+        "echo newly-configured"
     );
 }
 
@@ -363,14 +363,20 @@ async fn dropping_carry_deletes_private_checkpoint_across_a_new_core() {
 async fn process_interruption_during_an_actual_command_never_replays_it_on_recovery() {
     let (host, mut original) = fixture(false).await;
     let marker = host.dir.0.join("command-started");
-    original.checks[0].command = format!("printf x >> '{}'; sleep 30", marker.display());
+    // The marker and pending command must work in cmd.exe as well as a Unix shell.
+    let wait = if cfg!(windows) {
+        " & ping -n 31 127.0.0.1 > nul"
+    } else {
+        "; sleep 30"
+    };
+    original.checks[0].command = format!("echo x >> \"{}\"{wait}", marker.display());
     let dialog = original.dialog_id.clone();
     let id = record(&original, "running").await;
     {
         let future = checks(&mut original, &id);
         tokio::pin!(future);
         let started = async {
-            while !marker.exists() {
+            while !std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == "x") {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         };
@@ -389,7 +395,7 @@ async fn process_interruption_during_an_actual_command_never_replays_it_on_recov
     drop(original);
     let core = reopened(&host);
     assert_eq!(after_crash(&core, &dialog).await.unwrap(), Recovery::Paused);
-    assert_eq!(std::fs::read_to_string(marker).unwrap(), "x");
+    assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "x");
 }
 
 #[test]

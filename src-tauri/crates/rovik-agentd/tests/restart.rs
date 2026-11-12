@@ -1,7 +1,7 @@
 //! Runs a `kill -9` cut, picked up when the daemon starts again (P06, 5.4):
 //! a reply cut mid-stream is continued, or taken again when nothing of it
 //! came, a tool call cut mid-way asks the user first, a run cut in its
-//! end-of-run checks ends `interrupted`, and a chat cut twice within the
+//! end-of-run checks waits for approval, and a chat cut twice within the
 //! hour waits for the user. And runs the daemon's own stop paused (R02),
 //! which continue, while one waiting for its user doesn't hold it up.
 
@@ -9,7 +9,7 @@ mod common;
 
 use common::{files_under, start_request, until, Daemon, Row};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
-use rovik_core::agent_run::{AgentConfig, StartRequest};
+use rovik_core::agent_run::{AgentConfig, StartKind, StartRequest};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::events::ApprovalRequest;
 use rovik_protocol::{Frame, Request, Response};
@@ -230,16 +230,17 @@ async fn a_tool_call_cut_mid_way_asks_before_it_runs_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_run_cut_in_its_end_of_run_checks_ends_interrupted() {
+async fn a_run_cut_in_its_end_of_run_checks_waits_for_approval_then_resumes() {
     let mut daemon = Daemon::start(&["--same-machine"]).await;
     let project = project(&daemon);
-    // The project's check, as its settings name it: slow enough to cut.
+    // Keep the check running until the test releases it, and count every
+    // execution so recovery cannot silently replay an interrupted command.
     let config = daemon.data.join("config");
     std::fs::create_dir_all(&config).unwrap();
     let mut settings = serde_json::Map::new();
     settings.insert(
         project.to_string_lossy().into_owned(),
-        json!({ "checks": [{ "kind": "test", "command": "touch checking && sleep 5" }] }),
+        json!({ "checks": [{ "kind": "test", "command": "echo ran >> checking; while [ ! -e release-check ]; do sleep 0.05; done" }] }),
     );
     std::fs::write(
         config.join("project-settings.json"),
@@ -259,28 +260,82 @@ async fn a_run_cut_in_its_end_of_run_checks_ends_interrupted() {
         verify_changes: true,
         ..unattended()
     };
-    started(&daemon, start(&url, &project, permissions)).await;
+    let mut request = start(&url, &project, permissions);
+    started(&daemon, request.clone()).await;
     until("the checks ran", || {
-        project.join("checking").exists().then_some(())
+        std::fs::read_to_string(project.join("checking"))
+            .is_ok_and(|s| s.lines().eq(["ran"]))
+            .then_some(())
     })
     .await;
     let run_id = chat_state(&daemon)["runId"].clone();
+    let record_id = daemon.rows(CHAT).last().unwrap().id.clone();
     daemon.kill().await;
     daemon.restart().await;
 
-    let events = events_of_this_boot(&daemon).await;
-    let ended = events.last().unwrap();
-    assert_eq!(ended["outcome"], "interrupted");
-    assert_eq!(ended["runId"], run_id);
+    let waiting = until("verification waits for approval after restart", || {
+        let row = daemon.rows(CHAT).into_iter().find(|r| r.id == record_id)?;
+        (row.meta["verification"]["status"] == "needs-approval"
+            && chat_state(&daemon)["running"] == false)
+            .then_some(row)
+    })
+    .await;
+    assert!(waiting.meta["verification"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("outcome is unknown"));
+    let mut session = daemon.session().await;
+    let boot = session.boot();
+    let (_, complete) = session.subscribe(Some((boot, 0))).await;
+    assert!(complete);
+    let events = session
+        .events_until(|e| {
+            e["type"] == "messagePatched"
+                && e["messageId"] == record_id
+                && e["patch"]["meta"]["verification"]["status"] == "needs-approval"
+        })
+        .await;
     assert!(
-        !events.iter().any(|e| e["type"] == "runStarted"),
+        !events.iter().any(|(_, e)| e["type"] == "runStarted"),
         "{events:?}"
     );
     let chat = chat_state(&daemon);
     assert_eq!(chat["running"], false);
-    assert_eq!(chat["outcome"], "interrupted");
+    assert_eq!(chat["runId"], run_id);
     assert_eq!(restarts(&daemon), 0);
     assert_eq!(seen.lock().unwrap().len(), 2, "no request after the cut");
+    let executions = || {
+        std::fs::read_to_string(project.join("checking"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+    assert_eq!(executions(), 1, "no check reruns before approval");
+
+    std::fs::write(project.join("release-check"), "").unwrap();
+    request.start = StartKind::RunChecks {
+        record_id: record_id.clone(),
+    };
+    started(&daemon, request).await;
+    let resumed = session.events_until(|e| e["type"] == "runEnded").await;
+    let ended = &resumed.last().unwrap().1;
+    assert_eq!(ended["outcome"], "verified", "{resumed:?}");
+    assert_ne!(ended["runId"], run_id);
+    assert_eq!(
+        executions(),
+        2,
+        "approval reruns the interrupted check once"
+    );
+    let rows = daemon.rows(CHAT);
+    let checked = &rows.iter().find(|r| r.id == record_id).unwrap().meta["verification"];
+    assert_eq!(checked["status"], "passed");
+    assert_eq!(checked["checks"][0]["status"], "passed");
+    assert_eq!(checked["finalizationPending"], false);
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        2,
+        "resuming checks needs no model request"
+    );
 }
 
 /// R02: the daemon's stop, as an upgrade restarts it, lets the command a
