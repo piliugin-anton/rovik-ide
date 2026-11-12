@@ -688,6 +688,7 @@ mod tests {
 
     fn failed(kind: &str) -> CheckResult {
         let mut r = CheckResult::pending(&ProjectCheck {
+            reuse_success: false,
             kind: kind.into(),
             command: "cargo test".into(),
             enabled: true,

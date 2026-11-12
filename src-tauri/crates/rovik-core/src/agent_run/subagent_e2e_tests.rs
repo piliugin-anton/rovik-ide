@@ -4,6 +4,26 @@
 
 use super::*;
 
+#[cfg(unix)]
+#[path = "preflight_e2e_tests.rs"]
+mod preflight_tests;
+
+#[cfg(unix)]
+#[path = "verification_reuse_e2e_tests.rs"]
+mod verification_reuse_tests;
+
+/// Keep the command inputs stable while receipt tests compare executions.
+/// Other suites mutate the host toolchains and CARGO_HOME under this lock.
+#[cfg(unix)]
+fn stable_check_environment() -> std::sync::MutexGuard<'static, ()> {
+    let guard = crate::toolchains::test_lock();
+    static PATH_READY: std::sync::Once = std::sync::Once::new();
+    PATH_READY.call_once(|| {
+        crate::process::refresh_login_path();
+    });
+    guard
+}
+
 const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
 
 fn scouts_on(extra: Value) -> subagent::SubagentConfig {

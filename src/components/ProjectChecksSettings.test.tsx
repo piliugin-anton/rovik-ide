@@ -74,6 +74,41 @@ const status = (root: HTMLElement) => {
   };
 };
 
+test('check reuse is opt-in, survives loading and is cleared when the command changes', async () => {
+  const root = await page({ checks: [{ kind: 'test', command: 'npm test', enabled: true }] });
+  const reuse = () =>
+    root.querySelector('input[aria-label^="Reuse successful"]') as HTMLInputElement;
+  assert.equal(reuse().checked, false);
+  reuse().click();
+  await flush();
+  const saved = saves.at(-1) as { checks: { reuseSuccess?: boolean }[] };
+  assert.equal(saved.checks[0].reuseSuccess, true);
+  const loaded = await page(saved);
+  assert.equal(
+    (loaded.querySelector('input[aria-label^="Reuse successful"]') as HTMLInputElement).checked,
+    true
+  );
+  const command = loaded.querySelector('.project-check-command') as HTMLInputElement;
+  command.value = 'npm run integration';
+  command.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+  assert.equal((saves.at(-1) as typeof saved).checks[0].reuseSuccess, undefined);
+  assert.equal(
+    (loaded.querySelector('input[aria-label^="Reuse successful"]') as HTMLInputElement).checked,
+    false
+  );
+});
+
+test('malformed saved reuse values never opt a check in', async () => {
+  const root = await page({
+    checks: [{ kind: 'test', command: 'npm test', enabled: true, reuseSuccess: 'true' }],
+  });
+  assert.equal(
+    (root.querySelector('input[aria-label^="Reuse successful"]') as HTMLInputElement).checked,
+    false
+  );
+});
+
 test('project checks: found in the project’s files, none is ticked and nothing runs', async () => {
   const root = await page();
   assert.deepEqual(

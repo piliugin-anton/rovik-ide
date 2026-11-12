@@ -822,6 +822,7 @@ impl Run {
             Some(commands) => commands
                 .into_iter()
                 .map(|command| ProjectCheck {
+                    reuse_success: false,
                     kind: plan::validation_kind(&command).into(),
                     command,
                     enabled: true,
@@ -1543,10 +1544,21 @@ impl Run {
                         return Ok("stopped".into());
                     }
                 }
-                // A fresh-context review of the change, before the checks.
                 self.steering
                     .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
+                // Cheap enabled checks catch introduced errors before the
+                // first model review spends its budget on the change.
+                if let Some(outcome) = self.preflight_before_review().await? {
+                    if outcome == "continue" {
+                        continue;
+                    }
+                    return Ok(outcome);
+                }
+                if self.read_waiting("preflight").await? {
+                    continue;
+                }
+                // A fresh-context review of the change, before the remaining checks.
                 if self.review_change().await? {
                     continue;
                 }

@@ -8,6 +8,9 @@
 //! `meta.verification`, never sent to the model, saved on every change so it
 //! reads the same after a restart.
 
+#[path = "verification_receipt.rs"]
+mod receipt;
+
 use super::command_output::{
     environment_failure, error_locations, failure_keys, focus_failures, split_by_changed,
     tests_ran, without_roots,
@@ -577,6 +580,101 @@ pub fn failure_report(
 
 impl Run {
     /// The project's checks that run: on, and with a command.
+    /// Snapshot complete local inputs off the runtime threads. A failed or
+    /// bounded-out snapshot disables reuse; it never prevents verification.
+    async fn check_stamp(&mut self, root: &str) -> Option<receipt::Stamp> {
+        if self.verification.reuse_unavailable {
+            return None;
+        }
+        let mut roots = vec![std::path::PathBuf::from(root)];
+        if let Some(project) = &self.project_root {
+            roots.push(project.into());
+        }
+        let overlay = crate::overlay::chats::get(&self.dialog_id);
+        let generation = overlay.as_ref().map(|o| o.fs.generation());
+        let permissions = self.config().permissions;
+        let configuration = serde_json::to_vec(&json!({
+            "checks": self.checks, "permissions": permissions,
+            "generation": generation,
+            "toolchainEnvironment": crate::toolchains::env_for(std::path::Path::new(root)),
+            "childEnvironment": serde_json::to_value(crate::process::child_env()).ok()?,
+        }))
+        .ok()?;
+        let restricted = self.restricted.clone();
+        let snapshot = crate::rt::spawn_blocking(move || {
+            receipt::capture(&roots, &restricted, &configuration)
+        })
+        .await
+        .ok()
+        .flatten();
+        let snapshot =
+            snapshot.filter(|_| generation == overlay.as_ref().map(|o| o.fs.generation()));
+        if snapshot.is_none() {
+            self.verification.reuse_unavailable = true;
+            self.verification.receipts.clear();
+            log::write(
+                &self.core,
+                json!({ "event": "checkReuseUnavailable", "dialogId": self.dialog_id,
+                "reason": "local inputs could not be completely and stably fingerprinted within the snapshot limits" }),
+            );
+        }
+        snapshot
+    }
+
+    /// Run opted-in static checks before the first review. A failure uses the
+    /// same repair gate as final verification; success is never full acceptance.
+    pub(super) async fn preflight_before_review(&mut self) -> Result<Option<String>, String> {
+        if self.verification.preflight_done
+            || self.sub().is_some()
+            || self.plan_mode
+            || self.stopped()
+            || self.review.total() > 0
+            || self.verification.last_failed()
+            || !self.verification.needs_checks()
+            || !self.config().permissions.verify_changes
+            || !self
+                .config()
+                .subagents
+                .may_run(super::subagent::Kind::Reviewer)
+        {
+            return Ok(None);
+        }
+        self.verification.preflight_done = true;
+        // Keep the existing approval flow at the final gate; never run early
+        // commands whose approval would interrupt or alter that flow.
+        if self.config().permissions.command_approval.required && !self.in_autopilot() {
+            return Ok(None);
+        }
+        let checks: Vec<_> = self
+            .enabled_checks()
+            .into_iter()
+            .filter(|c| c.reuse_success && matches!(c.kind.as_str(), "typecheck" | "lint"))
+            .collect();
+        let Some(root) = self.root.clone() else {
+            return Ok(None);
+        };
+        if checks.is_empty() || self.check_stamp(&root).await.is_none() {
+            return Ok(None);
+        }
+        loop {
+            let outcome = self
+                .verify_round_for(false, None, Some(checks.clone()))
+                .await?;
+            if outcome == "preflight-passed" {
+                return Ok(None);
+            }
+            if outcome != "repaired" {
+                return Ok(Some(outcome));
+            }
+            if self.read_waiting("repair").await? {
+                return Ok(Some("continue".into()));
+            }
+            if let Some(pause) = self.pause.get() {
+                return self.pause_for(pause).await.map(Some);
+            }
+        }
+    }
+
     fn enabled_checks(&self) -> Vec<ProjectCheck> {
         self.checks
             .iter()
@@ -790,6 +888,16 @@ impl Run {
         approved: bool,
         record_id: Option<String>,
     ) -> Result<String, String> {
+        self.verify_round_for(approved, record_id, None).await
+    }
+
+    async fn verify_round_for(
+        &mut self,
+        approved: bool,
+        record_id: Option<String>,
+        preflight_checks: Option<Vec<ProjectCheck>>,
+    ) -> Result<String, String> {
+        let preflight = preflight_checks.is_some();
         let p = self.config().permissions;
         let Some(root) = self.root.clone() else {
             return Ok("done".into());
@@ -856,7 +964,7 @@ impl Run {
             .into());
         }
 
-        let checks = self.enabled_checks();
+        let checks = preflight_checks.unwrap_or_else(|| self.enabled_checks());
         if checks.is_empty() {
             self.add_record(record(
                 "unverified",
@@ -937,6 +1045,40 @@ impl Run {
 
         let failed = results.iter().any(|r| r.status == "failed");
         let ran = results.iter().any(has_run);
+        // A passing preflight is only part of the gate. Do not promote memory,
+        // judge integrity, or run acceptance until all configured checks return.
+        let unavailable = results.iter().any(|r| {
+            r.status == "failed"
+                && (r.environment.is_some() || r.timed_out == Some(true) || r.exit_code.is_none())
+        });
+        if preflight && (!failed || unavailable) {
+            let status = if self.stopped() {
+                "stopped"
+            } else if unavailable {
+                "unverified"
+            } else if ran {
+                "passed"
+            } else {
+                "unverified"
+            };
+            self.update_meta(
+                &record_id,
+                with(
+                    record(status, round, &results, &changed,
+                        unavailable.then_some("preflight checks unavailable; continuing with review and final verification")),
+                    json!({ "preflight": true, "preflightUnavailable": unavailable }),
+                ),
+            )
+            .await?;
+            self.verification.round_refunded();
+            self.verification.recheck(Recheck::VerificationRerun);
+            return Ok(if self.stopped() {
+                "stopped"
+            } else {
+                "preflight-passed"
+            }
+            .into());
+        }
         // The project's memory: what this round confirms, and what it points
         // a failure at (memory.rs).
         self.memory_after_checks(&results).await;
@@ -1023,6 +1165,7 @@ impl Run {
         let extra = |rolled_back: Option<&repair::Rollback>| {
             json!({
                 "maxRounds": max_rounds,
+                "preflight": preflight,
                 "progress": (judgement.verdict != Progress::First).then_some(&judgement),
                 "failureCount": now.keys.len(),
                 "testsRun": now.tests_ran,
@@ -1383,7 +1526,12 @@ impl Run {
     /// within the run's review budget. True: findings went to the
     /// agent, and one more fix and check round is allowed.
     async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
-        if !self.config().subagents.may_run(super::subagent::Kind::Reviewer) || self.plan_mode {
+        if !self
+            .config()
+            .subagents
+            .may_run(super::subagent::Kind::Reviewer)
+            || self.plan_mode
+        {
             return Ok(false);
         }
         let cap = self.change_review_cap();
@@ -1537,7 +1685,8 @@ impl Run {
                 self.dialog_id
             );
         }
-        // The checks run again when the run finishes.
+        // The full final gate still runs. Eligible unchanged command results
+        // are reused there, without skipping integrity or acceptance evaluation.
         self.verification.recheck(Recheck::VerificationRerun);
         Some(match status {
             "passed" => "The project's checks ran on the merged result and pass.".to_string(),
@@ -1667,6 +1816,43 @@ impl Run {
                     break 'check;
                 }
 
+                let reusable = checks
+                    .iter()
+                    .find(|check| {
+                        check.reuse_success
+                            && check.kind == results[i].kind
+                            && check.command.trim() == results[i].command
+                    })
+                    .cloned();
+                let before = if reusable.is_some() {
+                    self.check_stamp(root).await
+                } else {
+                    None
+                };
+                if let (Some(check), Some(stamp)) = (&reusable, &before) {
+                    if let Some(receipt) = self
+                        .verification
+                        .receipts
+                        .iter()
+                        .find(|r| &r.check == check && &r.stamp == stamp)
+                    {
+                        results[i] = receipt.result.clone();
+                        results[i].note = Some(format!(
+                            "Reused unchanged results from verification {}",
+                            receipt.record_id
+                        ));
+                        // A reused check did not execute in this round.
+                        results[i].duration_ms = Some(0);
+                        log::write(
+                            &self.core,
+                            json!({ "event": "checkReused", "dialogId": self.dialog_id,
+                            "recordId": record_id, "sourceRecordId": receipt.record_id,
+                            "command": check.command }),
+                        );
+                        self.update_meta(record_id, progress(&results)).await?;
+                        break 'check;
+                    }
+                }
                 results[i].status = "running";
                 self.update_meta(record_id, progress(&results)).await?;
                 let stop = self.stop.clone();
@@ -1731,10 +1917,9 @@ impl Run {
                             let environment = (!out.timed_out)
                                 .then(|| environment_failure(out.exit_code, &combined, &roots))
                                 .flatten();
-                            // V03: in Autopilot, whether its environment failed.
-                            if self.in_autopilot() {
-                                r.environment = environment.clone();
-                            }
+                            // Also lets preflight postpone unavailable checks
+                            // to the final gate without spending a repair turn.
+                            r.environment = environment.clone();
                             // From the whole output, not the focused part nor
                             // the start and end kept to show: every failure
                             // counts when rounds are compared (V07).
@@ -1810,6 +1995,19 @@ impl Run {
                     );
                     self.update_meta(record_id, progress(&results)).await?;
                 }
+                if results[i].status == "passed" && !self.stopped() {
+                    if let (Some(check), Some(stamp)) = (reusable, before) {
+                        if self.check_stamp(root).await.as_ref() == Some(&stamp) {
+                            self.verification.receipts.retain(|r| r.check != check);
+                            self.verification.receipts.push(CheckReceipt {
+                                stamp,
+                                check,
+                                result: results[i].clone(),
+                                record_id: record_id.into(),
+                            });
+                        }
+                    }
+                }
                 // V06: in Autopilot, a whole test suite that timed out is
                 // recorded slow, not failed, and the tests of the changed files
                 // run in its place: theirs is the round's result.
@@ -1833,6 +2031,7 @@ impl Run {
                         r.error_files = None;
                         r.tests_ran = None;
                         let check = ProjectCheck {
+                            reuse_success: false,
                             kind: "test".into(),
                             command,
                             enabled: true,
@@ -1964,6 +2163,7 @@ mod tests {
         let check = |kind: &str, command: &str, status| CheckResult {
             status,
             ..CheckResult::pending(&ProjectCheck {
+                reuse_success: false,
                 kind: kind.into(),
                 command: command.into(),
                 enabled: true,
@@ -2014,6 +2214,7 @@ mod tests {
         let mut failed = CheckResult {
             status: "failed",
             ..CheckResult::pending(&ProjectCheck {
+                reuse_success: false,
                 kind: "test".into(),
                 command: "npm test".into(),
                 enabled: true,
@@ -2048,6 +2249,7 @@ mod tests {
         let check = |kind: &str, command: &str, status| CheckResult {
             status,
             ..CheckResult::pending(&ProjectCheck {
+                reuse_success: false,
                 kind: kind.into(),
                 command: command.into(),
                 enabled: true,
@@ -2157,7 +2359,21 @@ pub(super) struct VerificationState {
     carry_lost_told: bool,
     /// P4.7: earlier runs' saved check output was removed.
     cleaned_this_run: bool,
+    /// Successful commands in this active run only; never carried across restart.
+    receipts: Vec<CheckReceipt>,
+    /// The first-review preflight was considered for this run.
+    preflight_done: bool,
+    /// Do not repeatedly rescan a tree whose inputs cannot be fingerprinted.
+    reuse_unavailable: bool,
 }
+/// Passing evidence, including where the command actually ran.
+struct CheckReceipt {
+    stamp: receipt::Stamp,
+    check: ProjectCheck,
+    result: CheckResult,
+    record_id: String,
+}
+
 /// Why checks must run again when no file has changed.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Recheck {
@@ -2306,9 +2522,13 @@ impl VerificationState {
     }
 
     pub(super) fn changes_made(&mut self) {
+        self.receipts.clear();
         self.writes_since_verify = true;
     }
-    pub(super) fn recheck(&mut self, _why: Recheck) {
+    pub(super) fn recheck(&mut self, why: Recheck) {
+        if !matches!(why, Recheck::VerificationRerun) {
+            self.receipts.clear();
+        }
         self.writes_since_verify = true;
     }
     pub(super) fn needs_checks(&self) -> bool {
@@ -2372,6 +2592,7 @@ mod state_tests {
             last_verify_results: vec![CheckResult {
                 status: "failed",
                 ..CheckResult::pending(&ProjectCheck {
+                    reuse_success: false,
                     kind: "test".into(),
                     command: "cargo test".into(),
                     enabled: true,

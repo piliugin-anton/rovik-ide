@@ -152,6 +152,15 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch
   mode is run once.
+  In Settings → Project checks, each check can opt into reusing successful
+  results within the same run when its local inputs are unchanged. Use this
+  for checks that depend only on local files, leaving it off for checks that
+  depend on services or databases. Eligible type checks and lint run before
+  AI change review, so their failures go back for repair first. Successful
+  checks after a worker-group merge can also be reused at completion.
+  Reuse is conservative: when the IDE cannot establish that inputs are
+  unchanged, it runs the checks again. Final integrity and acceptance checks
+  still apply. Editing a check's command turns reuse off.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has

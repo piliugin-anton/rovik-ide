@@ -579,6 +579,7 @@ mod tests {
     #[test]
     fn checks_would_run_when_set_up_enabled_and_allowed() {
         let check = |command: &str, enabled: bool| ProjectCheck {
+            reuse_success: false,
             kind: "test".into(),
             command: command.into(),
             enabled,
