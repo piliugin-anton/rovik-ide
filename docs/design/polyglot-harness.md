@@ -224,6 +224,35 @@ consumer execution; it makes no claim about model quality or production approval
 The v1 backend permits execution in the size-limited build mount so compiled consumers
 can run, while temporary and report mounts remain non-executable.
 
+## Local Docker installation
+
+The desktop now checks local Docker at startup and automatically installs it
+when missing on supported platforms. Installation uses the shared backend job
+lifetime and private progress channel used by the Chromium installer; closing a
+window does not cancel accepted work or allow a competing backend to replace it.
+A process lock serializes installation across backends. Projects and verification
+commands cannot invoke the installer.
+
+Linux installation uses the distribution's signed packages on Debian/Ubuntu and
+derivatives, Fedora, Arch/Manjaro, openSUSE and Alpine. Non-root desktops need
+`pkexec` and their normal PolicyKit authentication agent. The system installer
+starts the daemon and adds the current account to the Docker group; a new login
+is required for that group membership. Other distributions receive an explicit
+manual-installation message. No downloaded shell script is run as root.
+
+macOS and Windows on x86_64 or ARM64 download Docker Desktop from
+`desktop.docker.com`, verify its published SHA-256 and run the native installer.
+Rovik does not accept Docker's agreements on the user's behalf. System approval,
+first-use setup or a restart can still be necessary. Existing installations are
+never replaced merely because their daemon is stopped or inaccessible.
+
+Readiness uses explicit local endpoints and checks for a running Linux container
+daemon. An installed executable alone is insufficient. This installs the local
+prerequisite only: the strict runner still executes on Linux, approved toolchain
+images and dependency assets still need preparation, and macOS/Windows desktops
+need a supported Linux execution host for the current strict harness. Cloud
+hosts retain their rootless Podman setup.
+
 ## Proposed IDE integration
 
 This section is a recommendation; the current entry point is still the headless

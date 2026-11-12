@@ -1,11 +1,9 @@
 //! One accepted Chrome installation belongs to the backend, not its observers.
 //! A client can stop following progress without dropping the installer while a
 //! blocking unpack still uses its archive and lifetime lock.
-use futures_util::FutureExt;
+use crate::install_job::{follow, InstallJob};
 use rovik_core::pinned_browser::{self, Build, NAME, VERSION};
 use serde::Serialize;
-use std::{future::Future, sync::Mutex};
-use tokio::sync::watch;
 
 /// The existing Settings/startup browser status contract.
 #[derive(Serialize)]
@@ -41,58 +39,17 @@ pub struct BrowserProgress {
     pub total: u64,
 }
 
-#[derive(Clone, Default)]
-struct Update {
-    progress: Option<BrowserProgress>,
-    result: Option<Result<String, String>>,
-}
+/// One backend-owned browser installation shared by its windows.
 #[derive(Default)]
-struct State {
-    run: Option<watch::Receiver<Update>>,
-    closing: bool,
-}
-
-/// Serializes Chrome installs and retains accepted work across window loss.
-#[derive(Default)]
-pub struct BrowserInstaller(Mutex<State>);
+pub struct BrowserInstaller(InstallJob<BrowserProgress, String>);
 
 impl BrowserInstaller {
-    fn subscribe<F, Fut>(&self, work: F) -> Result<watch::Receiver<Update>, String>
-    where
-        F: FnOnce(watch::Sender<Update>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<String, String>> + Send + 'static,
-    {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if state.closing {
-            return Err("The browser installer is shutting down".into());
-        }
-        if let Some(run) = &state.run {
-            if run.borrow().result.is_none() {
-                return Ok(run.clone());
-            }
-        }
-        // Completed requests recheck the executable, including after a failed
-        // download or an installation removed outside the app.
-        let (sent, received) = watch::channel(Update::default());
-        state.run = Some(received.clone());
-        rovik_core::rt::spawn(async move {
-            let result = std::panic::AssertUnwindSafe(async { work(sent.clone()).await })
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| {
-                    Err("Browser installation failed unexpectedly; retry the installation".into())
-                });
-            sent.send_modify(|update| update.result = Some(result));
-        });
-        Ok(received)
-    }
-
     /// Joins or starts the backend's install, forwarding only this observer's progress.
     pub async fn install(
         &self,
         progress: impl FnMut(BrowserProgress) -> bool,
     ) -> Result<String, String> {
-        let run = self.subscribe(|sent| async move {
+        let run = self.0.subscribe(|sent| async move {
             let mut told = 0;
             let path = pinned_browser::install_for_app(|downloaded, total| {
                 if downloaded.saturating_sub(told) >= 256 * 1024 || downloaded == total {
@@ -108,51 +65,14 @@ impl BrowserInstaller {
         follow(run, progress).await
     }
 
-    /// An install outlives its UI observers and prevents automatic host replacement.
     #[cfg(any(unix, windows, test))]
     pub(crate) fn active(&self) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .run
-            .as_ref()
-            .is_some_and(|run| run.borrow().result.is_none())
+        self.0.active()
     }
 
-    /// Waits for accepted installation/publication before backend shutdown.
+    /// Wait for an accepted install before stopping the backend.
     pub async fn shutdown(&self) {
-        let run = {
-            let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            state.closing = true;
-            state.run.clone()
-        };
-        if let Some(run) = run {
-            if let Err(error) = follow(run, |_| true).await {
-                log::warn!("Browser installation ended before shutdown: {error}");
-            }
-        }
-    }
-}
-
-async fn follow(
-    mut run: watch::Receiver<Update>,
-    mut progress: impl FnMut(BrowserProgress) -> bool,
-) -> Result<String, String> {
-    let mut last = None;
-    loop {
-        let update = run.borrow_and_update().clone();
-        if let Some(next) = update.progress.filter(|next| last.as_ref() != Some(next)) {
-            last = Some(next.clone());
-            if !progress(next) {
-                return Err("Browser installation progress callback closed".into());
-            }
-        }
-        if let Some(result) = update.result {
-            return result;
-        }
-        run.changed()
-            .await
-            .map_err(|_| "Browser installation ended without a result".to_string())?;
+        self.0.shutdown().await;
     }
 }
 
@@ -167,6 +87,7 @@ mod tests {
         let (release, wait) = tokio::sync::oneshot::channel();
         let (started, ready) = tokio::sync::oneshot::channel();
         let a = installer
+            .0
             .subscribe(move |progress| async move {
                 progress.send_modify(|update| {
                     update.progress = Some(BrowserProgress {
@@ -187,6 +108,7 @@ mod tests {
             .unwrap();
         ready.await.unwrap();
         let b = installer
+            .0
             .subscribe(|_| async { panic!("a second installation started") })
             .unwrap();
         let mut seen = Vec::new();
@@ -213,6 +135,7 @@ mod tests {
         let installer = Arc::new(BrowserInstaller::default());
         let (release, wait) = tokio::sync::oneshot::channel();
         let run = installer
+            .0
             .subscribe(move |_| async move {
                 wait.await.unwrap();
                 Ok("published".into())
@@ -224,6 +147,7 @@ mod tests {
         // Poll shutdown once: it must remain pending on the accepted job.
         assert!(futures_util::poll!(&mut closing).is_pending());
         assert!(installer
+            .0
             .subscribe(|_| async { Ok("unexpected".into()) })
             .is_err());
         release.send(()).unwrap();
@@ -234,6 +158,7 @@ mod tests {
     async fn failed_or_panicked_installs_report_errors_and_can_be_retried() {
         let installer = BrowserInstaller::default();
         let run = installer
+            .0
             .subscribe(|_| async { Err("checksum mismatch".into()) })
             .unwrap();
         assert_eq!(
@@ -241,6 +166,7 @@ mod tests {
             "checksum mismatch"
         );
         let run = installer
+            .0
             .subscribe(|_| async { panic!("unpack failed") })
             .unwrap();
         assert!(follow(run, |_| true)
@@ -248,6 +174,7 @@ mod tests {
             .unwrap_err()
             .contains("unexpectedly"));
         let run = installer
+            .0
             .subscribe(|_| async { Ok("retry succeeded".into()) })
             .unwrap();
         assert_eq!(follow(run, |_| true).await.unwrap(), "retry succeeded");

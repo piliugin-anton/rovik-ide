@@ -159,6 +159,16 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   offline dependencies, bounded repairs, approval maintenance
   and recovery after controller loss. See [Polyglot harness](docs/design/polyglot-harness.md)
   for supported targets, measured limits and operator setup.
+- **Local Docker setup.** On startup, Rovik installs Docker when it is missing
+  on a supported desktop. Progress and retry actions appear alongside the
+  browser installation notifications. Linux uses signed distribution packages
+  and the system's administrator prompt; installation starts Docker and adds
+  your account to its access group, which requires signing out and back in.
+  macOS and Windows use Docker's official Desktop installer, verified against
+  its published SHA-256. Complete any system approval, Docker terms or restart
+  prompts. Existing installations are kept. Rovik reports an installed but
+  unavailable daemon as needing setup, rather than ready. This local setup
+  does not install Docker on cloud hosts or enable strict Autopilot verification.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has

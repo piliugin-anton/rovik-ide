@@ -9,6 +9,7 @@ pub mod agent;
 pub mod browser;
 pub mod chat;
 pub mod clm;
+pub mod docker;
 pub mod filesystem;
 pub mod formatter;
 pub mod git;
@@ -40,6 +41,8 @@ pub enum DesktopRequest {
     Pages(Box<pages::PagesRequest>),
     /// Headless browser tools and shared Chrome installation.
     Browser(Box<browser::BrowserRequest>),
+    /// Local container engine installation and readiness.
+    Docker(Box<docker::DockerRequest>),
     /// Client-owned language servers and their installation.
     Lsp(Box<lsp::LspRequest>),
     /// Backend-owned Git operations.
@@ -100,6 +103,7 @@ impl DesktopRequest {
                 Self::Formatter(request) => request.dispatch(backend, session),
                 Self::Pages(request) => request.dispatch(backend, session),
                 Self::Browser(request) => request.dispatch(backend, session).await,
+                Self::Docker(request) => request.dispatch(backend, session).await,
                 Self::Lsp(request) => request.dispatch(backend, session).await,
                 Self::Git(request) => request.dispatch(session).await,
                 Self::EventStatus { scope } => {

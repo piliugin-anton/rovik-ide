@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 mod commands;
+mod docker_runtime;
 mod filesystem;
 mod formatter;
 mod git;
@@ -354,6 +355,8 @@ pub fn run() {
             lsp::rust_analyzer::ra_install_rust_src,
             pinned_browser::browser_status,
             pinned_browser::browser_install,
+            docker_runtime::docker_status,
+            docker_runtime::docker_install,
             commands::agent::send_chat_message,
             commands::agent::cancel_chat_request,
             commands::agent::agent_configure,

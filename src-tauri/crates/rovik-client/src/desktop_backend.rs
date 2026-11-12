@@ -23,6 +23,8 @@ pub struct DesktopBackend {
     pub pages: Arc<crate::desktop_pages::PageRouter>,
     /// Shared Chrome installation, independent of its observing windows.
     pub browser_install: Arc<crate::browser_install::BrowserInstaller>,
+    /// Shared local Docker setup, independent of its observing windows.
+    pub docker_install: Arc<crate::docker_install::DockerInstaller>,
     /// Replay history for all UI clients.
     pub journal: Arc<crate::desktop_journal::Journal>,
     /// Serializes ownership checks with project opens and destructive changes.
@@ -145,6 +147,7 @@ impl DesktopBackend {
             pages,
             journal,
             browser_install: Default::default(),
+            docker_install: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             lsp: Default::default(),
@@ -268,6 +271,9 @@ impl DesktopBackend {
         if self.browser_install.active() {
             return Some("Browser installation is still running");
         }
+        if self.docker_install.active() {
+            return Some("Docker installation is still running");
+        }
         None
     }
 
@@ -289,6 +295,7 @@ impl DesktopBackend {
             log::error!("Could not wait for formatter cleanup: {error}");
         }
         self.browser_install.shutdown().await;
+        self.docker_install.shutdown().await;
         self.core.shutdown().await;
         let terminals = self.terminals.clone();
         if let Err(error) = rovik_core::rt::spawn_blocking(move || terminals.wait_ended()).await {
@@ -344,6 +351,7 @@ mod routing_tests {
             pages,
             journal: Default::default(),
             browser_install: Default::default(),
+            docker_install: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             lsp: Default::default(),
@@ -354,6 +362,22 @@ mod routing_tests {
             remote,
             hosts,
         }
+    }
+
+    #[tokio::test]
+    async fn docker_installation_requires_an_owned_desktop_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = backend(dir.path());
+        let request = crate::desktop_api::DesktopRequest::from(
+            crate::desktop_api::docker::DockerRequest::Install {
+                sink: "unowned".into(),
+            },
+        );
+        assert_eq!(
+            request.dispatch(&backend).await.unwrap_err(),
+            "A client session is required to install Docker"
+        );
+        assert!(!backend.docker_install.active());
     }
 
     #[tokio::test]
