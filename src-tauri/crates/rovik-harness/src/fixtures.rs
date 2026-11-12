@@ -103,6 +103,7 @@ pub fn quota_rust(
             "-Cpanic=unwind".into(),
             "-Coverflow-checks=yes".into(),
             "-Dwarnings".into(),
+            "-Funsafe-code".into(),
         ],
         runtime: "linux-native".into(),
     };
@@ -235,4 +236,162 @@ pub fn quota_rust(
         negative_control_cases: vec!["reserve-exact".into()],
         deadline_ms: now + 3_600_000,
     })
+}
+
+/// Reference C/C++ task using separately compiled protected public API consumers.
+pub fn quota_c_family(
+    ledger: &Ledger,
+    run_id: &str,
+    image: Digest,
+    revision: &str,
+    language: Language,
+) -> Result<TaskSetup> {
+    crate::require(
+        matches!(language, Language::C | Language::Cpp),
+        "expected C or C++ fixture",
+    )?;
+    let mut setup = quota_rust(ledger, run_id, image, revision)?;
+    let cpp = language == Language::Cpp;
+    let path = if cpp {
+        "implementations/quota/quota.hpp"
+    } else {
+        "implementations/quota/quota.c"
+    };
+    let source = if cpp {
+        include_str!("../fixtures/reference/quota/cpp/quota.hpp")
+    } else {
+        include_str!("../fixtures/reference/quota/c/quota.c")
+    };
+    let bad = if cpp {
+        source.replace(
+            "amount.value() > remaining_",
+            "amount.value() >= remaining_",
+        )
+    } else {
+        source.replace("amount > self->remaining", "amount >= self->remaining")
+    };
+    let mut files = vec![(path, bad.as_str())];
+    if !cpp {
+        files.push((
+            "implementations/quota/quota.h",
+            include_str!("../fixtures/reference/quota/c/quota.h"),
+        ));
+    }
+    setup.base = snapshot(ledger, revision, &files)?;
+    setup.negative_control = setup.base.clone();
+    let mut profile = setup.profiles[0].clone();
+    profile.id = if cpp {
+        "quota-cpp-host"
+    } else {
+        "quota-c-host"
+    }
+    .into();
+    profile.language = language;
+    profile.facts = if cpp {
+        [
+            ("standard_library_lock", "gcc-12-libstdc++-image-lock"),
+            ("language_standard", "23"),
+            ("target_abi", "x86_64-linux-gnu"),
+            ("exceptions_policy", "disabled"),
+            ("rtti_policy", "disabled"),
+            ("allocation_policy", "no allocation in quota"),
+            (
+                "abi_compatibility_policy",
+                "source-compatible public header",
+            ),
+            ("threading_model", "caller serialized"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect()
+    } else {
+        [
+            ("language_standard", "17"),
+            ("target_abi", "x86_64-linux-gnu"),
+            ("hosted_or_freestanding", "hosted"),
+            ("allocation_policy", "no allocation in quota"),
+            (
+                "threading_and_interrupt_policy",
+                "caller serialized; no interrupts",
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect()
+    };
+    let config = &mut profile.configurations[0];
+    config.id = if cpp {
+        "quota-cpp-debug"
+    } else {
+        "quota-c-debug"
+    }
+    .into();
+    config.target = "x86_64-linux-gnu".into();
+    config.flags = vec!["-Wall".into(), "-Wextra".into(), "-Werror".into()];
+    if cpp {
+        config
+            .flags
+            .extend(["-fno-exceptions".into(), "-fno-rtti".into()]);
+    }
+    let lock = ledger.store_json("environment", &serde_json::json!({"image":setup.environment.image_digest,"gcc":"12","c_standard":"17","cpp_standard":"23","target":"x86_64-linux-gnu"}), now_ms()?)?;
+    setup.environment.toolchain_digest = lock.digest.clone();
+    profile.toolchain_lock = Some(lock.digest);
+    let command = packs::c_family_reference_command(&profile)?;
+    profile.public_consumer_commands = vec![command.id.clone()];
+    let mut cases: Vec<String> = QUOTA_CASES.iter().map(|s| (*s).into()).collect();
+    if !cpp {
+        cases.push("null-preserves-output".into());
+    }
+    let serialized_profile =
+        serde_json::to_string(&profile).map_err(|e| crate::Error(e.to_string()))?;
+    let serialized_cases =
+        serde_json::to_string(&cases).map_err(|e| crate::Error(e.to_string()))?;
+    setup.oracle = snapshot(
+        ledger,
+        "protected-native-oracle-v1",
+        &[
+            ("profile.json", &serialized_profile),
+            ("cases.json", &serialized_cases),
+            ("run-consumer.py", include_str!("../assets/run-consumer.py")),
+            (
+                if cpp { "consumer.cpp" } else { "consumer.c" },
+                if cpp {
+                    include_str!("../fixtures/reference/quota/cpp/consumer.cpp")
+                } else {
+                    include_str!("../fixtures/reference/quota/c/consumer.c")
+                },
+            ),
+        ],
+    )?;
+    setup.registry.commands = vec![command.clone()];
+    setup.policy.commands = [command.id.clone()].into();
+    setup.contract.profile_ids = vec![profile.id.clone()];
+    setup.design.contract_digest = Digest::of_json(&setup.contract)?;
+    setup.design.existing_code_considered[0].file = path.into();
+    setup.design.existing_code_considered[0].symbol = if cpp {
+        "Quota::reserve"
+    } else {
+        "quota_reserve"
+    }
+    .into();
+    setup.design.existing_code_considered[0].source_revision = setup.base.digest()?;
+    setup.design.public_api_changes = vec!["Preserve the existing native public API.".into()];
+    setup.design.resource_contracts = vec!["Caller-owned quota value; no heap ownership.".into()];
+    let check = &mut setup.plan.checks[0];
+    check.check_id = command.id.clone();
+    check.command_id = command.id;
+    check.checker_digest = command.checker_digest;
+    check.timeout_ms = command.limits.timeout_ms;
+    check.output_limit_bytes = command.limits.output_bytes;
+    check.configuration_digest = profile.configurations[0].digest()?;
+    check.expected_case_ids = cases;
+    check.minimum_test_count = check.expected_case_ids.len() as u64;
+    setup.plan.configurations = vec![check.configuration_digest.clone()];
+    setup.plan.contract_digest = Digest::of_json(&setup.contract)?;
+    setup.plan.design_digest = Digest::of_json(&setup.design)?;
+    setup.plan.policy_digest = Digest::of_json(&setup.policy)?;
+    setup.plan.oracle_digest = setup.oracle.digest()?;
+    setup.environment.registry_digest = Digest::of_json(&setup.registry)?;
+    setup.profiles = vec![profile];
+    Ok(setup)
 }

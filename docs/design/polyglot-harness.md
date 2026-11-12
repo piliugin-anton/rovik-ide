@@ -52,15 +52,15 @@ Each required milestone is a separate validated commit and push. Optional M7
 (extra languages, final-check caching, formal tools and parallel workers) is
 outside the initial implementation.
 
-| Milestone | Scope                                                           | Status                                       |
-| --------- | --------------------------------------------------------------- | -------------------------------------------- |
-| M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures         |
-| M1        | Artifact store, ledger, state machine, gate and recovery        | Transaction, recovery and gate fixtures      |
-| M2        | Isolated runner, registry, receipts, native normalizers         | Native isolation and inventory fixtures      |
-| M3        | Provider/broker integration and Rust quota vertical slice       | Native patch, approval and provider fixtures |
-| M4        | C/C++ packs, configured graphs and consumers                    | Pending                                      |
-| M5        | Risk obligations, failure injection and interop                 | Pending                                      |
-| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                      |
+| Milestone | Scope                                                           | Status                                                  |
+| --------- | --------------------------------------------------------------- | ------------------------------------------------------- |
+| M0        | Contracts, profiles, scope, restrictive policy, plan validation | Implementation and negative fixtures                    |
+| M1        | Artifact store, ledger, state machine, gate and recovery        | Transaction, recovery and gate fixtures                 |
+| M2        | Isolated runner, registry, receipts, native normalizers         | Native isolation and inventory fixtures                 |
+| M3        | Provider/broker integration and Rust quota vertical slice       | Native patch, approval and provider fixtures            |
+| M4        | C/C++ packs, configured graphs and consumers                    | Protocol, configured graph and native consumer fixtures |
+| M5        | Risk obligations, failure injection and interop                 | Pending                                                 |
+| M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                                 |
 
 The supplied v2 contract and result JSON schemas are preserved in
 `src-tauri/crates/rovik-harness/schemas`. The earlier blueprint's v1 schemas were
@@ -192,3 +192,38 @@ scripted provider to propose a real source change and actual native compiler and
 consumer execution; it makes no claim about model quality or production approval.
 Backend v2 permits execution in the size-limited build mount so compiled consumers
 can run, while temporary and report mounts remain non-executable.
+
+## Native packs and supported matrix (M4)
+
+The controller remains Rust. A protected Python subprocess adapts Cargo and CMake
+inside the existing offline sandbox. It consumes one bounded JSON request and
+returns one correlated protocol-v1 response. Probe, index, proposed-plan and
+explanation operations share this boundary. Proposed plans and explanations are
+advisory; only configured indexing can produce a static graph result, and the
+Rust core independently checks its precision, configuration, references, required
+test discovery, flags and forbidden transitive edges before admitting evidence.
+Requests live in the approved oracle, selected by registered request IDs.
+
+| Pack | Tested configuration                                                | Evidence                                                                                                                                 |
+| ---- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust | 1.85.1, edition 2021, x86_64-unknown-linux-gnu, std                 | Full offline locked Cargo resolve graph with features/target filtering; protected quota consumer with unsafe forbidden                   |
+| C++  | GCC 12/libstdc++, C++23, x86_64-linux-gnu, exceptions/RTTI disabled | Fresh CMake codemodel and compiler-derived include graph; separately compiled public header consumer                                     |
+| C    | GCC 12, C17, x86_64-linux-gnu, hosted                               | Fresh compile database, codemodel and native CTest discovery; separate implementation/consumer compilation, null and failure-state cases |
+
+Each feature configuration is checked separately. Cargo discovery without a
+resolve graph is insufficient. CMake always configures a fresh build directory;
+a preexisting compilation database is rejected. Required consumer commands cannot
+be omitted from any configuration. Missing tools, other compilers, targets,
+freestanding runtimes and unresolved profiles block rather than falling back to
+lexical assurance. C/C++ graph support currently uses GCC dependency output;
+Clang, cross-target execution and mixed-language compilation databases need their
+own conformance configuration before they are supported.
+
+Run `cargo test -p rovik-harness --test controller --test packs -- --ignored
+--test-threads=1` with the native Docker opt-in and pinned image environment above.
+These tests exercise all three public APIs, a feature-gated forbidden Cargo edge,
+and configured C/C++ include edges. Standard tests cover protocol corruption,
+missing required discovery (including doctest obligations), insufficient graph
+precision, transitive boundary violations and omitted consumers. Declaring a
+required doctest still requires its separate registered behavioral command; a
+Cargo dependency graph alone never establishes doctest execution.

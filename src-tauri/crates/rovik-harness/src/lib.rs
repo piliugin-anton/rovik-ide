@@ -16,6 +16,7 @@ pub mod fixtures;
 pub mod identity;
 pub mod ledger;
 pub mod normalizer;
+pub mod pack_protocol;
 pub mod packs;
 pub mod plan;
 pub mod policy;

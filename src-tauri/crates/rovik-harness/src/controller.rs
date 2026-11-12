@@ -192,7 +192,54 @@ impl TaskSetup {
             "plan is bound to different task inputs",
         )?;
         self.plan.validate(&self.plan_registry()?)?;
+        for profile in &self.profiles {
+            for config in &profile.configurations {
+                let configuration_digest = config.digest()?;
+                for command in &profile.public_consumer_commands {
+                    require(
+                        self.registry.get(command)?.kind == CheckKind::Behavioral,
+                        "public consumer must report native behavioral cases",
+                    )?;
+                    require(
+                        self.plan.required_final().any(|c| {
+                            c.command_id == *command
+                                && c.configuration_digest == configuration_digest
+                        }),
+                        "final matrix omits a required public consumer",
+                    )?;
+                }
+            }
+        }
         for check in &self.plan.checks {
+            let definition = self.registry.get(&check.command_id)?;
+            definition.render(&check.validated_parameters)?;
+            if definition.parser == crate::registry::Parser::PackProtocol {
+                let request_id = check
+                    .validated_parameters
+                    .get("request_id")
+                    .ok_or_else(|| Error("pack request identity missing".into()))?;
+                crate::id(request_id)?;
+                let entry = self
+                    .oracle
+                    .files
+                    .get(&format!("requests/{request_id}.json"))
+                    .ok_or_else(|| {
+                        Error("pack request must be a protected oracle artifact".into())
+                    })?;
+                let request: crate::pack_protocol::Request =
+                    wire::decode(&ledger.read(&entry.content.digest)?)?;
+                let input = request.native_input()?;
+                require(
+                    request.request_id == *request_id
+                        && request.operation == crate::pack_protocol::Operation::Index
+                        && self.profiles.contains(&input.profile)
+                        && input.profile.configurations.iter().any(|c| {
+                            c.id == input.configuration_id
+                                && c.digest().ok().as_ref() == Some(&check.configuration_digest)
+                        }),
+                    "pack request does not match the approved profile matrix",
+                )?;
+            }
             require(
                 self.policy.commands.contains(&check.command_id),
                 "plan command denied by effective policy",

@@ -641,6 +641,38 @@ pub fn admit_observation(
         observation.report.as_deref(),
         &spec.success_exit_codes,
     );
+    if definition.parser == crate::registry::Parser::PackProtocol {
+        let checked = (|| -> Result<()> {
+            let oracle: Snapshot = wire::decode(&ledger.read(&key.oracle_digest)?)?;
+            let request_id = spec
+                .validated_parameters
+                .get("request_id")
+                .ok_or_else(|| Error("pack check has no request identity".into()))?;
+            crate::id(request_id)?;
+            let file = oracle
+                .files
+                .get(&format!("requests/{request_id}.json"))
+                .ok_or_else(|| Error("pack request is not a protected oracle asset".into()))?;
+            let request: crate::pack_protocol::Request =
+                wire::decode(&ledger.read(&file.content.digest)?)?;
+            require(
+                request.request_id == *request_id,
+                "protected pack request identity mismatch",
+            )?;
+            crate::pack_protocol::verify_index(
+                &request,
+                &observation.stdout,
+                &spec.configuration_digest,
+            )?;
+            Ok(())
+        })();
+        normalized.status = if checked.is_ok() && observation.exit_code == Some(0) {
+            Status::Pass
+        } else {
+            Status::Error
+        };
+        normalized.diagnostic = checked.err().map(|e| e.to_string());
+    }
     if observation.incomplete() {
         normalized.status = if observation.timed_out {
             Status::Timeout

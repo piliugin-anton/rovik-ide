@@ -16,6 +16,8 @@ pub enum Parser {
     CtestJunit,
     /// Protected driver emitting the versioned inventory protocol.
     InventoryJson,
+    /// Configured graph protocol, independently checked against protected inputs.
+    PackProtocol,
 }
 
 /// Parameter types validate entire argv elements before process launch.
@@ -214,7 +216,8 @@ impl CommandDefinition {
             )?;
         }
         require(
-            (self.kind == CheckKind::Static) == (self.parser == Parser::ExitCode),
+            (self.kind == CheckKind::Static)
+                == matches!(self.parser, Parser::ExitCode | Parser::PackProtocol),
             "behavioral command cannot use exit-code-only normalization",
         )?;
         if matches!(self.parser, Parser::InventoryJson | Parser::CtestJunit) {

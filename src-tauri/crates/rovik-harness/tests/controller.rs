@@ -357,3 +357,77 @@ fn actual_rust_patch_passes_the_full_clean_gate_after_rejecting_a_mutant() {
         Verdict::Blocked
     );
 }
+
+#[test]
+#[ignore = "requires ROVIK_HARNESS_DOCKER=1 and a pinned native image"]
+fn c_and_cpp_public_consumers_reject_mutants_then_accept_the_repaired_native_api() {
+    use rovik_harness::profile::Language;
+    struct NativeWorker {
+        path: String,
+        source: String,
+    }
+    impl Provider for NativeWorker {
+        fn generate(
+            &mut self,
+            request: &ModelRequest,
+            cancel: &Cancellation,
+        ) -> Result<ModelResponse> {
+            let mut reply = Worker { calls: 0 }.generate(request, cancel)?;
+            let mut turn: WorkerTurn = serde_json::from_str(&reply.output).unwrap();
+            let proposal = turn.proposal.as_mut().unwrap();
+            proposal.changes[0].path = self.path.clone();
+            proposal.changes[0].content = Some(self.source.clone());
+            reply.output = serde_json::to_string(&turn).unwrap();
+            Ok(reply)
+        }
+    }
+    assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
+    for language in [Language::C, Language::Cpp] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = controller(&dir.path().join("state"));
+        let image = Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap();
+        let setup =
+            fixtures::quota_c_family(&c.ledger, "native-quota", image, "fixture-base", language)
+                .unwrap();
+        c.create(&setup, runner::now_ms().unwrap()).unwrap();
+        approve(&c, &setup);
+        let (path, source) = if language == Language::C {
+            (
+                "implementations/quota/quota.c",
+                include_str!("../fixtures/reference/quota/c/quota.c"),
+            )
+        } else {
+            (
+                "implementations/quota/quota.hpp",
+                include_str!("../fixtures/reference/quota/cpp/quota.hpp"),
+            )
+        };
+        let report = c
+            .execute(
+                &setup.run_id,
+                &mut NativeWorker {
+                    path: path.into(),
+                    source: source.into(),
+                },
+                &Repository,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        if report.state != State::Accepted {
+            let run = c.ledger.run(&setup.run_id).unwrap();
+            if let Some(binding) = run.binding_digest {
+                for result in c.ledger.admitted_results(&setup.run_id, &binding).unwrap() {
+                    eprintln!("{result:?}");
+                    for digest in result.evidence {
+                        eprintln!(
+                            "{}",
+                            String::from_utf8_lossy(&c.ledger.read(&digest).unwrap())
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(report.state, State::Accepted, "{language:?}: {report:?}");
+        assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 2);
+    }
+}
