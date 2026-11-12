@@ -25,6 +25,9 @@ pub struct ProjectCheck {
     pub kind: String,
     pub command: String,
     pub enabled: bool,
+    /// Reuse passing results within a run for deterministic checks whose inputs stay local.
+    #[serde(default, rename = "reuseSuccess")]
+    pub reuse_success: bool,
 }
 
 /// The user's saved checks for a project, if they saved any.
@@ -40,6 +43,7 @@ fn saved_checks(settings: &serde_json::Value) -> Option<Vec<ProjectCheck>> {
                     kind: kind.to_string(),
                     command: command.to_string(),
                     enabled: c.get("enabled") != Some(&serde_json::Value::Bool(false)),
+                    reuse_success: c.get("reuseSuccess") == Some(&serde_json::Value::Bool(true)),
                 })
             })
             .collect(),
@@ -60,6 +64,7 @@ pub fn effective_checks(
         .checks
         .iter()
         .map(|c| ProjectCheck {
+            reuse_success: false,
             kind: c.kind.clone(),
             command: c.command.clone(),
             enabled: false,
@@ -187,6 +192,7 @@ pub fn load_for(
                 }
             }
             checks.extend(found.checks.iter().map(|c| ProjectCheck {
+                reuse_success: false,
                 kind: c.kind.clone(),
                 command: in_folder(&folder, &c.command),
                 enabled: false,
@@ -800,6 +806,7 @@ mod tests {
         assert_eq!(
             effective_checks(&profile, &saved),
             vec![ProjectCheck {
+                reuse_success: false,
                 kind: "lint".into(),
                 command: "x".into(),
                 enabled: false
@@ -897,5 +904,25 @@ mod tests {
         assert_eq!(in_folder("my app", "npm test"), "cd 'my app' && npm test");
         assert_eq!(folder_of("npm test"), "");
         assert_eq!(folder_of("cd api"), "");
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    #[test]
+    fn check_reuse_requires_explicit_opt_in_and_survives_saved_settings() {
+        let legacy = serde_json::json!({ "kind": "lint", "command": "true", "enabled": true });
+        let decoded: ProjectCheck = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!decoded.reuse_success);
+        let settings = serde_json::json!({ "checks": [legacy] });
+        assert!(!saved_checks(&settings).unwrap()[0].reuse_success);
+        let opted = ProjectCheck {
+            reuse_success: true,
+            ..decoded
+        };
+        let settings = serde_json::json!({ "checks": [opted] });
+        assert!(saved_checks(&settings).unwrap()[0].reuse_success);
     }
 }

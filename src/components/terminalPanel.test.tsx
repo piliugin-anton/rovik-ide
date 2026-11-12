@@ -62,11 +62,18 @@ const flush = async () => {
   for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-/** What the `index`th terminal shows, once xterm has drawn it (on an animation frame). */
-async function screen(root: HTMLElement, index: number): Promise<string> {
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  const terminal = root.querySelectorAll('.terminal-instance')[index];
-  return terminal?.querySelector('.xterm-rows')?.textContent ?? '';
+/** Wait for xterm to draw the expected text, including when animation frames are delayed. */
+async function screen(root: HTMLElement, index: number, expected: RegExp): Promise<string> {
+  const deadline = performance.now() + 5_000;
+  let shown: string;
+  do {
+    const terminal = root.querySelectorAll('.terminal-instance')[index];
+    shown = terminal?.querySelector('.xterm-rows')?.textContent ?? '';
+    if (expected.test(shown)) return shown;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (performance.now() < deadline);
+  assert.match(shown, expected);
+  return shown;
 }
 const sent = (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args);
 
@@ -301,13 +308,12 @@ test('a remote terminal says it connects until its shell says something, and whe
   await flush();
   menuItems(root)[1].click();
   await flush();
-  assert.match(await screen(root, 1), /Connecting to Build…/);
+  await screen(root, 1, /Connecting to Build…/);
   send(1, { type: 'output', data: 'me@build:~$ ' });
-  const shown = await screen(root, 1);
-  assert.match(shown, /me@build:~\$/);
+  const shown = await screen(root, 1, /me@build:~\$/);
   assert.doesNotMatch(shown, /Connecting/, 'the line goes once the shell speaks');
   send(1, { type: 'exit', code: null });
-  assert.match(await screen(root, 1), /\[connection closed\]/);
+  await screen(root, 1, /\[connection closed\]/);
   assert.deepEqual(labels(root), ['bash (local)', 'zsh (Build (remote))'], 'kept to be read');
 });
 
@@ -321,8 +327,11 @@ test("a host that can't be reached: its terminal says so", async () => {
   await flush();
   menuItems(root)[1].click();
   await flush();
-  const shown = await screen(root, 1);
-  assert.match(shown, /Couldn't open a shell on Build: The host couldn't be reached/);
+  const shown = await screen(
+    root,
+    1,
+    /Couldn't open a shell on Build: The host couldn't be reached/
+  );
   assert.doesNotMatch(shown, /Connecting/);
 });
 

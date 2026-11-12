@@ -678,9 +678,22 @@ mod tests {
     fn a_background_command_runs_on_after_its_start_until_it_is_stopped() {
         let (_dir, root) = folder();
         let chat = "bg-runs-on";
-        let first = started(chat, &root, &beating("started"));
+        // Force output to arrive after start returns, as it can when process
+        // startup outlasts FIRST_OUTPUT on a busy runner.
+        let command = format!(
+            "while [ ! -e go ]; do sleep 0.05; done; {}",
+            beating("started")
+        );
+        let first = started(chat, &root, &command);
         assert_eq!(first.status.end, None, "{first:?}");
-        assert_eq!(first.output.trim(), "started");
+        assert!(first.output.is_empty(), "the command waits for the test");
+        std::fs::write(Path::new(&root).join("go"), "").unwrap();
+        let mut initial = first.output;
+        assert!(until(|| {
+            initial.push_str(&output(chat, &first.status.id).unwrap().output);
+            initial.ends_with('\n')
+        }));
+        assert_eq!(initial.trim(), "started");
         // Past its start's answer, it and what it started still run.
         assert!(beats(&root));
         assert_eq!(list(chat).len(), 1);

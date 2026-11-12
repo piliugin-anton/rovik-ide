@@ -84,6 +84,8 @@ export function describeFailure(failure: StoredFailure, now = Date.now()): strin
       return 'The server restarted while the reply was being written.';
     case 'bad_request':
       return 'The provider rejected the request.';
+    case 'budget':
+      return failure.message || 'The token budget cannot admit another request.';
     case 'refused':
       return failure.message || 'The model declined this request.';
     case 'provider':
@@ -94,5 +96,5 @@ export function describeFailure(failure: StoredFailure, now = Date.now()): strin
 
 /** Whether "Retry" makes sense for this failure. */
 export function canRetry(failure: StoredFailure): boolean {
-  return !['auth', 'not_found', 'bad_request', 'context_length'].includes(failure.kind);
+  return !['auth', 'not_found', 'bad_request', 'context_length', 'budget'].includes(failure.kind);
 }

@@ -8,14 +8,16 @@
 //!   started; each stage record keeps what its run spent (`spent`), so the
 //!   task's total survives a restart. A run keeps what it spent so far in
 //!   its record as it goes (`spending`), so a crash keeps that too.
-//! - The run checks the total after every reply, and the driver before
-//!   each stage; past a limit, the task ends with the outcome `budget`, and
-//!   delivers what it has.
+//! - Token limits also use `request_budget`: each request reserves its
+//!   estimated input and bounded output before dispatch, sharing capacity
+//!   with parallel children. The run checks totals after every reply and
+//!   the driver before each stage; a limit ends the task with `budget`.
 //! - The cost is what the providers say a request cost (OpenRouter does).
 //!   A reply whose provider says nothing isn't in it, and is counted
 //!   (`uncosted`): with such a provider the cost limit can't be kept. The
-//!   tokens are what the providers report the requests used, which most
-//!   do even without a cost: the limit that holds for them.
+//!   tokens combine reported usage with conservative estimates for dispatched
+//!   requests whose usage is missing. Estimates and provider output caps
+//!   bound admission, not the provider's final bill.
 //!
 //! The headless runner's accounting of a run's log (`Totals`) is here too,
 //! with its prices for providers that report no cost.
@@ -36,7 +38,7 @@ pub struct Spent {
     pub cost: f64,
     /// Replies whose provider said no cost: `cost` leaves them out.
     pub uncosted: u32,
-    /// Tokens in and out, from the replies whose provider said.
+    /// Tokens in and out, reported or conservatively accounted for by the run.
     #[serde(skip_serializing_if = "is_zero")]
     pub tokens: u64,
 }

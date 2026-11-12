@@ -282,6 +282,61 @@ test('checks saved as running with no run going read as interrupted', () => {
   );
 });
 
+test('recovered checks explain approval and retain their recovery notice after checking', () => {
+  const reason =
+    'A verification command was interrupted; its outcome is unknown. Approve checks to run again.';
+  const [meta, setMeta] = createStore<VerificationMeta>({
+    status: 'needs-approval',
+    round: 1,
+    maxRounds: 3,
+    checks: [],
+    changedFiles: [],
+    reason,
+    checkpointNotice: reason,
+  });
+  const root = container();
+  let approvals = 0;
+  const dispose = render(
+    () => (
+      <VerificationRecord
+        meta={meta}
+        dialogId="recovered"
+        recordId="check"
+        latest={true}
+        live={false}
+        onRunChecks={() => approvals++}
+      />
+    ),
+    root
+  );
+  assert.equal(root.querySelector('.chat-verify-title')?.textContent, reason);
+  assert.equal(root.querySelector('.chat-verify-progress'), null, 'the same reason is shown once');
+  assert.equal(approvals, 0, 'recovery never starts a command automatically');
+  const button = root.querySelector('button')!;
+  assert.equal(button.textContent, 'Run checks');
+  button.click();
+  assert.equal(approvals, 1);
+
+  const changed = 'Check configuration changed. Review and approve the current checks again.';
+  setMeta({ reason: undefined, checkpointNotice: changed });
+  assert.equal(root.querySelector('.chat-verify-title')?.textContent, changed);
+  assert.doesNotMatch(root.textContent ?? '', /command approval is on/);
+  setMeta({ status: 'passed', checkpointNotice: 'Restored verification history after restart.' });
+  assert.equal(root.querySelector('button'), null);
+  assert.equal(root.querySelector('.chat-verify-title')?.textContent, 'Checks passed.');
+  assert.equal(
+    root.querySelector('.chat-verify-progress')?.textContent,
+    'Restored verification history after restart.'
+  );
+  setMeta({ finalizationPending: true });
+  assert.match(root.querySelector('.chat-verify-title')?.textContent ?? '', /resume final review/);
+  assert.equal(root.querySelector('button')?.textContent, 'Run checks');
+  setMeta({ finalizationPending: false, status: 'running', checkpointNotice: undefined });
+  assert.match(root.querySelector('.chat-verify-title')?.textContent ?? '', /Checks didn’t finish/);
+  assert.equal(root.querySelector('button')?.textContent, 'Run checks');
+  dispose();
+});
+
 test('checks taken from the plan say so (V02)', () => {
   const meta = {
     status: 'passed' as const,

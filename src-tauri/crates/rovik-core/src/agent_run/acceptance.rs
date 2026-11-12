@@ -67,7 +67,7 @@ pub static ACCEPTANCE: KindSpec = KindSpec {
 };
 
 /// One criterion's verdict, as the checker gave it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Verdict {
     /// The criterion's number, from 1.

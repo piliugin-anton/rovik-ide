@@ -625,6 +625,21 @@ impl Run {
                 Entry::Turn
             }
             StartKind::RunChecks { record_id } => {
+                // Desktop recovery is explicit: registration excluded a live
+                // run, and this click approves resuming only the latest record.
+                // A completed run has no matching checkpoint to revive.
+                if let Some(last) = recent.last().filter(|m| m.id == record_id) {
+                    let status = last
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.pointer("/verification/status"))
+                        .and_then(Value::as_str);
+                    if matches!(status, Some("running" | "passed" | "failed"))
+                        && super::verify::checkpoint::after_crash(core, &dialog_id, last).await?
+                    {
+                        recent = recent_messages(&core.db, &dialog_id).await?;
+                    }
+                }
                 let record = recent.iter().find(|m| m.id == record_id);
                 let Some(pending) =
                     record.and_then(|m| m.meta.as_ref()?.get("verification").cloned())
@@ -822,6 +837,7 @@ impl Run {
             Some(commands) => commands
                 .into_iter()
                 .map(|command| ProjectCheck {
+                    reuse_success: false,
                     kind: plan::validation_kind(&command).into(),
                     command,
                     enabled: true,
@@ -1278,6 +1294,7 @@ impl Run {
         };
         self.steering.returned(unread.len());
         super::hand_back_steering(&self.core, &self.dialog_id, unread, &outcome);
+        self.finish_verification_checkpoint().await;
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
         if self.sub().is_none() && outcome != "verify-needs-approval" {
@@ -1342,7 +1359,7 @@ impl Run {
                     .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 // What the last run's fix rounds knew (command approval on).
-                self.restore_verify_state(&record_id);
+                self.restore_verify_state(&record_id).await;
                 if self.verification.carry_lost().is_some() {
                     self.rebuild_baseline(&record_id).await;
                 }
@@ -1470,7 +1487,10 @@ impl Run {
                     )
                     .await?;
                 self.settle(kept).await;
-                return Ok(if error.kind == ErrorKind::Cancelled {
+                self.keep_spending().await;
+                return Ok(if error.kind == ErrorKind::Budget {
+                    "budget"
+                } else if error.kind == ErrorKind::Cancelled {
                     "stopped"
                 } else {
                     "error"
@@ -1543,10 +1563,21 @@ impl Run {
                         return Ok("stopped".into());
                     }
                 }
-                // A fresh-context review of the change, before the checks.
                 self.steering
                     .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
+                // Cheap enabled checks catch introduced errors before the
+                // first model review spends its budget on the change.
+                if let Some(outcome) = self.preflight_before_review().await? {
+                    if outcome == "continue" {
+                        continue;
+                    }
+                    return Ok(outcome);
+                }
+                if self.read_waiting("preflight").await? {
+                    continue;
+                }
+                // A fresh-context review of the change, before the remaining checks.
                 if self.review_change().await? {
                     continue;
                 }
@@ -1943,6 +1974,16 @@ impl Run {
                 tools.push(super::worker::extend_scope_schema());
             }
             let mut prompt = format!("{}\n\n{}", spec.prompt(&sub.budget), self.project_context);
+            if sub.kind == subagent::Kind::Reviewer
+                && !sub.view_only
+                && !sub.legacy_review
+                && !self.profile.no_tools
+                && !context_only
+            {
+                tools.push(super::structured_report::schema());
+                prompt.push_str("\n\n");
+                prompt.push_str(super::structured_report::INSTRUCTION);
+            }
             if let Some(section) = &mcp_section {
                 prompt = format!("{prompt}\n\n{section}");
             }
@@ -2080,6 +2121,7 @@ impl Run {
                     calls: mcp_calls,
                 });
             let params = ChatParams {
+                admission: self.core.agents.request_admission(&self.dialog_id),
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
                 model: self.profile.model.clone(),
@@ -2120,6 +2162,7 @@ impl Run {
                 mcp,
             };
 
+            let admitted = params.admission.is_some();
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
             let cancel_tx = Arc::new(cancel_tx);
             let stream = Arc::new(Mutex::new(Stream::new(
@@ -2283,7 +2326,9 @@ impl Run {
                 if let Some(sub) = self.sub_mut() {
                     sub.note_usage(usage.as_ref());
                 }
-                self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
+                self.core
+                    .agents
+                    .note_reply(&self.dialog_id, usage.as_ref(), admitted);
                 let mut entry = json!({
                     "event": "reply",
                     "dialogId": self.dialog_id,
@@ -2361,7 +2406,20 @@ impl Run {
             if let Some(sub) = self.sub_mut() {
                 sub.note_usage(usage.as_ref());
             }
-            self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
+            self.core
+                .agents
+                .note_reply(&self.dialog_id, usage.as_ref(), admitted);
+            if output
+                .failure
+                .as_ref()
+                .is_some_and(|error| error.kind == ErrorKind::Budget)
+            {
+                if let Some(why) = self.core.agents.request_budget_denied(&self.dialog_id) {
+                    self.core
+                        .agents
+                        .cut_for_budget(&self.core, &self.dialog_id, &why);
+                }
+            }
             let mut entry = json!({
                 "event": "reply",
                 "dialogId": self.dialog_id,

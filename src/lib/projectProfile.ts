@@ -52,6 +52,8 @@ export interface ProjectCheck {
   kind: CheckKind;
   command: string;
   enabled: boolean;
+  /** Reuse a successful result within a run when its local inputs are unchanged. */
+  reuseSuccess?: boolean;
   /** Where a detected check came from; absent once the user edits the command. */
   source?: string;
 }
@@ -144,6 +146,7 @@ function normalizeSettings(raw: unknown): ProjectSettings {
       kind: c.kind,
       command: c.command,
       enabled: c.enabled !== false,
+      ...(c.reuseSuccess === true ? { reuseSuccess: true } : {}),
       ...(typeof c.source === 'string' && c.source ? { source: c.source } : {}),
     }));
   return settings;

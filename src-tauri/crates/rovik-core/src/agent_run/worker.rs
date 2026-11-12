@@ -96,7 +96,7 @@ pub static WORKER: KindSpec = KindSpec {
  */
 
 /// What a writing subagent may write, as repo-relative paths with `/`.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WriteScope {
     /// Files it may write (created or changed).
     pub files: Vec<String>,
@@ -267,7 +267,7 @@ pub fn extend_scope_paths(args: &serde_json::Map<String, Value>) -> Result<Vec<S
  */
 
 /// A step a worker finished: its number, title and one line on what it did.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DoneStep {
     pub number: usize,
     pub title: String,

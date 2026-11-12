@@ -369,7 +369,7 @@ pub async fn system_one(noul: f64) -> (String, Arc<Mutex<Vec<Value>>>) {
 }
 
 /// A request's path and JSON body.
-async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
+pub(crate) async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
     let (head, body) = read_raw(socket).await;
     (path_of(&head), body)
 }

@@ -771,7 +771,7 @@ fn replies_after(recent: &[MessageRow], call_id: &str) -> String {
 
 /// The agent's answer to one held finding: an item of `submit_plan`'s
 /// `responses`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     /// The finding's number, as the hold listed it.
@@ -780,7 +780,7 @@ pub struct Response {
     pub note: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     /// The revised plan settles it.
@@ -1031,7 +1031,7 @@ pub fn unanswered_of(numbers: &[usize], prefix: &str, responses: &[Response]) ->
 
 /// A follow-up review's word on an earlier finding; `finding` 0 is its
 /// word on all of them ("All earlier findings are resolved.").
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Verdict {
     pub finding: usize,
     pub resolved: bool,

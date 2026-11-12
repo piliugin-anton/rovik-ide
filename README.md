@@ -152,6 +152,21 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch
   mode is run once.
+  In Settings → Project checks, each check can opt into reusing successful
+  results within the same run when its local inputs are unchanged. Use this
+  for checks that depend only on local files, leaving it off for checks that
+  depend on services or databases. Eligible type checks and lint run before
+  AI change review, so their failures go back for repair first. Successful
+  checks after a worker-group merge can also be reused at completion.
+  Reuse is conservative: when the IDE cannot establish that inputs are
+  unchanged, it runs the checks again. Final integrity and acceptance checks
+  still apply. Editing a check's command turns reuse off.
+  Verification boundaries also save a private recovery checkpoint. After a
+  restart, interrupted verification waits for **Run checks** approval and
+  restores its repair history and limits. A command whose outcome is unknown
+  is never replayed automatically. Changed inputs invalidate reusable results;
+  successful checks are reused only when reuse is enabled and their inputs
+  still match. Final integrity and acceptance checks still run.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has
@@ -188,6 +203,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the agent's own context. A change reviewer always reads each finished
   change that hasn't landed, with fresh eyes, before the checks run; its
   model and budget are set in Settings → Subagents, and it has no switch.
+  Change reviewers can submit a validated report with findings, evidence and
+  explicit verdicts on earlier findings, finishing without an extra formatting
+  turn. Invalid submissions are returned for correction. Existing text reports
+  remain readable, and providers that reject the report tool use the text path.
   Each finding is ranked
   by its severity, how sure the reviewer is and whether it's about code
   the change touched: the agent fixes or answers the ones that weigh
@@ -1226,6 +1245,16 @@ before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such
 failures.
 
+During repairs, a recognized test command can first run a focused selection
+from the failed check and changed files. This applies to a single enabled
+test suite with command approval off; derived commands still obey the
+allow/deny rules. An actionable failure goes back to
+the repair loop without another full test run. A passing selection proceeds
+to the configured full suite; it cannot verify the change by itself. Unknown
+commands, unavailable runners and selections that run no tests fall back to
+the full command. Focused results are recorded separately so smaller test
+counts cannot be mistaken for weakened tests or complete coverage.
+
 A connector's harness in Agent mode changes files with its own tools
 (`connectors/mod.rs`). After each of its turns, its steps that succeeded
 count as the agent's own calls would (`agent_run/harness_changes.rs`),
@@ -1911,6 +1940,32 @@ step sends unchanged, never on the last one, whose notes the next step
 drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
+
+Repository maps, `callers` and `neighbours` share a bounded structural graph
+cache. Each query still collects the current visible source files and checks
+their versions and access rules before reusing graph data. Task-specific
+ranking stays separate, and different workspace views keep separate entries.
+This avoids rebuilding unchanged relationships; it does not eliminate the
+directory walk. Subagent map preparation runs off the async execution thread.
+
+When a task or its subagents have a token limit, each model request reserves
+estimated input tokens and a bounded reply allowance before it is sent. The
+lead and its descendants share the task limit, and concurrent children also
+share the subagent limit. Each retry reserves capacity again. Reported usage
+settles the reservation; missing usage and requests interrupted after dispatch
+retain conservative estimates. Unused capacity is released. API requests carry
+the corresponding output limit. An API request without an existing output limit
+gets a 4,096-token reply allowance, reduced when less budget remains.
+External CLI harnesses remain advisory because
+their internal requests and context are outside Rovik's control. These are
+admission limits based on estimates, not guarantees about provider billing.
+
+Agent `search_code` calls stop searching file contents after enough matches
+are found in path order. Incomplete totals are labeled as lower bounds;
+`count_all: true` requests exhaustive counting, subject to the search limit.
+The editor's project search retains its counting behavior. Bounded search
+still enumerates eligible paths to preserve ordering, but avoids reading
+later files once its result budget is filled.
 
 Checklist transitions can finish the current step and start the next in one
 `todo` call. The agent waits for its result and any requested compaction before

@@ -22,3 +22,17 @@ test('a request the model declined says why, as the core does', () => {
   assert.equal(describeFailure(failure), failure.message);
   assert.equal(describeFailure({ ...failure, message: '' }), 'The model declined this request.');
 });
+
+test('a token budget denial explains admission and does not offer a provider retry', () => {
+  const failure = {
+    kind: 'budget' as const,
+    message: 'Token budget for task cannot admit this request: remaining capacity is reserved.',
+    attempts: 0,
+  };
+  assert.equal(describeFailure(failure), failure.message);
+  assert.equal(canRetry(failure), false);
+  assert.equal(
+    describeFailure({ ...failure, message: '' }),
+    'The token budget cannot admit another request.'
+  );
+});

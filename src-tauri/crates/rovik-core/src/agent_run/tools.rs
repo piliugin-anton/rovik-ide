@@ -89,7 +89,8 @@ fn file_tool_schemas() -> Vec<Value> {
                         "case_sensitive": { "type": "boolean", "description": "Match case exactly. Default false." },
                         "path_glob": { "type": "string", "description": "Optional ripgrep-style globs, comma-separated. \"*.ts\" matches at any depth, \"src/**/*.rs\" is relative to the project root, a leading \"!\" excludes (e.g. \"*.ts, !*.test.ts\"), braces list alternatives (\"src/**/*.{ts,tsx}\")." },
                         "context_lines": { "type": "integer", "description": "Lines of context before and after each match (0-5, default 0)." },
-                        "max_results": { "type": "integer", "description": "Maximum number of matches to return (default 100, max 500)." }
+                        "max_results": { "type": "integer", "description": "Maximum number of matches to return (default 100, max 500). Search stops after this many matches by path, with incomplete totals unless count_all is true." },
+                        "count_all": { "type": "boolean", "description": "Search the entire project to count matches beyond max_results (default false). Exact totals can take longer; an unusually broad query may still hit the counting limit." }
                     },
                     "required": ["query"]
                 }
@@ -1716,7 +1717,7 @@ async fn run(
             };
             let regex = flag(args, "regex");
             let search = |regex: bool| {
-                crate::agent_tools::tool_search_code(
+                crate::agent_tools::tool_search_code_with_control(
                     root_owned.clone(),
                     query.into(),
                     text(args, "path_glob").map(str::to_string),
@@ -1724,6 +1725,8 @@ async fn run(
                     Some(regex),
                     Some(flag(args, "case_sensitive")),
                     uint(args, "context_lines"),
+                    flag(args, "count_all"),
+                    stop.clone(),
                 )
             };
             let mut result = search(regex).await?;
@@ -1732,6 +1735,7 @@ async fn run(
             let mut as_regex = None;
             if !regex
                 && result.total_matches == 0
+                && result.totals_complete
                 && looks_like_regex(query, flag(args, "case_sensitive"))
             {
                 let retried = search(true).await?;
@@ -2186,7 +2190,11 @@ fn format_found(
     show_code: impl Fn(&str) -> bool,
 ) -> String {
     if result.match_count == 0 {
-        return "No matches.".into();
+        return if result.totals_complete {
+            "No matches.".into()
+        } else {
+            "No visible matches in the searched portion. Search was incomplete; narrow the query or path_glob, or set count_all: true to search further.".into()
+        };
     }
     let matches = |n: usize| if n == 1 { "match" } else { "matches" };
     let files = |n: usize| if n == 1 { "file" } else { "files" };
@@ -2976,6 +2984,101 @@ mod tests {
             text.starts_with("200000 matches or more in 1 file; counting stopped there. Shown: the first 3 by path, in 2 files."),
             "{text}"
         );
+
+        let hidden = SearchResult {
+            lines: vec![],
+            match_count: 0,
+            file_count: 0,
+            total_matches: 0,
+            total_files: 0,
+            ..result
+        };
+        let text = format_search_result(&hidden, &HashMap::new());
+        assert!(text.contains("Search was incomplete"), "{text}");
+        assert!(!text.contains("No matches."), "{text}");
+    }
+
+    #[tokio::test]
+    async fn agent_search_is_bounded_unless_it_requests_all_counts() {
+        let t = crate::testing::TestCore::new();
+        let project = t.dir.0.join("search-project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("id_rsa"), "needle SECRET\n").unwrap();
+        std::fs::write(project.join("z.txt"), "needle public\npublic\npublic\n").unwrap();
+        let root = project.to_string_lossy().into_owned();
+        let ctx = CallContext {
+            seen: Seen::new("bounded-search-test"),
+            restricted: Arc::default(),
+            owner: "bounded-search-test".into(),
+            checks_owner: "bounded-search-test".into(),
+            hidden: Vec::new(),
+            tests_only: false,
+            written_tests: Vec::new(),
+            note: Arc::new(|_| {}),
+            background_chat: None,
+            reply_cut_off: false,
+        };
+        let stop = Arc::new(StopSignal::new());
+        let bounded = execute(
+            &t.core,
+            Some(&root),
+            "search_code",
+            r#"{"query":"public","max_results":1}"#,
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            bounded.content.starts_with("1 match or more"),
+            "{}",
+            bounded.content
+        );
+        let all = execute(
+            &t.core,
+            Some(&root),
+            "search_code",
+            r#"{"query":"public","max_results":1,"count_all":true}"#,
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            all.content.starts_with("3 matches in 1 file."),
+            "{}",
+            all.content
+        );
+        let hidden = execute(
+            &t.core,
+            Some(&root),
+            "search_code",
+            r#"{"query":"needle","max_results":1}"#,
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            hidden.content.contains("Search was incomplete"),
+            "{}",
+            hidden.content
+        );
+        assert!(hidden.content.contains("restricted files left out"));
+        assert!(!hidden.content.contains("SECRET"));
+        stop.set();
+        let cancelled = execute(
+            &t.core,
+            Some(&root),
+            "search_code",
+            r#"{"query":"absent.*","max_results":1}"#,
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(cancelled.outcome.failed(), "{}", cancelled.content);
+        assert!(
+            !cancelled.content.contains("No matches"),
+            "{}",
+            cancelled.content
+        );
     }
 
     /// A search result over `files` (path, content) for lines matching
@@ -3204,6 +3307,9 @@ a.rs (3 matches)
         assert!(description.contains("grouped by file, and within a file by the declaration"));
         assert!(description.contains("works as read's symbol"));
         assert!(description.contains("(declaration)"));
+        let counts = &search["function"]["parameters"]["properties"]["count_all"];
+        assert_eq!(counts["type"], "boolean");
+        assert!(counts["description"].as_str().unwrap().contains("default false"));
         let read = schemas
             .iter()
             .find(|t| t["function"]["name"] == "read")
@@ -3364,6 +3470,7 @@ a.rs (3 matches)
             super::super::subagent::task_schema(&[super::super::subagent::Kind::Scout], false),
             super::super::worker::extend_scope_schema(),
             super::super::change_review::answer_review_schema(),
+            super::super::structured_report::schema(),
             super::super::mcp_tool::schema(),
         ]);
         schemas
