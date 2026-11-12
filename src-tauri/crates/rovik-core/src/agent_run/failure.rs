@@ -88,7 +88,7 @@ pub fn describe(error: &ChatError) -> String {
         ErrorKind::BadRequest => "The provider rejected the request.".into(),
         ErrorKind::Provider => format!("The provider reported an error{after}."),
         // Why, as the provider put it.
-        ErrorKind::Refused => error.message.clone(),
+        ErrorKind::Refused | ErrorKind::Budget => error.message.clone(),
     }
 }
 

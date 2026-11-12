@@ -1471,7 +1471,10 @@ impl Run {
                     )
                     .await?;
                 self.settle(kept).await;
-                return Ok(if error.kind == ErrorKind::Cancelled {
+                self.keep_spending().await;
+                return Ok(if error.kind == ErrorKind::Budget {
+                    "budget"
+                } else if error.kind == ErrorKind::Cancelled {
                     "stopped"
                 } else {
                     "error"
@@ -2102,6 +2105,7 @@ impl Run {
                     calls: mcp_calls,
                 });
             let params = ChatParams {
+                admission: self.core.agents.request_admission(&self.dialog_id),
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
                 model: self.profile.model.clone(),
@@ -2142,6 +2146,7 @@ impl Run {
                 mcp,
             };
 
+            let admitted = params.admission.is_some();
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
             let cancel_tx = Arc::new(cancel_tx);
             let stream = Arc::new(Mutex::new(Stream::new(
@@ -2305,7 +2310,9 @@ impl Run {
                 if let Some(sub) = self.sub_mut() {
                     sub.note_usage(usage.as_ref());
                 }
-                self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
+                self.core
+                    .agents
+                    .note_reply(&self.dialog_id, usage.as_ref(), admitted);
                 let mut entry = json!({
                     "event": "reply",
                     "dialogId": self.dialog_id,
@@ -2383,7 +2390,20 @@ impl Run {
             if let Some(sub) = self.sub_mut() {
                 sub.note_usage(usage.as_ref());
             }
-            self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
+            self.core
+                .agents
+                .note_reply(&self.dialog_id, usage.as_ref(), admitted);
+            if output
+                .failure
+                .as_ref()
+                .is_some_and(|error| error.kind == ErrorKind::Budget)
+            {
+                if let Some(why) = self.core.agents.request_budget_denied(&self.dialog_id) {
+                    self.core
+                        .agents
+                        .cut_for_budget(&self.core, &self.dialog_id, &why);
+                }
+            }
             let mut entry = json!({
                 "event": "reply",
                 "dialogId": self.dialog_id,

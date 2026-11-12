@@ -33,6 +33,46 @@ pub enum Api {
 }
 
 impl Api {
+    /// The output allowance supported by this API's request shape.
+    pub fn output_tokens(self, body: &Value) -> Option<u64> {
+        let field = match self {
+            Api::Responses => "max_output_tokens",
+            Api::ChatCompletions if body.get("max_completion_tokens").is_some() => {
+                "max_completion_tokens"
+            }
+            _ => "max_tokens",
+        };
+        body.get(field).and_then(Value::as_u64).filter(|n| *n > 0)
+    }
+
+    /// Applies admission's allowance using this API's supported field.
+    /// A provider that ignores the field can still exceed the estimate;
+    /// reported overspend is retained by the ledger.
+    pub fn limit_output(self, body: &mut Value, tokens: u64) {
+        let field = match self {
+            Api::Responses => "max_output_tokens",
+            Api::ChatCompletions if body.get("max_completion_tokens").is_some() => {
+                "max_completion_tokens"
+            }
+            _ => "max_tokens",
+        };
+        body[field] = json!(tokens);
+        // Anthropic's explicit thinking budget must be below max_tokens.
+        // Very small allowances cannot support its minimum thinking budget.
+        if self == Api::Messages
+            && body
+                .pointer("/thinking/budget_tokens")
+                .and_then(Value::as_u64)
+                .is_some_and(|n| n >= tokens)
+        {
+            if tokens > 1_024 {
+                body["thinking"]["budget_tokens"] = json!(tokens - 1);
+            } else if let Some(object) = body.as_object_mut() {
+                object.remove("thinking");
+            }
+        }
+    }
+
     /// As saved with the model: "chat_completions" or "responses".
     pub fn as_str(self) -> &'static str {
         match self {

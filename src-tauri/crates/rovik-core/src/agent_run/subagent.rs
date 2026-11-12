@@ -1306,7 +1306,9 @@ impl Ledger {
         if let Some(model) = &result.answered_by {
             self.streaks.remove(model);
         }
-        self.tokens += result.usage.map_or(0, |u| u.tokens());
+        self.tokens = self
+            .tokens
+            .saturating_add(result.usage.map_or(0, |u| u.tokens()));
         opened
     }
 

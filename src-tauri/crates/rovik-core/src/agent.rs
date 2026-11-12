@@ -289,9 +289,48 @@ pub async fn run_with_reasoning(
     streaming: bool,
     limits: crate::chat_request::Limits,
     effort: Option<ReasoningEffort>,
+    formats: Vec<String>,
+    saved_route: Option<Api>,
+    chat_id: Option<&str>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+) -> (
+    Result<(), crate::chat_request::ChatError>,
+    Option<ReasoningSupport>,
+) {
+    run_with_reasoning_admitted(
+        client,
+        url,
+        api_key,
+        body,
+        streaming,
+        limits,
+        effort,
+        formats,
+        saved_route,
+        chat_id,
+        None,
+        cancel,
+        emit,
+    )
+    .await
+}
+
+/// The run's version, sharing admission across transport retries and route
+/// or response-option fallbacks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_with_reasoning_admitted(
+    client: crate::chat_request::Clients<'_>,
+    url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+    streaming: bool,
+    limits: crate::chat_request::Limits,
+    effort: Option<ReasoningEffort>,
     mut formats: Vec<String>,
     saved_route: Option<Api>,
     chat_id: Option<&str>,
+    admission: Option<&crate::agent_run::request_budget::Admission>,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> (
@@ -301,8 +340,9 @@ pub async fn run_with_reasoning(
     // Anthropic's own API, not its OpenAI-compatible one (crate::anthropic).
     if crate::anthropic::is_anthropic(url) {
         let base = url.strip_suffix("/chat/completions").unwrap_or(url);
-        return crate::anthropic::run(
-            client, base, api_key, body, streaming, limits, effort, &formats, chat_id, cancel, emit,
+        return crate::anthropic::run_admitted(
+            client, base, api_key, body, streaming, limits, effort, &formats, chat_id, admission,
+            cancel, emit,
         )
         .await;
     }
@@ -336,6 +376,9 @@ pub async fn run_with_reasoning(
     // gate remains the fallback for every provider.
     let forced_tool = body.get("tool_choice").filter(|v| v.is_object()).cloned();
     let mut force_fell_back = false;
+    // Capped chat-completion requests may require the newer field. Learn
+    // from a definitive rejection rather than branching on model names.
+    let mut completion_limit = false;
     // Tool calls sent back with ids, for a Responses API that can't read
     // them without (`responses::add_call_ids`): known for the model, or
     // found by this request.
@@ -347,6 +390,16 @@ pub async fn run_with_reasoning(
     let mut refused_levels: Vec<String> = Vec::new();
     let result = loop {
         let mut attempt_body = body.clone();
+        if completion_limit {
+            let maximum = body
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(crate::agent_run::request_budget::DEFAULT_OUTPUT_TOKENS);
+            if let Some(object) = attempt_body.as_object_mut() {
+                object.remove("max_tokens");
+            }
+            attempt_body["max_completion_tokens"] = serde_json::json!(maximum);
+        }
         if force_fell_back {
             attempt_body["tool_choice"] = serde_json::json!("auto");
         }
@@ -385,6 +438,7 @@ pub async fn run_with_reasoning(
             limits,
             api,
             chat_id,
+            admission,
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
@@ -433,6 +487,15 @@ pub async fn run_with_reasoning(
             }
             Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial => {
                 let text = format!("{} {}", e.message, e.details.as_deref().unwrap_or(""));
+                if admission.is_some()
+                    && api == Api::ChatCompletions
+                    && !completion_limit
+                    && mentions_field(&text, "max_tokens")
+                    && mentions_field(&text, "max_completion_tokens")
+                {
+                    completion_limit = true;
+                    continue;
+                }
                 // A named `tool_choice` (forced tool) the provider rejects:
                 // fall back to `auto` once. The execute gate stays the
                 // fallback for every provider.
@@ -964,6 +1027,8 @@ fn request_system_prompt(plain: String, clm: Option<String>, clm_used: bool) -> 
 /// explicit messages for one-off requests such as title generation.
 #[derive(Default)]
 pub struct ChatParams {
+    /// Run-scoped admission, evaluated only after history and tools are prepared.
+    pub admission: Option<crate::agent_run::request_budget::Admission>,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
@@ -1106,6 +1171,7 @@ pub async fn run_chat(
         return crate::connectors::run_chat(db, kind, params, cancel, on_event).await;
     }
     let ChatParams {
+        admission,
         base_url,
         api_key,
         model,
@@ -1150,6 +1216,7 @@ pub async fn run_chat(
     // for earlier requests (see `calibration`), else a cautious default.
     let calibration_key = calibration::key(&base_url, &model);
     let chars_per_token = calibration::chars_per_token(&calibration_key);
+    let admission = admission.map(|a| a.with_chars_per_token(chars_per_token));
 
     let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
     let system_prompt = system_prompt.unwrap_or_else(|| {
@@ -1547,7 +1614,7 @@ pub async fn run_chat(
     // permitted") are dropped and the request sent again. A 400 naming no
     // field gets one retry without any of them, which counts as a rejection
     // only if that retry then works. Nothing has been shown at that point.
-    let (result, support) = run_with_reasoning(
+    let (result, support) = run_with_reasoning_admitted(
         crate::chat_request::Clients::Shared,
         &url,
         &api_key,
@@ -1558,6 +1625,7 @@ pub async fn run_chat(
         reasoning_formats,
         api_route.as_deref().and_then(Api::parse),
         chat_id.as_deref(),
+        admission.as_ref(),
         cancel,
         &mut emit,
     )

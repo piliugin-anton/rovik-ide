@@ -299,6 +299,7 @@ fn adjust(
 /// keep with the model: taken in whichever form it asked for (`formats`;
 /// none asked, the effort isn't sent), or not at all (a model that doesn't
 /// think and takes no effort).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     client: Clients<'_>,
@@ -310,6 +311,29 @@ pub async fn run(
     effort: Option<ReasoningEffort>,
     formats: &[String],
     chat_id: Option<&str>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+) -> (Result<(), ChatError>, Option<ReasoningSupport>) {
+    run_admitted(
+        client, base_url, api_key, body, streaming, limits, effort, formats, chat_id, None, cancel,
+        emit,
+    )
+    .await
+}
+
+/// The same provider negotiation, with run-scoped admission on each attempt.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_admitted(
+    client: Clients<'_>,
+    base_url: &str,
+    api_key: &str,
+    body: &Value,
+    streaming: bool,
+    limits: Limits,
+    effort: Option<ReasoningEffort>,
+    formats: &[String],
+    chat_id: Option<&str>,
+    admission: Option<&crate::agent_run::request_budget::Admission>,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> (Result<(), ChatError>, Option<ReasoningSupport>) {
@@ -345,6 +369,7 @@ pub async fn run(
             limits,
             api: Api::Messages,
             chat_id,
+            admission,
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         let refused = match &result {

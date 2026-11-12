@@ -303,6 +303,7 @@ async fn run_body_against(
         limits,
         api: Api::ChatCompletions,
         chat_id: None,
+        admission: None,
     };
     let (tx, mut rx) = watch::channel(false);
     if let Some(ms) = cancel_after {
@@ -675,6 +676,7 @@ async fn cancel_through_the_registry_stops_a_waiting_request() {
             limits,
             api: Api::ChatCompletions,
             chat_id: None,
+            admission: None,
         };
         let mut registration = r2.register(Some("req-1".into()));
         let mut events = Vec::new();

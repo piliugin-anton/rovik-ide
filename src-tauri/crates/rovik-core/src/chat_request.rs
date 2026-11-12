@@ -85,6 +85,8 @@ pub enum ErrorKind {
     /// The model's safety classifiers declined the request (Anthropic's
     /// `refusal` stop reason): asked again, it's declined again.
     Refused,
+    /// Shared token admission refused this request before dispatch.
+    Budget,
     Cancelled,
     /// The process ended while the reply streamed, and the daemon, started
     /// again, settled what was stored of it (5.4).
@@ -934,6 +936,8 @@ pub struct RequestSpec<'a> {
     pub api: Api,
     /// The chat this request is for: its session on opencode.ai (`opencode`).
     pub chat_id: Option<&'a str>,
+    /// Shared admission, applied to every retry after its final body is built.
+    pub admission: Option<&'a crate::agent_run::request_budget::Admission>,
 }
 
 /// Why an attempt ended unsuccessfully, and whether anything was shown.
@@ -1002,6 +1006,7 @@ async fn attempt(
     first_byte: Duration,
     cancel: &mut watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+    reservation: &mut Option<crate::agent_run::request_budget::Reservation>,
 ) -> Result<(), AttemptFailure> {
     let started = Instant::now();
     let deadline = started + spec.limits.overall;
@@ -1154,6 +1159,9 @@ async fn attempt(
             Api::Responses => parser.feed_complete_responses(&body, emit),
             Api::Messages => parser.feed_complete_messages(&body, emit),
         };
+        if let (Some(reservation), Some(usage)) = (reservation.as_mut(), parser.usage.as_ref()) {
+            reservation.observe(usage);
+        }
         let mut e = fed.and_then(|_| parser.finish(emit));
         if let Err(err) = &mut e {
             if err.kind == ErrorKind::RateLimited && err.retry_after_ms.is_none() {
@@ -1264,6 +1272,14 @@ async fn attempt(
                     Api::Responses => parser.feed_responses(&value, emit),
                     Api::Messages => parser.feed_messages(&value, emit),
                 };
+                // Capture cumulative usage as it arrives, including a
+                // future dropped during the next network await. Emitting
+                // Finished here would prematurely finish the UI's turn.
+                if let (Some(reservation), Some(usage)) =
+                    (reservation.as_mut(), parser.usage.as_ref())
+                {
+                    reservation.observe(usage);
+                }
                 match fed {
                     Ok(false) => {}
                     Ok(true) => {
@@ -1309,8 +1325,66 @@ pub async fn run(
     let mut attempt_number = 1;
     let mut first_byte = spec.limits.first_byte;
     loop {
-        let client = spec.client.get().await;
-        let failure = match attempt(spec, &client, first_byte, cancel, emit).await {
+        // No reservation or network work for a request already cancelled.
+        if *cancel.borrow() {
+            return Err(ChatError::stopped());
+        }
+        let client = tokio::select! {
+            _ = cancelled(cancel) => return Err(ChatError::stopped()),
+            client = spec.client.get() => client,
+        };
+        let mut body = None;
+        let mut reservation = if let Some(admission) = spec.admission {
+            let input = admission.estimate(spec.body);
+            let output = spec
+                .api
+                .output_tokens(spec.body)
+                .unwrap_or(crate::agent_run::request_budget::DEFAULT_OUTPUT_TOKENS);
+            let reservation = admission
+                .reserve(input, output)
+                .map_err(|message| ChatError::new(ErrorKind::Budget, message))?;
+            let mut limited = spec.body.clone();
+            spec.api
+                .limit_output(&mut limited, reservation.output_tokens());
+            body = Some(limited);
+            Some(reservation)
+        } else {
+            None
+        };
+        let attempt_spec = RequestSpec {
+            body: body.as_ref().unwrap_or(spec.body),
+            ..*spec
+        };
+        if *cancel.borrow() {
+            return Err(ChatError::stopped());
+        }
+        if let Some(reservation) = &mut reservation {
+            reservation.dispatched();
+        }
+        let result = attempt(
+            &attempt_spec,
+            &client,
+            first_byte,
+            cancel,
+            emit,
+            &mut reservation,
+        )
+        .await;
+        // A received HTTP refusal cannot have generated output. Errors in
+        // a stream, timeouts and dropped connections retain unknown spend.
+        if result.as_ref().err().is_some_and(|f| {
+            !f.visible
+                && matches!(
+                    f.error.status,
+                    Some(400 | 401 | 403 | 404 | 405 | 413 | 422 | 429)
+                )
+        }) {
+            if let Some(reservation) = &mut reservation {
+                reservation.rejected();
+            }
+        }
+        drop(reservation);
+        let failure = match result {
             Ok(()) => {
                 emit(ChatStreamEvent::Done);
                 return Ok(());
@@ -1392,5 +1466,7 @@ pub mod messages;
 pub mod responses;
 pub use responses::Api;
 
+#[cfg(test)]
+mod budget_tests;
 #[cfg(test)]
 mod tests;

@@ -1942,6 +1942,18 @@ ranking stays separate, and different workspace views keep separate entries.
 This avoids rebuilding unchanged relationships; it does not eliminate the
 directory walk. Subagent map preparation runs off the async execution thread.
 
+When a task or its subagents have a token limit, each model request reserves
+estimated input tokens and a bounded reply allowance before it is sent. The
+lead and its descendants share the task limit, and concurrent children also
+share the subagent limit. Each retry reserves capacity again. Reported usage
+settles the reservation; missing usage and requests interrupted after dispatch
+retain conservative estimates. Unused capacity is released. API requests carry
+the corresponding output limit. An API request without an existing output limit
+gets a 4,096-token reply allowance, reduced when less budget remains.
+External CLI harnesses remain advisory because
+their internal requests and context are outside Rovik's control. These are
+admission limits based on estimates, not guarantees about provider billing.
+
 Agent `search_code` calls stop searching file contents after enough matches
 are found in path order. Incomplete totals are labeled as lower bounds;
 `count_all: true` requests exhaustive counting, subject to the search limit.

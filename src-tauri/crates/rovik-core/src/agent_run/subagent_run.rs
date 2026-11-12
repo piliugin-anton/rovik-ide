@@ -586,9 +586,7 @@ impl Run {
                     .into(),
             );
         }
-        if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
-            return Err(why);
-        }
+        self.check_sub_spending(config)?;
         // A worker goes on with its step's scope (A04, F07).
         let step = if kind == Kind::Worker {
             Some(self.worker_step_of(&child.id).await.ok_or(
@@ -720,6 +718,24 @@ impl Run {
         Ok(run)
     }
 
+    fn check_sub_spending(&self, config: &SubagentConfig) -> Result<(), String> {
+        self.core
+            .agents
+            .restore_request_spending(&self.dialog_id, 0, self.ledger.tokens);
+        if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+            return Err(why);
+        }
+        let consumed = self.core.agents.request_spending(&self.dialog_id).1;
+        if config
+            .max_run_tokens
+            .filter(|limit| *limit > 0)
+            .is_some_and(|limit| consumed >= limit)
+        {
+            return Err(format!("Error: this run's subagents have spent or conservatively accounted for {consumed} tokens; their token budget is exhausted."));
+        }
+        Ok(())
+    }
+
     /// A subagent's context, before it has a run. Err: none of its models
     /// can be used (they kept failing in this run, S12).
     pub(super) async fn new_sub(
@@ -729,9 +745,7 @@ impl Run {
         budget: Budget,
         config: &SubagentConfig,
     ) -> Result<SubCtx, String> {
-        if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
-            return Err(why);
-        }
+        self.check_sub_spending(config)?;
         let all = config.models(kind, &self.profile);
         let models: Vec<ModelProfile> = all
             .iter()
@@ -1388,6 +1402,20 @@ impl Run {
                     && self.retry_legacy_review(&error)
                 {
                     continue;
+                }
+                if error.kind == ErrorKind::Budget {
+                    let status = if self.stopped() {
+                        SubStatus::Stopped
+                    } else {
+                        SubStatus::Partial
+                    };
+                    return Ok((
+                        status,
+                        format!("{}\n{}", last_text.trim_end(), error.message)
+                            .trim()
+                            .to_string(),
+                        Some("budget".into()),
+                    ));
                 }
                 if error.kind == ErrorKind::Cancelled || self.stopped() {
                     return Ok((SubStatus::Stopped, last_text, None));
