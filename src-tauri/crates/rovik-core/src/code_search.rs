@@ -13,6 +13,9 @@
 //!   always returns the same matches whatever order the parallel walk ran
 //!   in. Only matches that can still be among those are kept in memory.
 //!   Counting stops at COUNT_LIMIT matches; the totals then say so.
+//! - Agent searches can stop after enough matches: eligible paths are sorted
+//!   first, then only the necessary files' contents are searched. Totals are
+//!   lower bounds whenever this stops early. The editor still counts all.
 
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
@@ -68,12 +71,12 @@ pub struct SearchResult {
     /// Matches and files in `lines`.
     pub match_count: usize,
     pub file_count: usize,
-    /// More matches exist than are returned.
+    /// More matches exist, or searching stopped before establishing the total.
     pub truncated: bool,
     /// Matches and files in the whole project, returned or not.
     pub total_matches: usize,
     pub total_files: usize,
-    /// false when counting stopped at COUNT_LIMIT: the totals are at least
+    /// false when searching stopped early: the totals are at least
     /// this many, and the matches returned are the first in path order among
     /// the files searched by then.
     pub totals_complete: bool,
@@ -127,6 +130,11 @@ struct Collector<'a> {
     total: &'a AtomicUsize,
     count_limit: usize,
     stop: &'a AtomicBool,
+    cancelled: &'a (dyn Fn() -> bool + Sync),
+    bounded: bool,
+    context_lines: u64,
+    /// Last kept match plus its trailing context, once the budget is full.
+    tail_until: Option<u64>,
 }
 
 fn clean(bytes: &[u8]) -> String {
@@ -160,8 +168,15 @@ impl Sink for Collector<'_> {
     type Error = std::io::Error;
 
     fn matched(&mut self, _: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        if (self.cancelled)() {
+            return Ok(false);
+        }
         let first = m.line_number().unwrap_or(0);
         for (i, line) in m.lines().enumerate() {
+            if self.bounded && self.kept >= self.cap {
+                self.stop.store(true, Ordering::SeqCst);
+                return Ok(false);
+            }
             if self.total.fetch_add(1, Ordering::SeqCst) >= self.count_limit {
                 self.stop.store(true, Ordering::SeqCst);
                 return Ok(false);
@@ -181,22 +196,41 @@ impl Sink for Collector<'_> {
                 ranges,
                 column,
             });
+            if self.bounded && self.kept == self.cap {
+                self.tail_until = Some(first + i as u64 + self.context_lines);
+                if self.context_lines == 0 {
+                    self.stop.store(true, Ordering::SeqCst);
+                    return Ok(false);
+                }
+            }
         }
         Ok(true)
     }
 
     fn context(&mut self, _: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
+        if (self.cancelled)() {
+            return Ok(false);
+        }
+        let line = c.line_number().unwrap_or(0);
+        if self.tail_until.is_some_and(|last| line > last) {
+            self.stop.store(true, Ordering::SeqCst);
+            return Ok(false);
+        }
         if self.kept >= self.cap && self.matches > self.kept {
             return Ok(true); // around matches that aren't kept
         }
         self.lines.push(SearchLine {
             path: self.path.clone(),
-            line: c.line_number().unwrap_or(0),
+            line,
             text: clean(c.bytes()),
             is_match: false,
             ranges: Vec::new(),
             column: None,
         });
+        if self.tail_until == Some(line) {
+            self.stop.store(true, Ordering::SeqCst);
+            return Ok(false);
+        }
         Ok(true)
     }
 }
@@ -232,15 +266,43 @@ pub fn search(
     opts: &SearchOptions,
     skip_name: fn(&str) -> bool,
 ) -> Result<SearchResult, String> {
-    search_counting_to(root, opts, skip_name, COUNT_LIMIT)
+    search_with_control(root, opts, skip_name, true, &|| false)
 }
 
+/// Searches with the agent's budget and Stop signal. `count_all` retains the
+/// editor's exhaustive totals; otherwise only the first matches in path order
+/// are searched. Cancellation is an error, never evidence that no match exists.
+pub fn search_with_control(
+    root: &Path,
+    opts: &SearchOptions,
+    skip_name: fn(&str) -> bool,
+    count_all: bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<SearchResult, String> {
+    search_inner(root, opts, skip_name, COUNT_LIMIT, !count_all, cancelled)
+}
+
+#[cfg(test)]
 fn search_counting_to(
     root: &Path,
     opts: &SearchOptions,
     skip_name: fn(&str) -> bool,
     count_limit: usize,
 ) -> Result<SearchResult, String> {
+    search_inner(root, opts, skip_name, count_limit, false, &|| false)
+}
+
+fn search_inner(
+    root: &Path,
+    opts: &SearchOptions,
+    skip_name: fn(&str) -> bool,
+    count_limit: usize,
+    bounded: bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<SearchResult, String> {
+    if cancelled() {
+        return Err("Search stopped before it completed.".into());
+    }
     if opts.query.is_empty() {
         return Err("query must not be empty".into());
     }
@@ -280,80 +342,120 @@ fn search_counting_to(
     });
     let context_lines = opts.context_lines as u64;
 
-    WalkBuilder::new(root)
-        .hidden(true)
+    let mut walk = WalkBuilder::new(root);
+    walk.hidden(true)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .require_git(false)
         .max_filesize(Some(MAX_FILE_BYTES))
         .overrides(overrides)
-        .filter_entry(move |e| !skip_name(&e.file_name().to_string_lossy()))
-        .build_parallel()
-        .run(|| {
-            let matcher = matcher.clone();
-            let mut searcher = searcher.build();
-            let (total, total_files, stop, kept) = (&total, &total_files, &stop, &kept);
-            Box::new(move |entry| {
-                if stop.load(Ordering::SeqCst) {
-                    return WalkState::Quit;
-                }
-                let Ok(entry) = entry else {
-                    return WalkState::Continue;
-                };
-                if !entry.file_type().is_some_and(|t| t.is_file()) {
-                    return WalkState::Continue;
-                }
-                let path = entry.path();
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned();
-                // `/` on every platform, like the other tools' paths.
-                let rel = if cfg!(windows) {
-                    rel.replace('\\', "/")
-                } else {
-                    rel
-                };
-                let mut sink = Collector {
-                    matcher: &matcher,
-                    path: rel.clone(),
-                    lines: Vec::new(),
-                    matches: 0,
-                    kept: 0,
+        .filter_entry(move |e| !skip_name(&e.file_name().to_string_lossy()));
+
+    let visit = |entry: Result<ignore::DirEntry, ignore::Error>,
+                 searcher: &mut Searcher,
+                 matcher: &RegexMatcher| {
+        if stop.load(Ordering::SeqCst) || cancelled() {
+            return WalkState::Quit;
+        }
+        let Ok(entry) = entry else {
+            return WalkState::Continue;
+        };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            return WalkState::Continue;
+        }
+        // The sequential ignore walker can finish its size check before
+        // applying filter_entry to files. Keep the denylist at the read too.
+        if skip_name(&entry.file_name().to_string_lossy()) {
+            return WalkState::Continue;
+        }
+        let path = entry.path();
+        let rel = relative_path(root, path);
+        let mut sink = Collector {
+            matcher,
+            path: rel.clone(),
+            lines: Vec::new(),
+            matches: 0,
+            kept: 0,
+            cap: if bounded {
+                cap.saturating_sub(total.load(Ordering::SeqCst))
+            } else {
+                cap
+            },
+            total: &total,
+            count_limit,
+            stop: &stop,
+            cancelled,
+            bounded,
+            context_lines,
+            tail_until: None,
+        };
+        #[cfg(test)]
+        note_read(path);
+        // Unreadable files are skipped, like ripgrep does.
+        let _ = searcher.search_path(matcher, path, &mut sink);
+        if sink.matches > 0 {
+            total_files.fetch_add(1, Ordering::SeqCst);
+            let mut lines = sink.lines;
+            lines.sort_by_key(|l| l.line);
+            if sink.matches > sink.kept {
+                trim_context(&mut lines, context_lines);
+            }
+            if let Ok(mut k) = kept.lock() {
+                k.add(
+                    rel,
+                    FileHits {
+                        lines,
+                        matches: sink.kept,
+                    },
                     cap,
-                    total,
-                    count_limit,
-                    stop,
-                };
-                // Unreadable files are skipped, like ripgrep does.
-                let _ = searcher.search_path(&matcher, path, &mut sink);
-                if sink.matches > 0 {
-                    total_files.fetch_add(1, Ordering::SeqCst);
-                    let mut lines = sink.lines;
-                    lines.sort_by_key(|l| l.line);
-                    if sink.matches > sink.kept {
-                        trim_context(&mut lines, context_lines);
-                    }
-                    if let Ok(mut k) = kept.lock() {
-                        k.add(
-                            rel,
-                            FileHits {
-                                lines,
-                                matches: sink.kept,
-                            },
-                            cap,
-                        );
-                    }
+                );
+            }
+        }
+        // Even if this file ended exactly at the budget, later files have
+        // not been searched, so the totals cannot be advertised as complete.
+        if bounded && total.load(Ordering::SeqCst) >= cap {
+            stop.store(true, Ordering::SeqCst);
+        }
+        if stop.load(Ordering::SeqCst) || cancelled() {
+            WalkState::Quit
+        } else {
+            WalkState::Continue
+        }
+    };
+
+    if bounded {
+        // A parallel early exit would return whichever files happened to win
+        // the race. Sort eligible paths first so the prefix is reproducible.
+        // Discovery still walks the tree; the saved work is reading contents.
+        let mut entries = BTreeMap::new();
+        for entry in walk.build() {
+            if cancelled() {
+                return Err("Search stopped before it completed.".into());
+            }
+            if let Ok(entry) = entry {
+                if entry.file_type().is_some_and(|t| t.is_file()) {
+                    entries.insert(relative_path(root, entry.path()), entry);
                 }
-                if stop.load(Ordering::SeqCst) {
-                    WalkState::Quit
-                } else {
-                    WalkState::Continue
-                }
-            })
+            }
+        }
+        let mut searcher = searcher.build();
+        for entry in entries.into_values() {
+            if matches!(visit(Ok(entry), &mut searcher, &matcher), WalkState::Quit) {
+                break;
+            }
+        }
+    } else {
+        walk.build_parallel().run(|| {
+            let mut searcher = searcher.build();
+            let matcher = matcher.clone();
+            let visit = &visit;
+            Box::new(move |entry| visit(entry, &mut searcher, &matcher))
         });
+    }
+    if cancelled() {
+        return Err("Search stopped before it completed.".into());
+    }
 
     drop(matcher);
     let kept = kept.into_inner().map_err(|e| e.to_string())?;
@@ -399,6 +501,25 @@ fn search_counting_to(
         total_files,
         totals_complete,
     })
+}
+
+/// `/` on every platform, as used for both sorting and displayed paths.
+fn relative_path(root: &Path, path: &Path) -> String {
+    let path = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
+}
+
+#[cfg(test)]
+static READS: std::sync::LazyLock<Mutex<std::collections::HashMap<std::path::PathBuf, usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+fn note_read(path: &Path) {
+    *READS.lock().unwrap().entry(path.to_path_buf()).or_default() += 1;
 }
 
 /// Drops context lines after the last match's own `context` lines: the
@@ -641,6 +762,132 @@ mod tests {
             (6, 6, 5, 5)
         );
         assert!(!r.truncated);
+    }
+
+    #[test]
+    fn bounded_search_reads_only_the_files_needed_for_the_same_prefix() {
+        let root = many_files(300);
+        // A directory's children must be sorted with files globally, not
+        // merely traversed in sorted directory-entry order.
+        fs::write(root.join("a.txt"), "needle first\n").unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/z.txt"), "needle second\n").unwrap();
+        let mut o = opts("needle");
+        o.max_results = 7;
+        o.context_lines = 1;
+        let expected = search(&root, &o, skip).unwrap();
+        let reads = || {
+            READS
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(path, _)| path.starts_with(&root))
+                .map(|(_, count)| count)
+                .sum::<usize>()
+        };
+        let before = reads();
+        for _ in 0..3 {
+            let bounded = search_with_control(&root, &o, skip, false, &|| false).unwrap();
+            assert_eq!(bounded.lines, expected.lines);
+            assert_eq!(bounded.match_count, 7);
+            assert_eq!(bounded.total_matches, 7);
+            assert!(bounded.truncated && !bounded.totals_complete);
+        }
+        assert!(
+            reads() - before <= 21,
+            "at most seven files per bounded search, not all 302"
+        );
+        assert!(expected.totals_complete && expected.total_files == 302);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bounded_search_keeps_context_and_stops_inside_a_dense_file() {
+        let root = fixture();
+        fs::write(root.join("dense.txt"), "needle\nafter\n".repeat(5_000)).unwrap();
+        let mut o = opts("needle");
+        o.globs = vec!["dense.txt".into()];
+        o.context_lines = 1;
+        o.max_results = 5;
+        let all = search(&root, &o, skip).unwrap();
+        let bounded = search_with_control(&root, &o, skip, false, &|| false).unwrap();
+        assert_eq!(bounded.lines, all.lines);
+        assert_eq!(bounded.lines.last().unwrap().line, 10);
+        assert_eq!((bounded.total_matches, all.total_matches), (5, 5_000));
+        assert!(!bounded.totals_complete);
+    }
+
+    #[test]
+    fn bounded_search_preserves_filters_and_reports_complete_small_searches() {
+        let root = fixture();
+        let mut o = opts("foo_?ba[rz]");
+        o.regex = true;
+        o.context_lines = 1;
+        o.globs = vec!["*.ts".into(), "!*.test.ts".into()];
+        let all = search(&root, &o, skip).unwrap();
+        let bounded = search_with_control(&root, &o, skip, false, &|| false).unwrap();
+        assert_eq!(bounded.lines, all.lines);
+        assert_eq!((bounded.total_matches, bounded.total_files), (3, 2));
+        assert!(bounded.totals_complete && !bounded.truncated);
+
+        let bounded = search_with_control(&root, &opts("foo"), skip, false, &|| false).unwrap();
+        assert_eq!(
+            paths(&bounded),
+            paths(&search(&root, &opts("foo"), skip).unwrap())
+        );
+        assert!(!paths(&bounded)
+            .iter()
+            .any(|p| p.contains("ignored") || p.ends_with(".pem")));
+        let empty = search_with_control(&root, &opts("absent"), skip, false, &|| false).unwrap();
+        assert_eq!(empty.match_count, 0);
+        assert!(empty.totals_complete && !empty.truncated);
+    }
+
+    #[test]
+    fn cancelled_search_never_reports_that_nothing_matched() {
+        let root = many_files(30);
+        READS
+            .lock()
+            .unwrap()
+            .retain(|path, _| !path.starts_with(&root));
+        for count_all in [false, true] {
+            let error =
+                search_with_control(&root, &opts("needle"), skip, count_all, &|| true).unwrap_err();
+            assert!(error.contains("stopped"));
+        }
+        let error = search_with_control(&root, &opts("needle"), skip, false, &|| {
+            READS
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|p| p.starts_with(&root))
+                .count()
+                >= 2
+        })
+        .unwrap_err();
+        assert!(error.contains("stopped"));
+        assert_eq!(
+            READS
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|p| p.starts_with(&root))
+                .count(),
+            2
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn count_all_control_retains_exhaustive_totals() {
+        let root = fixture();
+        let mut o = opts("foo");
+        o.max_results = 2;
+        let bounded = search_with_control(&root, &o, skip, false, &|| false).unwrap();
+        let all = search_with_control(&root, &o, skip, true, &|| false).unwrap();
+        assert_eq!(bounded.lines, all.lines);
+        assert_eq!((bounded.total_matches, all.total_matches), (2, 6));
+        assert!(!bounded.totals_complete && all.totals_complete);
     }
 
     /// A project of `n` files in nested folders, file i holding i % 5 + 1

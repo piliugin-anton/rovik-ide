@@ -1921,6 +1921,13 @@ drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
 
+Agent `search_code` calls stop searching file contents after enough matches
+are found in path order. Incomplete totals are labeled as lower bounds;
+`count_all: true` requests exhaustive counting, subject to the search limit.
+The editor's project search retains its counting behavior. Bounded search
+still enumerates eligible paths to preserve ordering, but avoids reading
+later files once its result budget is filled.
+
 Checklist transitions can finish the current step and start the next in one
 `todo` call. The agent waits for its result and any requested compaction before
 working on the next step. Successful recognized test/build/check commands show
