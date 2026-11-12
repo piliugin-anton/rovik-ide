@@ -9,6 +9,7 @@ on:
       - 'src-tauri/crates/rovik-headless/Cargo.toml'
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
+      - 'scripts/build-harness-tool.sh'
       - '.github/workflows/polyglot-harness.yml'
   workflow_dispatch:
   workflow_call:
@@ -46,6 +47,7 @@ jobs:
           cargo clippy --locked -p rovik-harness --tests -- -D warnings
       - name: Prepare protected native toolchain outside verification
         run: |
+          bash scripts/build-harness-tool.sh
           docker build -t rovik-harness-native:ci src-tauri/crates/rovik-harness/fixtures/native
           echo "ROVIK_HARNESS_IMAGE=$(docker image inspect --format '{{.Id}}' rovik-harness-native:ci)" >> "$GITHUB_ENV"
       - name: Exercise every supported native language, risk and evaluation configuration

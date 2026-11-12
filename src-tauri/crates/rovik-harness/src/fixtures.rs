@@ -356,7 +356,6 @@ pub fn quota_c_family(
         &[
             ("profile.json", &serialized_profile),
             ("cases.json", &serialized_cases),
-            ("run-consumer.py", include_str!("../assets/run-consumer.py")),
             (
                 if cpp { "consumer.cpp" } else { "consumer.c" },
                 if cpp {

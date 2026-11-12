@@ -9,6 +9,7 @@ use crate::{
     ledger::{Lease, Ledger},
     normalizer,
     plan::CheckSpec,
+    process::{process, ProcessOutput},
     registry::{CommandDefinition, CommandRegistry},
     require,
     snapshot::Snapshot,
@@ -17,14 +18,12 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -161,107 +160,6 @@ pub struct RunnerReceipt {
 #[derive(Debug, Clone)]
 pub struct DockerBackend {
     executable: PathBuf,
-}
-
-struct ProcessOutput {
-    code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    timed_out: bool,
-    cancelled: bool,
-    exceeded: bool,
-}
-
-fn drain(
-    mut stream: impl Read,
-    limit: usize,
-    total: Arc<AtomicUsize>,
-    exceeded: Arc<AtomicBool>,
-) -> std::io::Result<Vec<u8>> {
-    let mut kept = Vec::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        let n = stream.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        let before = total.fetch_add(n, Ordering::SeqCst);
-        let retain = n.min(limit.saturating_sub(before));
-        kept.extend_from_slice(&buffer[..retain]);
-        if before.saturating_add(n) > limit {
-            exceeded.store(true, Ordering::SeqCst);
-        }
-    }
-    Ok(kept)
-}
-
-fn process(
-    mut command: Command,
-    timeout: Duration,
-    limit: usize,
-    cancel: &Cancellation,
-    mut terminate: impl FnMut() -> Result<()>,
-) -> Result<ProcessOutput> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| Error(format!("cannot start registered execution: {e}")))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error("runner stdout pipe missing".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| Error("runner stderr pipe missing".into()))?;
-    let total = Arc::new(AtomicUsize::new(0));
-    let exceeded = Arc::new(AtomicBool::new(false));
-    let (t, e) = (total.clone(), exceeded.clone());
-    let out = thread::spawn(move || drain(stdout, limit, t, e));
-    let (t, e) = (total, exceeded.clone());
-    let err = thread::spawn(move || drain(stderr, limit, t, e));
-    let start = Instant::now();
-    let mut timed_out = false;
-    let mut cancelled = false;
-    let mut termination_error = None;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() >= timeout || cancel.is_cancelled() || exceeded.load(Ordering::SeqCst) {
-            timed_out = start.elapsed() >= timeout;
-            cancelled = cancel.is_cancelled();
-            if let Err(e) = terminate() {
-                termination_error = Some(e);
-            }
-            if let Err(e) = child.kill() {
-                if e.kind() != std::io::ErrorKind::InvalidInput {
-                    termination_error = Some(e.into());
-                }
-            }
-            break child.wait()?;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let stdout = out
-        .join()
-        .map_err(|_| Error("stdout collector stopped".into()))??;
-    let stderr = err
-        .join()
-        .map_err(|_| Error("stderr collector stopped".into()))??;
-    if let Some(e) = termination_error {
-        return Err(e);
-    }
-    Ok(ProcessOutput {
-        code: status.code(),
-        stdout,
-        stderr,
-        timed_out,
-        cancelled,
-        exceeded: exceeded.load(Ordering::SeqCst),
-    })
 }
 
 impl DockerBackend {

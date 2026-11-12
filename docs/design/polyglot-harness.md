@@ -181,7 +181,9 @@ directory. Acceptance and export do not apply a patch, commit, merge or deploy.
 Existing IDE chat verification retains its current behavior; this is the opt-in
 strict workflow shared by the core and the new headless entry point.
 
-The native test image can be built from
+Build the statically linked Rust sandbox tool with `bash scripts/build-harness-tool.sh`
+on x86_64 Linux (Rust and a C compiler with static libc are required). Then build
+the native test image from
 `src-tauri/crates/rovik-harness/fixtures/native/Dockerfile`. Resolve the resulting
 local image configuration digest with `docker image inspect --format '{{.Id}}'`
 and pass it as `ROVIK_HARNESS_IMAGE`; the harness never authorizes a mutable tag.
@@ -195,7 +197,8 @@ can run, while temporary and report mounts remain non-executable.
 
 ## Native packs and supported matrix (M4)
 
-The controller remains Rust. A protected Python subprocess adapts Cargo and CMake
+The controller and sandbox adapters are Rust. The image supplies
+`/usr/local/bin/rovik-harness-tool`, which adapts Cargo and CMake
 inside the existing offline sandbox. It consumes one bounded JSON request and
 returns one correlated protocol-v1 response. Probe, index, proposed-plan and
 explanation operations share this boundary. Proposed plans and explanations are
@@ -203,6 +206,11 @@ advisory; only configured indexing can produce a static graph result, and the
 Rust core independently checks its precision, configuration, references, required
 test discovery, flags and forbidden transitive edges before admitting evidence.
 Requests live in the approved oracle, selected by registered request IDs.
+The same executable runs protected C/C++ consumers, interop regressions and the
+native evaluation bank. No Python orchestration or separate deployed service is
+required. Its bytes are bound by the approved toolchain image digest; changing the
+tool requires a rebuilt image and new approval. Compiler subprocesses have bounded
+output and deadlines, including descendants holding inherited output pipes open.
 
 | Pack | Tested configuration                                                | Evidence                                                                                                                                 |
 | ---- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |

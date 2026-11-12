@@ -195,11 +195,7 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
             let oracle = fixtures::snapshot(
                 &ledger,
                 "oracle",
-                &[
-                    ("native_pack.py", packs::NATIVE_PACK),
-                    ("run-pack.sh", packs::PACK_LAUNCHER),
-                    ("requests/configured.json", &request_text),
-                ],
+                &[("requests/configured.json", &request_text)],
             )
             .unwrap();
             let command = packs::graph_command(["configured".into()].into()).unwrap();

@@ -22,6 +22,7 @@ pub mod pack_protocol;
 pub mod packs;
 pub mod plan;
 pub mod policy;
+mod process;
 pub mod profile;
 pub mod provider;
 pub mod registry;
@@ -31,6 +32,7 @@ pub mod runner;
 pub mod scope;
 pub mod snapshot;
 pub mod state;
+pub mod tools;
 pub mod wire;
 
 /// A validation or operational error, with a stable reason and useful context.

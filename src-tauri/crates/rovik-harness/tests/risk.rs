@@ -99,16 +99,12 @@ fn actual_sanitizers_and_ffi_consumers_reject_resource_and_abi_mutants() {
                 "consumer.rs",
                 include_str!("../fixtures/interop/consumer.rs"),
             ),
-            (
-                "run-interop.py",
-                include_str!("../fixtures/interop/run-interop.py"),
-            ),
         ],
     )
     .unwrap();
     let mut command = packs::graph_command(["interop".into()].into()).unwrap();
-    command.executable = "/usr/bin/python3".into();
-    command.argv_template = vec!["/oracle/run-interop.py".into()];
+    command.executable = rovik_harness::tools::EXECUTABLE.into();
+    command.argv_template = vec!["interop".into()];
     command.parameters.clear();
     command.parser = Parser::InventoryJson;
     command.checker_digest = normalizer::checker_digest(command.parser);

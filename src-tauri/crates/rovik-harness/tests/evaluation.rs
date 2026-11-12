@@ -118,8 +118,8 @@ fn heldout_native_contracts_report_repeated_false_accepts_by_language_and_strate
     let bank = evaluation::reference_bank();
     let bank_text = serde_json::to_string(&bank).unwrap();
     let mut command = packs::graph_command(["evaluation".into()].into()).unwrap();
-    command.executable = "/usr/bin/python3".into();
-    command.argv_template = vec!["/oracle/run.py".into()];
+    command.executable = rovik_harness::tools::EXECUTABLE.into();
+    command.argv_template = vec!["evaluate".into()];
     command.parameters.clear();
     command.parser = Parser::ExitCode;
     command.checker_digest = normalizer::checker_digest(command.parser);
@@ -137,7 +137,6 @@ fn heldout_native_contracts_report_repeated_false_accepts_by_language_and_strate
         &[
             ("bank.json", &bank_text),
             ("environment.json", &environment_text),
-            ("run.py", include_str!("../fixtures/evaluation/run.py")),
         ],
     )
     .unwrap();

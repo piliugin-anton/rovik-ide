@@ -75,11 +75,6 @@ pub fn rust_reference_command(profile: &Profile) -> Result<CommandDefinition> {
     })
 }
 
-/// Protected protocol driver bytes, installed into the immutable oracle bundle.
-pub const NATIVE_PACK: &str = include_str!("../assets/native_pack.py");
-/// Fixed argv-to-stdin wrapper; request IDs are allowlisted, never shell fragments.
-pub const PACK_LAUNCHER: &str = include_str!("../assets/run-pack.sh");
-
 /// Register configured graph checks for an explicit set of protected request IDs.
 pub fn graph_command(requests: std::collections::BTreeSet<String>) -> Result<CommandDefinition> {
     require(
@@ -90,8 +85,8 @@ pub fn graph_command(requests: std::collections::BTreeSet<String>) -> Result<Com
         crate::id(request)?;
     }
     let mut command = native_command("native-configured-graph", Parser::PackProtocol);
-    command.executable = "/bin/sh".into();
-    command.argv_template = vec!["/oracle/run-pack.sh".into(), "{request_id}".into()];
+    command.executable = crate::tools::EXECUTABLE.into();
+    command.argv_template = vec!["pack".into(), "{request_id}".into()];
     command.parameters.insert(
         "request_id".into(),
         crate::registry::Parameter::Choice { values: requests },
@@ -104,15 +99,14 @@ fn native_command(id: &str, parser: Parser) -> CommandDefinition {
     CommandDefinition {
         schema_version: 1,
         id: id.into(),
-        executable: "/usr/bin/python3".into(),
-        argv_template: vec!["/oracle/run-consumer.py".into()],
+        executable: crate::tools::EXECUTABLE.into(),
+        argv_template: vec!["quota".into()],
         parameters: Default::default(),
         cwd: "/build".into(),
         environment: [
             ("RUSTUP_HOME".into(), "/usr/local/rustup".into()),
             ("CARGO_HOME".into(), "/build/cargo".into()),
             ("CARGO_TARGET_DIR".into(), "/build/target".into()),
-            ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
         ]
         .into(),
         kind: CheckKind::Behavioral,
