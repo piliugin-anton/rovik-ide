@@ -975,14 +975,14 @@ pub fn handle(kind: Kind, child_dialog_id: &str) -> String {
 /// What a file was before a change (P0.3): its bytes as they were (None:
 /// it didn't exist), and which moment they're from. Kept as bytes, so
 /// putting it back can't turn a binary or Latin-1 file into text.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Original {
     pub bytes: Option<Vec<u8>>,
     pub source: Source,
 }
 
 /// The moment an `Original` is from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     /// The project's copy, in an isolated chat: before the chat, so maybe
     /// before earlier runs and rounds in it.
@@ -1250,7 +1250,8 @@ pub fn lead_prompt(kinds: &[Kind], worker_min_steps: usize, parallel: bool) -> O
 
 /// What the lead's run counts (D11): subagents started and briefs seen;
 /// and how its subagents' models fare (S12).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Ledger {
     /// Scouts (and, later, test writers and repair fixers) started in this
     /// run, failed ones included.

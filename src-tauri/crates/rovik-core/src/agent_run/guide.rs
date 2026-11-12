@@ -88,7 +88,7 @@ pub static GUIDE: KindSpec = KindSpec {
  */
 
 /// A change review that found problems, as the guide reads it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ReviewRound {
     /// The review's number in the run.
     pub round: u32,
@@ -109,7 +109,7 @@ impl ReviewRound {
 }
 
 /// What a guide said.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Guidance {
     /// "## Where it goes wrong".

@@ -8,6 +8,8 @@
 //! `meta.verification`, never sent to the model, saved on every change so it
 //! reads the same after a restart.
 
+#[path = "verification_checkpoint.rs"]
+pub(crate) mod checkpoint;
 #[path = "verification_receipt.rs"]
 mod receipt;
 #[path = "targeted_repair.rs"]
@@ -58,14 +60,18 @@ pub(super) fn check_timeout_ms(_dialog_id: &str) -> u64 {
 /// one is saved (check_output.rs) and can go to triage (triage.rs).
 pub const FAILURE_OUTPUT_CHARS: usize = 8_000;
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Clone, Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorFiles {
     pub changed: Vec<String>,
     pub other: Vec<String>,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+/// A validated gate status. The alias prevents serde from borrowing a static
+/// string from the payload; the decoder returns only known status constants.
+pub type CheckStatus = &'static str;
+
+#[derive(Serialize, Clone, Debug, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckResult {
     pub kind: String,
@@ -73,8 +79,10 @@ pub struct CheckResult {
     /// pending, running, passed, failed, skipped, slow (V06), and
     /// preexisting: it failed, but only as it does on the code before the
     /// change (before.rs).
-    pub status: &'static str,
+    #[serde(deserialize_with = "checkpoint::check_status")]
+    pub status: CheckStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "checkpoint::exit_code")]
     pub exit_code: Option<Option<i32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
@@ -144,19 +152,24 @@ impl CheckResult {
 /// A run's fix-round state while its checks wait for the user's approval:
 /// with command approval on, each round of checks starts a new run, which
 /// takes this up (R01 progress, R02 rollback, R04 the repair loop, R05
-/// integrity, R08 the review after green). Kept in memory: after a
-/// restart, the next round starts afresh, as before.
+/// integrity, R08 the review after green). The private restart checkpoint
+/// separately preserves confirmed state when this memory is lost.
 pub struct VerifyCarry {
     pub record_id: String,
     rounds: FixRounds,
-    review: super::change_review::ReviewCarry,
-    tests: super::test_writer::TestsCarry,
+    review: super::change_review::ReviewState,
+    tests: super::test_writer::TestsState,
+    integrity_unchecked: bool,
+    stalled_rounds: u32,
+    prepared_again: bool,
+    after_partial_rollback: bool,
     /// What the run last wrote or read: in a chat that isn't isolated, a
     /// rollback undoes only what's still the run's (K15).
     seen: std::sync::Arc<crate::file_guard::Seen>,
     /// What the run's subagents used of their limits (P3.10): the next
     /// rounds' fixers count on.
     ledger: super::subagent::Ledger,
+    request_spending: (u64, u64),
     /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
@@ -180,8 +193,13 @@ impl VerifyCarry {
             rounds: Default::default(),
             review: Default::default(),
             tests: Default::default(),
+            integrity_unchecked: false,
+            stalled_rounds: 0,
+            prepared_again: false,
+            after_partial_rollback: false,
             seen: crate::file_guard::Seen::new("test"),
             ledger: Default::default(),
+            request_spending: (0, 0),
             stored: std::time::Instant::now() - age,
             spilled: Spilled(
                 spilled
@@ -730,10 +748,15 @@ impl Run {
         VerifyCarry {
             record_id,
             rounds: self.verification.take_carry(),
-            review: self.review.take_carry(),
-            tests: self.tests.take_carry(),
+            review: take(&mut self.review),
+            tests: take(&mut self.tests),
+            integrity_unchecked: self.verification.integrity_unchecked,
+            stalled_rounds: self.verification.stalled_rounds,
+            prepared_again: self.verification.prepared_again,
+            after_partial_rollback: self.verification.after_partial_rollback,
             seen: self.seen.clone(),
             ledger: take(&mut self.ledger),
+            request_spending: self.core.agents.request_spending(&self.dialog_id),
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
             memory: self.memory.carry(),
@@ -743,9 +766,12 @@ impl Run {
     /// The run that starts the checks takes up where the last one stopped.
     /// None found (the app restarted, the chat was discarded, it expired):
     /// the record and the agent are told the checks start afresh (P1.7).
-    pub(super) fn restore_verify_state(&mut self, record_id: &str) {
+    pub(super) async fn restore_verify_state(&mut self, record_id: &str) {
+        let approval_matches = self.verification_approval_matches(record_id).await;
         let Some(mut c) = self.core.agents.take_carry(&self.dialog_id, record_id) else {
-            self.verification.carry_lost = Some(record_id.to_string());
+            if !self.restore_durable_verification(record_id).await {
+                self.verification.carry_lost = Some(record_id.to_string());
+            }
             return;
         };
         // Spilled contents come back; one that can't is left out (its
@@ -754,14 +780,29 @@ impl Run {
         if !c.spilled.restore(&mut c.rounds.baseline) {
             self.verification.integrity_unchecked = true;
         }
+        if !approval_matches {
+            c.rounds.baseline.clear();
+            c.rounds.checkpoint = None;
+            c.rounds.groups.clear();
+            c.rounds.worker_steps.clear();
+            c.rounds.last_triage = None;
+            self.verification.integrity_unchecked = true;
+            self.verification.writes_since_verify = true;
+        }
         self.verification.restore(c.rounds);
-        self.review.restore(c.review);
-        self.tests.restore(c.tests);
-        self.seen = c.seen;
+        self.verification.integrity_unchecked |= c.integrity_unchecked;
+        self.verification.stalled_rounds = c.stalled_rounds;
+        self.verification.prepared_again = c.prepared_again;
+        self.verification.after_partial_rollback = c.after_partial_rollback;
+        self.review = c.review;
+        self.tests = c.tests;
+        if approval_matches {
+            self.seen = c.seen;
+        }
         // The memories the paused run used, and what its rounds made of
         // them (memory.rs): the checks it starts are theirs to promote,
         // invalidate and record the outcome of.
-        if let Some(memory) = c.memory.take() {
+        if let Some(memory) = c.memory.take().filter(|_| approval_matches) {
             let core = self.core.clone();
             // Carried records keep the run's sight of the files: what it may
             // not read stays unreadable across the wait for the checks.
@@ -775,6 +816,11 @@ impl Run {
             );
         }
         self.ledger = c.ledger;
+        self.core.agents.restore_request_spending(
+            &self.dialog_id,
+            c.request_spending.0,
+            c.request_spending.1,
+        );
     }
 
     /// P3.9: the carried state was lost (a restart): what each file was
@@ -852,8 +898,17 @@ impl Run {
 
     /// P3.10: a record's round limit is the run's (bonus rounds counted).
     pub(super) fn with_max_rounds(&self, mut meta: Value) -> Value {
+        if let Some(notice) = &self.verification.checkpoint_notice {
+            if let Some(v) = meta.get_mut("verification") {
+                v["checkpointNotice"] = json!(notice);
+            }
+        }
         if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
             v.insert("maxRounds".into(), json!(self.max_rounds()));
+            v.insert(
+                "approvalConfiguration".into(),
+                json!(checkpoint::configuration(self)),
+            );
             // V02: the checks are the plan's validation commands.
             if self.checks_from_plan {
                 v.insert("fromPlan".into(), json!(true));
@@ -983,7 +1038,10 @@ impl Run {
         // Command approval is on: the gate's commands need the user's go
         // too. Not in Autopilot, where nobody gives it: they're the IDE's
         // commands, which the user set up, not the model's (D7).
-        if p.command_approval.required && !approved && !self.in_autopilot() {
+        if self.verification.approval_changed
+            || (p.command_approval.required && !approved && !self.in_autopilot())
+        {
+            self.verification.approval_changed = false;
             let pending: Vec<CheckResult> = checks.iter().map(CheckResult::pending).collect();
             // P3.9: what each file was, by hash, kept with the record: after
             // a restart the checks rebuild what they can from it.
@@ -1009,6 +1067,12 @@ impl Run {
             // The run ends here: what its fix rounds know waits for the
             // run that starts the checks.
             if self.sub().is_none() {
+                self.checkpoint_verification(
+                    &record_id,
+                    checkpoint::Phase::AwaitingApproval,
+                    &pending,
+                )
+                .await;
                 let mut carry = self.take_verify_state(record_id);
                 carry.spilled = spill(&self.dialog_id, &mut carry.rounds.baseline);
                 self.core.agents.put_carry(&self.dialog_id, carry);
@@ -1335,6 +1399,10 @@ impl Run {
         if let Some(why) = not_rolled_back {
             meta = with(meta, json!({ "notRolledBack": why }));
         }
+        if matches!(status, "passed" | "failed") {
+            meta["verification"]["finalizationPending"] = json!(true);
+            self.verification.pending_record = Some(record_id.clone());
+        }
         self.update_meta(&record_id, meta.clone()).await?;
         self.log_round(round, status, &results, &judgement, &flags);
         // T04: the round that ran the adversarial tester's tests: what they
@@ -1342,6 +1410,10 @@ impl Run {
         let breaker_note = self.breaker_round_judged(failed).await?;
 
         self.verification.round_finished(failed);
+        self.checkpoint_verification(&record_id, checkpoint::Phase::FinalizationPending, &results)
+            .await;
+        #[cfg(test)]
+        checkpoint::interrupt_at(&self.dialog_id, checkpoint::Phase::FinalizationPending)?;
         if status == "passed" && !flags.is_empty() {
             // R05: the checks pass, but maybe only because the tests or what
             // the checks run were weakened. Asked once; kept: the run isn't
@@ -1909,6 +1981,14 @@ impl Run {
                 }
                 results[i].status = "running";
                 self.update_meta(record_id, progress(&results)).await?;
+                self.checkpoint_verification(
+                    record_id,
+                    checkpoint::Phase::CommandRunning,
+                    &results,
+                )
+                .await;
+                #[cfg(test)]
+                checkpoint::interrupt_at(&self.dialog_id, checkpoint::Phase::CommandRunning)?;
                 let stop = self.stop.clone();
                 // Checks are heavy work: they may wait for a CPU slot, and the
                 // record says what for while they do.
@@ -2117,6 +2197,10 @@ impl Run {
                     }
                 }
             }
+            self.checkpoint_verification(record_id, checkpoint::Phase::CheckCompleted, &results)
+                .await;
+            #[cfg(test)]
+            checkpoint::interrupt_at(&self.dialog_id, checkpoint::Phase::CheckCompleted)?;
             i += 1;
         }
         if let Some(copy) = copy {
@@ -2370,7 +2454,7 @@ mod tests {
 }
 
 /// Verification data that crosses check-approval pauses as a whole.
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct FixRounds {
     /// Each verification round's failures, oldest first (repair.rs, R01):
     /// a rolled-back round isn't among them.
@@ -2406,6 +2490,7 @@ pub(super) struct FixRounds {
     round_commands: Vec<String>,
     /// How the checks that failed went on the code before the change, by
     /// command: each runs there once a run (before.rs).
+    #[serde(skip)]
     befores: super::before::Befores,
 }
 /// Verification progress local to a run, apart from its carried fix rounds.
@@ -2434,7 +2519,7 @@ pub(super) struct VerificationState {
     carry_lost_told: bool,
     /// P4.7: earlier runs' saved check output was removed.
     cleaned_this_run: bool,
-    /// Successful commands in this active run only; never carried across restart.
+    /// Opted-in successes, revalidated against complete inputs before reuse.
     receipts: Vec<CheckReceipt>,
     /// A full suite's evidence and the latest focused repair attempts.
     targeted: targeted::State,
@@ -2442,8 +2527,13 @@ pub(super) struct VerificationState {
     preflight_done: bool,
     /// Do not repeatedly rescan a tree whose inputs cannot be fingerprinted.
     reuse_unavailable: bool,
+    checkpoint_notice: Option<String>,
+    approval_changed: bool,
+    /// A completed check round whose final gates have not settled yet.
+    pending_record: Option<String>,
 }
 /// Passing evidence, including where the command actually ran.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct CheckReceipt {
     stamp: receipt::Stamp,
     check: ProjectCheck,
@@ -2736,8 +2826,8 @@ mod state_tests {
         let ledger = format!("{:?}", run.ledger);
         let seen = run.seen.clone();
         let mut carry = run.take_verify_state("record".into());
-        let review = carry.review.clone();
-        let tests = carry.tests.clone();
+        let review = serde_json::to_value(&carry.review).unwrap();
+        let tests = serde_json::to_value(&carry.tests).unwrap();
         carry.spilled = spill(&run.dialog_id, &mut carry.rounds.baseline);
         assert!(!carry.spilled.0.is_empty());
         host.core.agents.put_carry(&run.dialog_id, carry);
@@ -2752,16 +2842,16 @@ mod state_tests {
         fresh
             .verification
             .original_found("a.rs".into(), newer.clone());
-        fresh.restore_verify_state("record");
+        fresh.restore_verify_state("record").await;
         let mut expected = expected;
         expected.baseline.insert("new.rs".into(), original);
         expected.baseline.insert("a.rs".into(), newer);
         assert_eq!(fresh.verification.carry, expected);
         assert_eq!(fresh.verification.verify_rounds, 9);
-        assert_eq!(fresh.verification.stalled_rounds, 0);
+        assert_eq!(fresh.verification.stalled_rounds, 2);
         assert!(!fresh.verification.integrity_unchecked);
-        assert_eq!(fresh.review.take_carry(), review);
-        assert_eq!(fresh.tests.take_carry(), tests);
+        assert_eq!(serde_json::to_value(&fresh.review).unwrap(), review);
+        assert_eq!(serde_json::to_value(&fresh.tests).unwrap(), tests);
         assert!(std::sync::Arc::ptr_eq(&fresh.seen, &seen));
         assert_eq!(format!("{:?}", fresh.ledger), ledger);
         assert!(!fresh.review.has_held_findings());

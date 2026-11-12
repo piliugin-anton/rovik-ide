@@ -1096,7 +1096,7 @@ mod tests {
 }
 
 /// Test files and edits that survive a check approval pause.
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct TestsCarry {
     /// Files the test writer wrote, those the lead changed after it, and
     /// how many of those the final message listed already (E03).
@@ -1104,7 +1104,7 @@ pub(super) struct TestsCarry {
     tests_changed: Vec<String>,
 }
 /// The test writer, breaker, and acceptance progress of a run.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
 pub(super) struct TestsState {
     carry: TestsCarry,
     /// S07: the test writer ran for a change that had no test (once).
@@ -1195,11 +1195,5 @@ impl TestsState {
     }
     pub(super) fn acceptance_returned(&mut self, unmet: Vec<super::acceptance::Verdict>) {
         self.acceptance_unsatisfied = unmet;
-    }
-    pub(super) fn take_carry(&mut self) -> TestsCarry {
-        std::mem::take(&mut self.carry)
-    }
-    pub(super) fn restore(&mut self, carry: TestsCarry) {
-        self.carry = carry;
     }
 }

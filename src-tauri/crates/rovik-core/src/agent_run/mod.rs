@@ -281,6 +281,7 @@ struct Inner {
     /// A run's fix-round state while its checks wait for the user's
     /// approval, by chat (verify.rs `VerifyCarry`).
     carries: HashMap<String, verify::VerifyCarry>,
+    checkpoint_dir: Option<std::path::PathBuf>,
     /// The daemon is stopping (R02): its runs pause, and no new one starts.
     draining: bool,
     /// How long an Autopilot task's approval waits for an answer (U03);
@@ -637,14 +638,33 @@ impl AgentState {
     /// Drops a chat's carry: deleted or discarded, or a newer run ended
     /// without leaving checks waiting (P1.8).
     pub fn drop_carry(&self, dialog_id: &str) {
-        self.lock().carries.remove(dialog_id);
+        let dir = {
+            let mut inner = self.lock();
+            inner.carries.remove(dialog_id);
+            inner.checkpoint_dir.clone()
+        };
+        if let Some(dir) = dir {
+            verify::checkpoint::remove(&dir, dialog_id);
+        }
+    }
+
+    /// Binds private verification state to this core's data folder.
+    pub(crate) fn set_checkpoint_dir(&self, data_dir: &std::path::Path) {
+        self.lock().checkpoint_dir = Some(verify::checkpoint::directory(data_dir));
     }
 
     /// Makes the chat's carry `by` older (its time running out).
     #[cfg(test)]
     pub(super) fn age_carry(&self, dialog_id: &str, by: std::time::Duration) {
-        if let Some(c) = self.lock().carries.get_mut(dialog_id) {
-            c.stored -= by;
+        let dir = {
+            let mut inner = self.lock();
+            if let Some(c) = inner.carries.get_mut(dialog_id) {
+                c.stored -= by;
+            }
+            inner.checkpoint_dir.clone()
+        };
+        if let Some(dir) = dir {
+            verify::checkpoint::age_for_test(&dir, dialog_id, by);
         }
     }
 

@@ -1,4 +1,4 @@
-//! Run-local evidence for explicitly reusable project checks. No filesystem
+//! Local input evidence for explicitly reusable project checks. No filesystem
 //! input is ignored: uncertainty makes the check run again. Unix change
 //! timestamps cover same-size edits even when modification times are restored.
 
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// A bounded input snapshot, never the file contents or environment values.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Stamp([u8; 32]);
 
 /// Read every entry, including ignored dependencies and repository metadata.

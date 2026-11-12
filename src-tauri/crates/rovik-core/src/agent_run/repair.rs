@@ -66,7 +66,7 @@ const MAX_ROLLBACK_DIFF_CHARS: usize = 6_000;
  */
 
 /// One round's failures, as the next round compares with them.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RoundFailures {
     pub keys: BTreeSet<String>,
     /// The checks (kinds) that ran: their keys can be compared.
@@ -845,7 +845,7 @@ pub fn integrity_note(flags: &[String], checks_pass: bool) -> String {
 
 /// Files as they were before a fix round: content, or None when the file
 /// didn't exist.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Checkpoint {
     pub files: BTreeMap<String, Option<Vec<u8>>>,
     /// The run's changed files then.
@@ -855,7 +855,7 @@ pub struct Checkpoint {
 }
 
 /// What a rollback did, for the record and the agent.
-#[derive(Debug, Default, Serialize, Clone, PartialEq)]
+#[derive(Debug, Default, Serialize, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rollback {
     /// Put back as they were before the round.
@@ -868,11 +868,11 @@ pub struct Rollback {
     pub diff: String,
     /// Not isolated: commands that may have changed files in the round
     /// (P3.5). Their changes aren't known, so they weren't undone.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
     /// V05: changed in the round and kept, the rollback putting back only
     /// the files behind what broke. Empty: it put back everything.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept: Vec<String>,
 }
 

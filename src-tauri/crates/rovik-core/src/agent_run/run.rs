@@ -625,6 +625,21 @@ impl Run {
                 Entry::Turn
             }
             StartKind::RunChecks { record_id } => {
+                // Desktop recovery is explicit: registration excluded a live
+                // run, and this click approves resuming only the latest record.
+                // A completed run has no matching checkpoint to revive.
+                if let Some(last) = recent.last().filter(|m| m.id == record_id) {
+                    let status = last
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.pointer("/verification/status"))
+                        .and_then(Value::as_str);
+                    if matches!(status, Some("running" | "passed" | "failed"))
+                        && super::verify::checkpoint::after_crash(core, &dialog_id, last).await?
+                    {
+                        recent = recent_messages(&core.db, &dialog_id).await?;
+                    }
+                }
                 let record = recent.iter().find(|m| m.id == record_id);
                 let Some(pending) =
                     record.and_then(|m| m.meta.as_ref()?.get("verification").cloned())
@@ -1279,6 +1294,7 @@ impl Run {
         };
         self.steering.returned(unread.len());
         super::hand_back_steering(&self.core, &self.dialog_id, unread, &outcome);
+        self.finish_verification_checkpoint().await;
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
         if self.sub().is_none() && outcome != "verify-needs-approval" {
@@ -1343,7 +1359,7 @@ impl Run {
                     .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 // What the last run's fix rounds knew (command approval on).
-                self.restore_verify_state(&record_id);
+                self.restore_verify_state(&record_id).await;
                 if self.verification.carry_lost().is_some() {
                     self.rebuild_baseline(&record_id).await;
                 }

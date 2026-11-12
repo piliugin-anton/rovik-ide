@@ -20,7 +20,7 @@ pub const STALLED: u32 = 2;
 pub const MAX_ROUNDS: u32 = 10;
 
 /// A loop's progress so far.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Progress {
     /// The least any round left open.
     best: Option<usize>,

@@ -2724,7 +2724,7 @@ mod tests {
 }
 
 /// Review totals and settled/optional findings that survive check approval.
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ReviewCarry {
     /// Change reviews in this run, and since the checks last ran.
     reviews_total: u32,
@@ -2737,7 +2737,7 @@ pub(super) struct ReviewCarry {
     review_optional: Vec<super::change_review::Finding>,
 }
 /// Change review progress and answers for this run.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
 pub(super) struct ReviewState {
     carry: ReviewCarry,
     /// Files changed since the change reviewer last ran (change_review.rs).
@@ -2888,9 +2888,11 @@ impl ReviewState {
     pub(super) fn guided(&mut self, found: Option<super::guide::Guidance>) {
         self.last_guidance = found;
     }
+    #[cfg(test)]
     pub(super) fn take_carry(&mut self) -> ReviewCarry {
         std::mem::take(&mut self.carry)
     }
+    #[cfg(test)]
     pub(super) fn restore(&mut self, carry: ReviewCarry) {
         self.carry = carry;
     }

@@ -180,7 +180,8 @@ async fn anything_else_was_interrupted() {
     ];
     // Before the first step: only the message was stored.
     let sent = vec![message("u", "user", "Hi")];
-    for messages in [finished, checking, between, sent, Vec::new()] {
+    assert_eq!(recovery(checking).await, Recovery::Paused);
+    for messages in [finished, between, sent, Vec::new()] {
         assert_eq!(recovery(messages).await, Recovery::Interrupted);
     }
 }

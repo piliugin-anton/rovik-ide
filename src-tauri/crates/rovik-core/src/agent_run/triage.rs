@@ -86,7 +86,7 @@ pub static TRIAGE: KindSpec = KindSpec {
  */
 
 /// What a triage found.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Triage {
     /// The check it looked at (its kind: "test").
@@ -101,12 +101,12 @@ pub struct Triage {
     pub confidence_note: String,
     /// Independent causes besides the root cause ("## Other causes"), for
     /// grouping the failures (R03).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub other_causes: Vec<OtherCause>,
 }
 
 /// One line of "## Other causes".
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OtherCause {
     pub files: Vec<String>,

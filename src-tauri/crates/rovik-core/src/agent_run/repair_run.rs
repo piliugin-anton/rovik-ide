@@ -34,7 +34,7 @@ pub const MAX_RECHECKS: u32 = 2;
 
 /// A parallel group joined in this run: who owns what (R03), and each
 /// landed worker's chat, to resume for a fix (R04).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GroupRecord {
     pub name: String,
     pub owners: Vec<(String, usize, WriteScope)>,

@@ -161,6 +161,12 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Reuse is conservative: when the IDE cannot establish that inputs are
   unchanged, it runs the checks again. Final integrity and acceptance checks
   still apply. Editing a check's command turns reuse off.
+  Verification boundaries also save a private recovery checkpoint. After a
+  restart, interrupted verification waits for **Run checks** approval and
+  restores its repair history and limits. A command whose outcome is unknown
+  is never replayed automatically. Changed inputs invalidate reusable results;
+  successful checks are reused only when reuse is enabled and their inputs
+  still match. Final integrity and acceptance checks still run.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has
