@@ -431,3 +431,49 @@ fn c_and_cpp_public_consumers_reject_mutants_then_accept_the_repaired_native_api
         assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 2);
     }
 }
+
+#[test]
+#[ignore = "requires ROVIK_HARNESS_DOCKER=1 and a pinned native image"]
+fn a_worker_cannot_suppress_an_unsafe_risk_before_native_verification() {
+    struct UnsafeWorker;
+    impl Provider for UnsafeWorker {
+        fn generate(
+            &mut self,
+            request: &ModelRequest,
+            cancel: &Cancellation,
+        ) -> Result<ModelResponse> {
+            let mut response = Worker { calls: 0 }.generate(request, cancel)?;
+            let mut turn: WorkerTurn = serde_json::from_str(&response.output).unwrap();
+            turn.proposal.as_mut().unwrap().changes[0].content =
+                Some(format!("{QUOTA_RUST}\nunsafe fn hidden_risk() {{}}\n"));
+            response.output = serde_json::to_string(&turn).unwrap();
+            Ok(response)
+        }
+    }
+    assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = controller(&dir.path().join("state"));
+    let setup = setup(
+        &c,
+        Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap(),
+    );
+    c.create(&setup, runner::now_ms().unwrap()).unwrap();
+    approve(&c, &setup);
+    let report = c
+        .execute(
+            &setup.run_id,
+            &mut UnsafeWorker,
+            &Repository,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(report.state, State::Blocked);
+    assert!(
+        report
+            .reasons
+            .iter()
+            .any(|r| r.contains("unrouted risk") && r.contains("unsafe")),
+        "{report:?}"
+    );
+    assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 1);
+}

@@ -70,6 +70,9 @@ pub struct TaskSetup {
     pub environment: Environment,
     /// Restrictively resolved policy.
     pub policy: EffectivePolicy,
+    /// Trusted conditional evidence routing; its digest is included in nonempty effective policy facts.
+    #[serde(default)]
+    pub risk_policy: crate::risk::RiskPolicy,
     /// Authorized non-source changes, if any.
     pub admission: AdmissionRules,
     /// Complete initial verification plan.
@@ -155,6 +158,15 @@ impl TaskSetup {
                     && profile.dependency_bundle.as_ref()
                         == Some(&self.environment.dependency_digest),
                 "profile environment does not match execution pins",
+            )?;
+        }
+        if !self.risk_policy.routes.is_empty()
+            || self.policy.facts.contains_key("risk_policy_digest")
+        {
+            require(
+                self.policy.facts.get("risk_policy_digest")
+                    == Some(&Digest::of_json(&self.risk_policy)?.to_string()),
+                "risk routing must be bound into the approved effective policy",
             )?;
         }
         self.registry.validate()?;
@@ -600,6 +612,16 @@ impl Controller {
             source_revision: revision.clone(),
             mandatory: true,
         });
+        let risk = self.ledger.store_json("policy", &setup.risk_policy, now)?;
+        items.push(ContextItem {
+            item_id: "risk-routing".into(),
+            text: String::from_utf8(self.ledger.read(&risk.digest)?)
+                .map_err(|_| Error("risk policy is not UTF-8".into()))?,
+            artifact_digest: risk.digest,
+            trust: Trust::AuthoritativePolicy,
+            source_revision: revision.clone(),
+            mandatory: true,
+        });
         let index =
             self.ledger
                 .store_json("context", &candidate.files.keys().collect::<Vec<_>>(), now)?;
@@ -823,7 +845,19 @@ impl Controller {
                 &setup.admission,
             )
             .is_ok(),
-            plan_obligations_complete: setup.validate(&self.ledger).is_ok(),
+            plan_obligations_complete: setup.validate(&self.ledger).is_ok()
+                && crate::risk::assess(
+                    &self.ledger,
+                    &setup.base,
+                    &candidate,
+                    &setup.contract.risk_tags,
+                )
+                .and_then(|assessment| {
+                    setup
+                        .risk_policy
+                        .validate(&assessment, &setup.plan, &setup.registry)
+                })
+                .is_ok(),
             no_blocking_unknowns: setup.contract.require_resolved().is_ok()
                 && setup.design.validate(&setup.contract).is_ok(),
             review_requirements_satisfied: approvals,
@@ -990,6 +1024,17 @@ impl Controller {
                         .current_candidate(&setup.run_id)?
                         .ok_or_else(|| Error("candidate missing".into()))?;
                     let key = self.key(setup, &candidate)?;
+                    let assessment = crate::risk::assess(
+                        &self.ledger,
+                        &setup.base,
+                        &candidate,
+                        &setup.contract.risk_tags,
+                    )?;
+                    self.ledger
+                        .store_json("report", &assessment, runner::now_ms()?)?;
+                    setup
+                        .risk_policy
+                        .validate(&assessment, &setup.plan, &setup.registry)?;
                     let phase = match current.state {
                         State::FastChecks => Phase::Fast,
                         State::RiskChecks => Phase::Risk,

@@ -214,6 +214,7 @@ pub fn quota_rust(
         registry,
         environment,
         policy,
+        risk_policy: Default::default(),
         admission: AdmissionRules::default(),
         plan,
         authority,

@@ -59,7 +59,7 @@ outside the initial implementation.
 | M2        | Isolated runner, registry, receipts, native normalizers         | Native isolation and inventory fixtures                 |
 | M3        | Provider/broker integration and Rust quota vertical slice       | Native patch, approval and provider fixtures            |
 | M4        | C/C++ packs, configured graphs and consumers                    | Protocol, configured graph and native consumer fixtures |
-| M5        | Risk obligations, failure injection and interop                 | Pending                                                 |
+| M5        | Risk obligations, failure injection and interop                 | Native sanitizer, failure and ABI fixtures              |
 | M6        | Evaluation, accounting, approval maintenance and recovery       | Pending                                                 |
 
 The supplied v2 contract and result JSON schemas are preserved in
@@ -227,3 +227,38 @@ missing required discovery (including doctest obligations), insufficient graph
 precision, transitive boundary violations and omitted consumers. Declaring a
 required doctest still requires its separate registered behavioral command; a
 Cargo dependency graph alone never establishes doctest execution.
+
+## Risk and interop (M5)
+
+The core unions declared risks with signals from both sides of the immutable
+source diff. Removing allocation cleanup, introducing unsafe/FFI code, or changing
+recognized public declarations cannot be hidden by worker-provided tags. This is
+a conservative lexical supplement to the approved design and profile obligations;
+it is not a proof that undetected risks are absent. The assessment is persisted
+and independently recomputed at final verification.
+
+Nonempty `risk_policy.routes` must be hashed into
+`policy.facts.risk_policy_digest`, so approvals and evidence bind the routing
+rules. Each applicable route requires registered behavioral commands in every
+final configuration and authenticated review of the exact candidate. Advisory
+success does not discharge a risk. New concurrency signals currently block: this
+release has no conformant race/linearizability runner, and sequential consumers
+cannot supply that assurance.
+
+The interop bank separately compiles a C producer and actual C, C++ and Rust
+consumers. It checks C/Rust struct size and field offset, returned values/status,
+caller ownership, one-time release, borrowed callback lifetime, and unchanged
+output on errors. Controlled allocation failures at every acquisition point check
+partial cleanup. C and C++ modes compile and link with AddressSanitizer and
+UndefinedBehaviorSanitizer, verify instrumentation symbols, and run with error
+recovery disabled. Rust exercises ABI/lifetime behavior separately; it is not
+represented as a Rust sanitizer run.
+
+Protected mutants introduce cleanup leaks, forbidden output mutation, retained
+callbacks, ABI behavior changes, buffer overruns and signed overflow. Correct
+consumers must pass and mutants must fail after successful compilation. Removing
+sanitizer flags is rejected from effective compiler arguments and from actual
+object instrumentation. Run the native bank with the pinned image and
+`cargo test -p rovik-harness --test risk -- --ignored`; its twenty observations
+are regression evidence for this documented configuration, not arbitrary FFI or
+threading support.

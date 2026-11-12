@@ -23,6 +23,7 @@ pub mod policy;
 pub mod profile;
 pub mod provider;
 pub mod registry;
+pub mod risk;
 pub mod runner;
 pub mod scope;
 pub mod snapshot;
