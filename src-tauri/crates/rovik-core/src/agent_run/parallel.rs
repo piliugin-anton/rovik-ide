@@ -44,7 +44,11 @@ pub(super) fn batch_len<T>(calls: &[T], eligible: impl Fn(&T) -> bool) -> usize 
 
 /// Jobs run at most `limit` at a time, their results handed out in order.
 pub(super) struct InOrder<T> {
-    results: BoxStream<'static, T>,
+    results: BoxStream<'static, (usize, T)>,
+    // At most one result per submitted job, including those waiting on an
+    // earlier call. Completed jobs no longer occupy execution slots.
+    ready: Vec<Option<T>>,
+    next: usize,
     stop: watch::Receiver<bool>,
     remaining: usize,
     stopped: bool,
@@ -56,28 +60,34 @@ impl<T: Send + 'static> InOrder<T> {
         F: Future<Output = T> + Send + 'static,
     {
         let remaining = jobs.len();
-        // `buffered` starts a job only when one of the `limit` slots is free,
-        // and yields results in the jobs' order.
-        let results = stream::iter(jobs).buffered(limit.max(1)).boxed();
+        // Completion frees an execution slot immediately. Delivery order is
+        // maintained separately, so one slow call cannot stall later work.
+        let results = stream::iter(
+            jobs.into_iter()
+                .enumerate()
+                .map(|(index, job)| async move { (index, job.await) }),
+        )
+        .buffer_unordered(limit.max(1))
+        .boxed();
         InOrder {
             results,
+            ready: (0..remaining).map(|_| None).collect(),
+            next: 0,
             stop,
             remaining,
             stopped: false,
         }
     }
 
-    /// The next job's result: `Some(Some(result))`, or `Some(None)` for a
-    /// job that hadn't finished when stop came (it's dropped, and with it
-    /// whatever it was running). None after the last job.
+    /// The next job's result: `Some(Some(result))`, or `Some(None)` after
+    /// Stop for a job whose completion the scheduler had not collected.
+    /// Collected results survive Stop even when an earlier call held up
+    /// delivery. Uncollected futures are dropped without polling them:
+    /// polling the stream could start queued jobs after Stop. None after
+    /// every submitted job has its result or stopped marker.
     pub(super) async fn next(&mut self) -> Option<Option<T>> {
         if self.remaining == 0 {
             return None;
-        }
-        self.remaining -= 1;
-        if self.stopped || *self.stop.borrow() {
-            self.stop_now();
-            return Some(None);
         }
         let mut stop = self.stop.clone();
         let stopped = async move {
@@ -86,13 +96,24 @@ impl<T: Send + 'static> InOrder<T> {
                 std::future::pending::<()>().await;
             }
         };
-        tokio::select! {
-            // A result that's ready is kept, even if stop came too.
-            biased;
-            result = self.results.next() => Some(result),
-            _ = stopped => {
+        tokio::pin!(stopped);
+        loop {
+            if *self.stop.borrow() {
                 self.stop_now();
-                Some(None)
+            }
+            if self.stopped || self.ready[self.next].is_some() {
+                let result = self.ready[self.next].take();
+                self.next += 1;
+                self.remaining -= 1;
+                return Some(result);
+            }
+            tokio::select! {
+                biased;
+                _ = &mut stopped => self.stop_now(),
+                result = self.results.next() => match result {
+                    Some((index, value)) => self.ready[index] = Some(value),
+                    None => self.stop_now(),
+                }
             }
         }
     }
@@ -219,6 +240,109 @@ mod tests {
             3,
             "they do run together, and never more than 3"
         );
+    }
+
+    #[tokio::test]
+    async fn a_slow_first_call_does_not_hold_completed_execution_slots() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let (release, blocked) = oneshot::channel();
+        let mut blocked = Some(blocked);
+        let jobs: Vec<_> = (0..9)
+            .map(|i| {
+                let started = started.clone();
+                let blocked = if i == 0 { blocked.take() } else { None };
+                async move {
+                    started.fetch_add(1, Ordering::SeqCst);
+                    if let Some(blocked) = blocked {
+                        blocked.await.unwrap();
+                    }
+                    i
+                }
+            })
+            .collect();
+        let (_tx, stop) = no_stop();
+        let mut results = InOrder::new(jobs, MAX_PARALLEL, stop);
+        let first = {
+            let next = results.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+            assert_eq!(started.load(Ordering::SeqCst), 9);
+            release.send(()).unwrap();
+            next.await
+        };
+        assert_eq!(first, Some(Some(0)));
+        for i in 1..9 {
+            assert_eq!(results.next().await, Some(Some(i)));
+        }
+        assert_eq!(results.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn stop_keeps_a_completed_result_waiting_behind_an_unfinished_call() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let jobs: Vec<_> = (0..4)
+            .map(|i| {
+                let started = started.clone();
+                async move {
+                    started.fetch_add(1, Ordering::SeqCst);
+                    if i != 1 {
+                        std::future::pending::<()>().await;
+                    }
+                    i
+                }
+            })
+            .collect();
+        let (tx, stop) = no_stop();
+        let mut results = InOrder::new(jobs, 2, stop);
+        let first = {
+            let next = results.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+            assert_eq!(started.load(Ordering::SeqCst), 3);
+            tx.send(true).unwrap();
+            next.await
+        };
+        assert_eq!(first, Some(None));
+        assert_eq!(results.next().await, Some(Some(1)));
+        assert_eq!(results.next().await, Some(None));
+        assert_eq!(results.next().await, Some(None));
+        assert_eq!(results.next().await, None);
+        assert_eq!(started.load(Ordering::SeqCst), 3, "the fourth never starts");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_wait_does_not_lose_a_calls_result() {
+        let (tx, rx) = oneshot::channel();
+        let (_stop_tx, stop) = no_stop();
+        let mut results = InOrder::new(vec![async move { rx.await.unwrap() }], 1, stop);
+        {
+            let next = results.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+        }
+        tx.send(7).unwrap();
+        assert_eq!(results.next().await, Some(Some(7)));
+        assert_eq!(results.next().await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn separated_slow_calls_overlap_when_intervening_calls_finish() {
+        let jobs: Vec<_> = (0..16)
+            .map(|i| async move {
+                if i == 0 || i == 8 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                i
+            })
+            .collect();
+        let (_tx, stop) = no_stop();
+        let mut results = InOrder::new(jobs, MAX_PARALLEL, stop);
+        let started = tokio::time::Instant::now();
+        for i in 0..16 {
+            assert_eq!(results.next().await, Some(Some(i)));
+        }
+        assert_eq!(results.next().await, None);
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
     }
 
     #[tokio::test]
