@@ -70,7 +70,7 @@ pub fn quota_rust(
 ) -> Result<TaskSetup> {
     let now = now_ms()?;
     let mut contract: TaskContract =
-        wire::decode(include_bytes!("../examples/quota-contract.v2.json"))?;
+        wire::decode(include_bytes!("../examples/quota-contract.v1.json"))?;
     contract.profile_ids = vec!["quota-rust-host".into()];
     let bad = QUOTA_RUST.replace("requested > self.remaining", "requested >= self.remaining");
     let base = snapshot(

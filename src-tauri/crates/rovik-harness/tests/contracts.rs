@@ -10,7 +10,7 @@ use rovik_harness::{
 use std::collections::{BTreeMap, BTreeSet};
 
 fn contract() -> TaskContract {
-    wire::decode(include_bytes!("../examples/quota-contract.v2.json")).unwrap()
+    wire::decode(include_bytes!("../examples/quota-contract.v1.json")).unwrap()
 }
 fn registry(contract: &TaskContract) -> ContractRegistry {
     ContractRegistry {
@@ -30,10 +30,22 @@ fn registry(contract: &TaskContract) -> ContractRegistry {
 }
 
 #[test]
-fn the_supplied_contract_is_readable_but_unknown_authority_is_rejected() {
+fn the_version_one_contract_is_readable_but_unknown_authority_is_rejected() {
     let contract = contract();
     let registry = registry(&contract);
     contract.validate(&registry).unwrap();
+    let schema: serde_json::Value =
+        wire::decode(include_bytes!("../schemas/task-contract.v1.schema.json")).unwrap();
+    assert_eq!(contract.schema_version, 1);
+    assert_eq!(
+        schema["properties"]["schema_version"]["const"],
+        contract.schema_version
+    );
+    for version in [0, 2, 3, 99] {
+        let mut unsupported = contract.clone();
+        unsupported.schema_version = version;
+        assert!(unsupported.validate(&registry).is_err());
+    }
     for field in [
         "schema_version",
         "profile_ids",

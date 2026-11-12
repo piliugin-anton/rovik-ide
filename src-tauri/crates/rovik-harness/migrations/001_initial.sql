@@ -4,6 +4,11 @@ CREATE TABLE artifacts(
  digest TEXT PRIMARY KEY, kind TEXT NOT NULL, media_type TEXT NOT NULL,
  byte_count INTEGER NOT NULL CHECK(byte_count >= 0), created_ms INTEGER NOT NULL
 );
+-- A content digest can have multiple registered reference types.
+CREATE TABLE artifact_types(
+ digest TEXT NOT NULL REFERENCES artifacts(digest), kind TEXT NOT NULL,
+ media_type TEXT NOT NULL, PRIMARY KEY(digest, kind, media_type)
+);
 CREATE TABLE runs(
  run_id TEXT PRIMARY KEY, state TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision >= 0),
  input_digest TEXT NOT NULL REFERENCES artifacts(digest),
@@ -28,6 +33,19 @@ CREATE TABLE receipts(
  generation INTEGER NOT NULL, receipt_digest TEXT NOT NULL REFERENCES artifacts(digest),
  result_digest TEXT NOT NULL REFERENCES artifacts(digest), created_ms INTEGER NOT NULL,
  UNIQUE(operation_id, generation)
+);
+CREATE TABLE jobs(
+ operation_id TEXT NOT NULL REFERENCES operations(operation_id), generation INTEGER NOT NULL,
+ job_id TEXT PRIMARY KEY, workspace TEXT NOT NULL, removed_ms INTEGER,
+ UNIQUE(operation_id,generation)
+);
+CREATE TABLE usage_receipts(
+ operation_id TEXT PRIMARY KEY REFERENCES operations(operation_id),
+ usage_digest TEXT NOT NULL REFERENCES artifacts(digest), created_ms INTEGER NOT NULL
+);
+CREATE TABLE reconciliations(
+ operation_id TEXT PRIMARY KEY REFERENCES operations(operation_id), actor_id TEXT NOT NULL,
+ record_digest TEXT NOT NULL REFERENCES artifacts(digest), created_ms INTEGER NOT NULL
 );
 CREATE TABLE check_results(
  result_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -54,9 +72,10 @@ CREATE TABLE budget_accounts(
  limit_value INTEGER NOT NULL CHECK(limit_value >= 0), spent_value INTEGER NOT NULL CHECK(spent_value >= 0),
  reserved_value INTEGER NOT NULL CHECK(reserved_value >= 0), PRIMARY KEY(run_id, unit)
 );
-CREATE TABLE failure_dispositions(
- result_id TEXT PRIMARY KEY REFERENCES check_results(result_id),
- approval_id TEXT NOT NULL REFERENCES approvals(approval_id), created_ms INTEGER NOT NULL
+CREATE TABLE failure_resolutions(
+ resolution_id TEXT PRIMARY KEY, result_id TEXT NOT NULL REFERENCES check_results(result_id),
+ approval_id TEXT NOT NULL REFERENCES approvals(approval_id), created_ms INTEGER NOT NULL,
+ UNIQUE(result_id,approval_id)
 );
 CREATE INDEX results_by_run ON check_results(run_id, check_id, configuration_digest);
 CREATE INDEX operations_by_state ON operations(state, lease_expires_ms);
@@ -70,5 +89,11 @@ CREATE TRIGGER revocations_no_update BEFORE UPDATE ON approval_revocations BEGIN
 CREATE TRIGGER revocations_no_delete BEFORE DELETE ON approval_revocations BEGIN SELECT RAISE(ABORT, 'revocations are immutable'); END;
 CREATE TRIGGER receipts_no_update BEFORE UPDATE ON receipts BEGIN SELECT RAISE(ABORT, 'receipts are immutable'); END;
 CREATE TRIGGER receipts_no_delete BEFORE DELETE ON receipts BEGIN SELECT RAISE(ABORT, 'receipts are immutable'); END;
-CREATE TRIGGER dispositions_no_update BEFORE UPDATE ON failure_dispositions BEGIN SELECT RAISE(ABORT, 'dispositions are immutable'); END;
-CREATE TRIGGER dispositions_no_delete BEFORE DELETE ON failure_dispositions BEGIN SELECT RAISE(ABORT, 'dispositions are immutable'); END;
+CREATE TRIGGER usage_no_update BEFORE UPDATE ON usage_receipts BEGIN SELECT RAISE(ABORT,'usage receipts are immutable'); END;
+CREATE TRIGGER usage_no_delete BEFORE DELETE ON usage_receipts BEGIN SELECT RAISE(ABORT,'usage receipts are immutable'); END;
+CREATE TRIGGER reconciliation_no_update BEFORE UPDATE ON reconciliations BEGIN SELECT RAISE(ABORT,'reconciliations are immutable'); END;
+CREATE TRIGGER reconciliation_no_delete BEFORE DELETE ON reconciliations BEGIN SELECT RAISE(ABORT,'reconciliations are immutable'); END;
+CREATE TRIGGER resolution_no_update BEFORE UPDATE ON failure_resolutions BEGIN SELECT RAISE(ABORT,'resolutions are immutable'); END;
+CREATE TRIGGER resolution_no_delete BEFORE DELETE ON failure_resolutions BEGIN SELECT RAISE(ABORT,'resolutions are immutable'); END;
+INSERT INTO schema_versions VALUES(1,0);
+PRAGMA user_version=1;

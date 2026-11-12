@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn checker_digest(parser: Parser) -> crate::identity::Digest {
     crate::identity::Digest::of(
         format!(
-            "rovik-normalizer-v3:{parser:?}:{}:{}:{}:{}",
+            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}",
             include_str!("normalizer.rs"),
             include_str!("pack_protocol.rs"),
             include_str!("runtime.rs"),

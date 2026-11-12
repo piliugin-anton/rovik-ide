@@ -97,7 +97,7 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// Open/migrate controller-private state; unknown versions fail closed.
+    /// Open controller-private v1 state, initializing the complete schema atomically.
     pub fn open(root: &Path) -> Result<Self> {
         private_directory(root)?;
         let path = root.join("ledger.sqlite3");
@@ -113,31 +113,14 @@ impl Ledger {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: u32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        require(version <= 3, "ledger schema is newer than this controller")?;
+        require(version <= 1, "ledger schema is newer than this controller")?;
         if version == 0 {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             // Recheck after acquiring the write lock: another controller may have migrated.
             let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            require(current <= 1, "ledger schema is newer than this controller")?;
             if current == 0 {
                 tx.execute_batch(include_str!("../migrations/001_initial.sql"))?;
-                tx.execute("INSERT INTO schema_versions VALUES(1, 0)", [])?;
-                tx.execute_batch("PRAGMA user_version=1;")?;
-            }
-            tx.commit()?;
-        }
-        if version < 2 {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            if current == 1 {
-                tx.execute_batch(include_str!("../migrations/002_artifact_types.sql"))?;
-            }
-            tx.commit()?;
-        }
-        if version < 3 {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            if current == 2 {
-                tx.execute_batch(include_str!("../migrations/003_operations.sql"))?;
             }
             tx.commit()?;
         }

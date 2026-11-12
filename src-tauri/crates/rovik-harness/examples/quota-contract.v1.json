@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "id": "quota.reserve.v1",
   "bounded_context": "quota",
   "intent": "Reserve a strictly positive quantity without overdraw; preserve state on failure.",

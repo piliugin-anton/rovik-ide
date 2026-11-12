@@ -257,7 +257,17 @@ fn failed_reservations_roll_back_all_units_and_unknown_migrations_fail_closed() 
     assert_eq!(ledger.budgets("run").unwrap()["model_calls"].reserved, 0);
     drop(ledger);
     let db = rusqlite::Connection::open(root.join("ledger.sqlite3")).unwrap();
-    db.execute_batch("PRAGMA user_version=99;").unwrap();
-    drop(db);
-    assert!(Ledger::open(&root).is_err());
+    for version in [2, 3, 99] {
+        db.execute_batch(&format!("PRAGMA user_version={version};"))
+            .unwrap();
+        assert!(Ledger::open(&root).is_err());
+        assert_eq!(
+            db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            version
+        );
+    }
+    db.execute_batch("PRAGMA user_version=1;").unwrap();
+    let ledger = Ledger::open(&root).unwrap();
+    assert_eq!(ledger.budgets("run").unwrap()["model_calls"].reserved, 0);
 }

@@ -32,7 +32,7 @@ fn fixture() -> (EvidenceKey, CheckSpec, CheckResult, TrustedPreconditions) {
         dependencies: vec![],
     };
     let result = CheckResult {
-        schema_version: 2,
+        schema_version: 1,
         run_id: "run".into(),
         result_id: "result".into(),
         operation_id: "operation".into(),
@@ -69,6 +69,19 @@ fn fixture() -> (EvidenceKey, CheckSpec, CheckResult, TrustedPreconditions) {
 #[test]
 fn all_pass_requires_exact_fresh_evidence_for_the_complete_matrix() {
     let (key, spec, result, trusted) = fixture();
+    let schema: serde_json::Value =
+        rovik_harness::wire::decode(include_bytes!("../schemas/check-result.v1.schema.json"))
+            .unwrap();
+    assert_eq!(result.schema_version, 1);
+    assert_eq!(
+        schema["properties"]["schema_version"]["const"],
+        result.schema_version
+    );
+    for version in [0, 2, 3, 99] {
+        let mut unsupported = result.clone();
+        unsupported.schema_version = version;
+        assert!(unsupported.validate().is_err());
+    }
     assert_eq!(
         evidence::evaluate(
             "run",
@@ -155,7 +168,7 @@ fn no_bad_status_or_inconsistent_inventory_can_become_a_pass() {
             7 => r.failed_case_ids.push("unexpected-failure".into()),
             8 => r.passed_case_ids.push("extra-observed-case".into()),
             9 => r.failed_case_ids.push("success".into()),
-            10 => r.schema_version = 1,
+            10 => r.schema_version = 2,
             _ => unreachable!(),
         }
         assert_ne!(

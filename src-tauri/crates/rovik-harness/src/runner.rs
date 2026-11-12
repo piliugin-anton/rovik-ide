@@ -28,7 +28,7 @@ use std::{
 };
 
 /// Identity of the security-relevant runner implementation.
-pub const BACKEND_VERSION: &str = "rovik-docker-v3";
+pub const BACKEND_VERSION: &str = "rovik-docker-v1";
 
 /// Explicit execution environment identity, persisted before any checks run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -729,7 +729,7 @@ pub fn admit_observation(
         evidence: evidence.clone(),
     };
     let result = CheckResult {
-        schema_version: 2,
+        schema_version: 1,
         run_id: lease.run_id.clone(),
         result_id: uuid::Uuid::new_v4().to_string(),
         operation_id: lease.operation_id.clone(),

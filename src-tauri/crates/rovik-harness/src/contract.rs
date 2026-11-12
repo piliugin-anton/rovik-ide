@@ -56,11 +56,11 @@ pub struct NumericContract {
     pub overflow: String,
 }
 
-/// Version two of the task contract from the implementation specification.
+/// Version one of Rovik's task contract, including the full invariant and profile model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskContract {
-    /// Exactly 2; older contracts need an explicit migration.
+    /// Exactly 1.
     pub schema_version: u32,
     /// Stable contract ID.
     pub id: String,
@@ -104,7 +104,7 @@ impl TaskContract {
     /// Validate schema and references, without approving domain truth.
     pub fn validate(&self, registry: &ContractRegistry) -> Result<()> {
         require(
-            self.schema_version == 2,
+            self.schema_version == 1,
             "unsupported task-contract version",
         )?;
         id(&self.id)?;

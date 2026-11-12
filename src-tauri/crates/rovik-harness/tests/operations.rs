@@ -210,7 +210,7 @@ fn an_abandoned_zero_cost_operation_still_requires_explicit_reconciliation() {
 }
 
 #[test]
-fn operation_schema_migration_rolls_back_on_failure_and_preserves_existing_runs() {
+fn the_complete_initial_schema_is_atomic_and_reopening_preserves_runs() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("state");
     let artifact = ArtifactStore::open(&root.join("artifacts"), 64 * 1024 * 1024)
@@ -218,78 +218,114 @@ fn operation_schema_migration_rolls_back_on_failure_and_preserves_existing_runs(
         .put("contract", "application/json", b"{}")
         .unwrap();
     let database = rusqlite::Connection::open(root.join("ledger.sqlite3")).unwrap();
-    database
-        .execute_batch(include_str!("../migrations/001_initial.sql"))
-        .unwrap();
-    database
-        .execute_batch("INSERT INTO schema_versions VALUES(1,0); PRAGMA user_version=1;")
-        .unwrap();
-    database
-        .execute_batch(include_str!("../migrations/002_artifact_types.sql"))
-        .unwrap();
-    database
-        .execute(
-            "INSERT INTO artifacts VALUES(?1,'contract','application/json',2,0)",
-            [artifact.digest.as_str()],
-        )
-        .unwrap();
-    database
-        .execute(
-            "INSERT INTO artifact_types VALUES(?1,'contract','application/json')",
-            [artifact.digest.as_str()],
-        )
-        .unwrap();
-    database
-        .execute(
-            "INSERT INTO runs VALUES('legacy',?1,0,?2,NULL,NULL,0,0)",
-            rusqlite::params![
-                serde_json::to_string(&State::Intake).unwrap(),
-                artifact.digest.as_str()
-            ],
-        )
-        .unwrap();
-    // Fail partway through migration, after its first CREATE TABLE.
-    database
-        .execute_batch("CREATE TABLE usage_receipts(conflict TEXT);")
-        .unwrap();
+    // A late collision must roll back every table and the version marker together.
+    database.execute_batch("CREATE TABLE failure_resolutions(conflict TEXT); INSERT INTO failure_resolutions VALUES('preserve');").unwrap();
     assert!(Ledger::open(&root).is_err());
     assert_eq!(
         database
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        2
+        0
     );
     assert_eq!(
         database
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name='jobs'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
                 [],
                 |r| r.get::<_, u32>(0)
             )
             .unwrap(),
-        0
+        1
+    );
+    assert_eq!(
+        database
+            .query_row("SELECT conflict FROM failure_resolutions", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "preserve"
     );
     database
-        .execute_batch("DROP TABLE usage_receipts;")
+        .execute_batch("DROP TABLE failure_resolutions;")
         .unwrap();
-    let ledger = Ledger::open(&root).unwrap();
-    assert_eq!(ledger.run("legacy").unwrap().state, State::Intake);
-    assert_eq!(ledger.read(&artifact.digest).unwrap(), b"{}");
+    let mut ledger = Ledger::open(&root).unwrap();
     assert_eq!(
         database
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        3
+        1
+    );
+    assert_eq!(
+        database
+            .query_row(
+                "SELECT COUNT(*) FROM schema_versions WHERE version=1",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+        1
     );
     assert_eq!(
         database
             .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r
                 .get::<_, u32>(0))
             .unwrap(),
-        3
+        1
     );
+    for table in [
+        "artifact_types",
+        "jobs",
+        "usage_receipts",
+        "reconciliations",
+        "failure_resolutions",
+    ] {
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get::<_, u32>(0)
+                )
+                .unwrap(),
+            1,
+            "missing {table}"
+        );
+    }
+    assert_eq!(
+        database
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='failure_dispositions'",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+        0
+    );
+    let registered = ledger
+        .store("contract", "application/json", b"{}", 0)
+        .unwrap();
+    assert_eq!(registered, artifact);
+    let run = ledger
+        .create_run(
+            "current",
+            &artifact.digest,
+            &[("checks".into(), 1)].into(),
+            0,
+        )
+        .unwrap();
     drop(ledger);
-    Ledger::open(&root).unwrap().verify_artifacts().unwrap();
+    let reopened = Ledger::open(&root).unwrap();
+    assert_eq!(reopened.run("current").unwrap().state, State::Intake);
+    assert_eq!(reopened.run("current").unwrap().revision, run.revision);
+    assert_eq!(reopened.read(&artifact.digest).unwrap(), b"{}");
+    assert_eq!(reopened.budgets("current").unwrap()["checks"].limit, 1);
+    reopened.verify_artifacts().unwrap();
+    assert_eq!(
+        database
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
 }
 #[test]
 fn retention_preserves_registered_evidence_and_only_removes_aged_orphans() {

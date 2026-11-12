@@ -43,11 +43,11 @@ pub struct Diagnostic {
     pub line: Option<u64>,
 }
 
-/// V2 normalized observation. Deserialization alone never admits evidence.
+/// V1 normalized observation. Deserialization alone never admits evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckResult {
-    /// Exactly 2.
+    /// Exactly 1.
     pub schema_version: u32,
     /// Active run identity.
     pub run_id: String,
@@ -85,7 +85,7 @@ pub struct CheckResult {
 impl CheckResult {
     /// Reject ambiguous inventory and unsupported versions before admission.
     pub fn validate(&self) -> Result<()> {
-        require(self.schema_version == 2, "unsupported check-result version")?;
+        require(self.schema_version == 1, "unsupported check-result version")?;
         for value in [
             &self.run_id,
             &self.result_id,

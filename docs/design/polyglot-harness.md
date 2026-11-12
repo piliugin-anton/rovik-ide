@@ -48,9 +48,9 @@ required case inventory is insufficient. Acceptance never authorizes deployment.
 
 ## Delivery and evidence
 
-Each required milestone is a separate validated commit and push. Optional M7
-(extra languages, final-check caching, formal tools and parallel workers) is
-outside the initial implementation.
+Each required milestone is a separate validated commit and push. The v1 baseline
+also includes the Rust sandbox tools and JavaScript, TypeScript and Python packs.
+Final-check caching, formal tools and parallel workers remain outside this scope.
 
 | Milestone | Scope                                                           | Status                                                  |
 | --------- | --------------------------------------------------------------- | ------------------------------------------------------- |
@@ -62,10 +62,12 @@ outside the initial implementation.
 | M5        | Risk obligations, failure injection and interop                 | Native sanitizer, failure and ABI fixtures              |
 | M6        | Evaluation, accounting, approval maintenance and recovery       | Repeated native evaluation and process-loss rehearsal   |
 
-The supplied v2 contract and result JSON schemas are preserved in
-`src-tauri/crates/rovik-harness/schemas`. The earlier blueprint's v1 schemas were
-not attached; unknown versions fail closed rather than guessing a migration.
-Historical legacy verification reports are not final v2 evidence.
+The complete contract and result formats are published as Rovik protocol v1 in
+`src-tauri/crates/rovik-harness/schemas`, with the corresponding v1 example.
+The unreleased development revisions are consolidated into this first baseline:
+contracts, results, pack messages, runner/checker identities and the ledger all
+use version 1. Unknown versions fail closed. Existing IDE verification reports
+are not authenticated strict-harness evidence.
 
 Deployment requires an operator to review this threat model, register exact
 toolchain images and dependency assets, select supported targets, and authorize
@@ -76,7 +78,7 @@ deployment review or establish containment against arbitrary hostile code.
 
 The store publishes synchronized blobs before registering references. Reads
 verify exact length and SHA-256, and reject symlinks and hard links. SQLite uses
-foreign keys, WAL, full synchronization, versioned migrations and immutable
+foreign keys, WAL, full synchronization, one atomic initial migration and immutable
 history triggers. State updates and their events share one transaction.
 Concurrent controllers must reload after a revision conflict.
 
@@ -192,8 +194,58 @@ Run the Rust vertical test with `ROVIK_HARNESS_DOCKER=1` and
 `cargo test -p rovik-harness --test controller -- --ignored`. The test uses a
 scripted provider to propose a real source change and actual native compiler and
 consumer execution; it makes no claim about model quality or production approval.
-Backend v2 permits execution in the size-limited build mount so compiled consumers
+The v1 backend permits execution in the size-limited build mount so compiled consumers
 can run, while temporary and report mounts remain non-executable.
+
+## Proposed IDE integration
+
+This section is a recommendation; the current entry point is still the headless
+CLI. The best first use case is an approved plan for a bug fix or API refactor
+with explicit behavioral acceptance criteria. Add **Require verified result** to
+the existing **Implement this plan** action and Autopilot task options. The IDE
+should guide setup from project manifests and present missing decisions directly,
+without requiring users to author harness JSON.
+
+On first use for a project, select the language profiles, exact tools, dependency
+locks, protected test commands and a Linux execution host. Reuse that approved
+configuration for later tasks while its inputs remain current. The existing
+Prepare stage prepares and freezes dependencies outside verification; the Tests
+stage creates the protected oracle from the approved contract and establishes a
+relevant failing negative control before implementation. Missing inputs or an
+unsupported runtime leave the task blocked with a specific next action.
+
+The flow should fit the existing Autopilot stages:
+
+| Stage               | Proposed strict-mode behavior                                                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Plan / Plan review  | Draft the contract, scope, invariants and required configurations; accepting the plan records the corresponding approval.                 |
+| Prepare / Tests     | Pin the environment and dependencies, review and freeze acceptance tests, and prove the negative control fails for the intended behavior. |
+| Implement / Review  | Let the Rust controller own scoped edits, repairs, budgets and required reviews in an isolated candidate workspace.                       |
+| Checks / Acceptance | Run protected checks against the frozen candidate and expose the controller's actual verdict and evidence.                                |
+| Deliver             | Apply or publish the exact accepted candidate after checking the destination revision is still current.                                   |
+
+The controller should own the strict task's implementation and repair loop so
+Autopilot does not start a competing repair loop. Its progress, missing approvals,
+failure reasons and case results can feed the existing stage strip and
+`VerificationRecord` UI, with **Review**, **Resume** and **Cancel** actions. Model
+acceptance text and ordinary check summaries cannot supply the trusted verdict.
+
+Use the shared `rovik-harness` library through trusted core service methods and
+typed desktop/daemon RPCs. Keep the ledger outside the worker workspace; the
+frontend holds run IDs and renders records. The current integration points are
+`PlanImplementationAction.tsx`, the Autopilot stage/driver modules,
+`agent_run/verify.rs` and the delivery/overlay path. `rovik-core/src/harness.rs`
+already supplies provider and Git adapters, but UI service routing and task
+construction still need implementation.
+
+The first release of this IDE mode should require isolation and use the existing
+Linux Docker backend, locally or on a connected Linux host. Capture the actual
+intended starting tree: the current Git importer captures committed HEAD only,
+so unsaved buffers and uncommitted edits need an explicit saved snapshot before
+execution. Before applying a result, check both the destination revision and
+local edits. Conflict resolution or subsequent edits produce a new candidate
+that needs verification again. A blocked or failed run can remain available as a
+draft diff, while verified delivery requires the accepted candidate's evidence.
 
 ## Native packs and supported matrix (M4)
 
@@ -337,11 +389,15 @@ threading support.
 
 ## Operations and recovery (M6)
 
-Backend v3 records each job and its private workspace durably before container
-creation. Ledger migration 003 adds job tracking, immutable actual-usage receipts,
-operator reconciliations and append-only failure resolutions. Existing v1/v2
-ledgers migrate on open; future schema versions block. Keep the ledger and its
-artifact directory together when backing up controller state.
+The v1 backend records each job and its private workspace durably before container
+creation. The single `001_initial.sql` migration creates the complete v1 ledger,
+including artifact reference types, job tracking, immutable actual-usage receipts,
+operator reconciliations and append-only failure resolutions. Initialization and
+the schema-version marker commit together; reopening a current ledger preserves
+its history. Unreleased development ledgers from before this consolidation need a
+new state directory; no compatibility upgrade or automatic data reset is performed.
+Unknown schema versions block. Keep the ledger and its artifact directory together
+when backing up controller state.
 
 The controller watches the overall deadline, Ctrl-C and durable operator state
 while provider or native work is running. Cancellation terminates the whole native
