@@ -258,8 +258,21 @@ pub fn response(request: &Request, bytes: &[u8]) -> Result<Response> {
     )?;
     Ok(response)
 }
-/// Validate configured evidence against the protected request and check identity.
-pub fn verify_index(request: &Request, bytes: &[u8], configuration: &Digest) -> Result<Graph> {
+/// A complete, configured observation; findings remain failures, never passing evidence.
+#[derive(Debug, Clone)]
+pub struct IndexObservation {
+    /// Relationships whose collector identity and completeness were checked independently.
+    pub graph: Graph,
+    /// Controller-evaluated architectural counterexamples.
+    pub findings: Vec<crate::architecture::Finding>,
+}
+
+/// Validate the collector fully before retaining either passing or failing architecture evidence.
+pub fn verify_index_observation(
+    request: &Request,
+    bytes: &[u8],
+    configuration: &Digest,
+) -> Result<IndexObservation> {
     let input = request.native_input()?;
     require(
         request.operation == Operation::Index,
@@ -291,12 +304,40 @@ pub fn verify_index(request: &Request, bytes: &[u8], configuration: &Digest) -> 
         &config.digest()? == configuration && &result.graph.configuration_digest == configuration,
         "graph configuration mismatch",
     )?;
-    result.graph.validate(&input)?;
-    Ok(result.graph)
+    result.graph.validate_collection(&input)?;
+    let findings = result.graph.architecture_findings(&input)?;
+    Ok(IndexObservation {
+        graph: result.graph,
+        findings,
+    })
 }
+
+/// Strict check API: architectural findings still fail the registered check.
+pub fn verify_index(request: &Request, bytes: &[u8], configuration: &Digest) -> Result<Graph> {
+    let observation = verify_index_observation(request, bytes, configuration)?;
+    reject_findings(&observation.findings)?;
+    Ok(observation.graph)
+}
+
+fn reject_findings(findings: &[crate::architecture::Finding]) -> Result<()> {
+    if !findings.is_empty() {
+        return Err(Error::classified(
+            crate::FailureCategory::Implementation,
+            serde_json::to_string(findings).map_err(|error| Error::new(error.to_string()))?,
+        ));
+    }
+    Ok(())
+}
+
 impl Graph {
     /// Known precision, complete references, required discovery, flags and transitive boundaries.
     pub fn validate(&self, input: &NativeInput) -> Result<()> {
+        self.validate_collection(input)?;
+        reject_findings(&self.architecture_findings(input)?)
+    }
+
+    /// Validate collection independently of whether its observed relationships obey the policy.
+    pub fn validate_collection(&self, input: &NativeInput) -> Result<()> {
         require(self.unresolved.is_empty(), "unresolved configured graph")?;
         require(
             self.precision
@@ -325,58 +366,6 @@ impl Graph {
                 nodes.contains(edge.source.as_str()) && nodes.contains(edge.target.as_str()),
                 "unresolved graph edge",
             )?;
-        }
-        if let Some(policy) = &input.architecture {
-            let findings = policy.evaluate(self)?;
-            if !findings.is_empty() {
-                return Err(Error::classified(
-                    crate::FailureCategory::Implementation,
-                    serde_json::to_string(&findings).map_err(|e| Error::new(e.to_string()))?,
-                ));
-            }
-        }
-        let mut outgoing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for edge in &self.edges {
-            outgoing.entry(&edge.source).or_default().push(&edge.target);
-        }
-        for rule in &input.forbidden_edges {
-            for pattern in [&rule.source, &rule.target] {
-                require(!pattern.is_empty(), "empty architecture boundary")?;
-                if pattern.contains('*') {
-                    require(
-                        self.precision == Precision::ProjectImports,
-                        "directory boundaries require project import evidence",
-                    )?;
-                    crate::scope::validate_pattern(pattern)?;
-                }
-            }
-            let mut pending: Vec<_> = nodes
-                .iter()
-                .copied()
-                .filter(|node| crate::scope::matches(&rule.source, node))
-                .collect();
-            require(
-                !pending.is_empty(),
-                "architecture boundary source disappeared",
-            )?;
-            let mut visited = BTreeSet::new();
-            while let Some(node) = pending.pop() {
-                if !visited.insert(node) {
-                    continue;
-                }
-                for target in outgoing.get(node).into_iter().flatten() {
-                    if crate::scope::matches(&rule.target, target) {
-                        return Err(Error::classified(
-                            crate::FailureCategory::Implementation,
-                            format!(
-                                "forbidden dependency: {} -> {} (observed {} -> {})",
-                                rule.source, rule.target, node, target
-                            ),
-                        ));
-                    }
-                    pending.push(target);
-                }
-            }
         }
         crate::unique(self.test_inventory.iter().map(String::as_str))?;
         require(
@@ -432,5 +421,78 @@ impl Graph {
             }
         }
         Ok(())
+    }
+
+    /// Evaluate approved ownership and forbidden dependencies without changing graph precision.
+    pub fn architecture_findings(
+        &self,
+        input: &NativeInput,
+    ) -> Result<Vec<crate::architecture::Finding>> {
+        let mut findings = match &input.architecture {
+            Some(policy) => policy.evaluate(self)?,
+            None => vec![],
+        };
+        let nodes: BTreeSet<_> = self.nodes.iter().map(|node| node.id.as_str()).collect();
+        let mut outgoing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for edge in &self.edges {
+            outgoing.entry(&edge.source).or_default().push(&edge.target);
+        }
+        for rule in &input.forbidden_edges {
+            for pattern in [&rule.source, &rule.target] {
+                require(!pattern.is_empty(), "empty architecture boundary")?;
+                if pattern.contains('*') {
+                    require(
+                        self.precision == Precision::ProjectImports,
+                        "directory boundaries require project import evidence",
+                    )?;
+                    crate::scope::validate_pattern(pattern)?;
+                }
+            }
+            let starts: Vec<_> = nodes
+                .iter()
+                .copied()
+                .filter(|node| crate::scope::matches(&rule.source, node))
+                .collect();
+            require(
+                !starts.is_empty(),
+                "architecture boundary source disappeared",
+            )?;
+            let mut pending: std::collections::VecDeque<_> = starts.iter().copied().collect();
+            // Discover on enqueue and retain only parent identities. Dense graphs
+            // cannot amplify every pending edge into another copied full path.
+            let mut parents: BTreeMap<&str, Option<&str>> =
+                starts.into_iter().map(|node| (node, None)).collect();
+            'search: while let Some(node) = pending.pop_front() {
+                for target in outgoing.get(node).into_iter().flatten().copied() {
+                    if crate::scope::matches(&rule.target, target) {
+                        let mut path = vec![node.to_string()];
+                        let mut ancestor = node;
+                        while let Some(Some(parent)) = parents.get(ancestor) {
+                            path.push(parent.to_string());
+                            ancestor = parent;
+                        }
+                        path.reverse();
+                        path.push(target.to_string());
+                        findings.push(crate::architecture::Finding {
+                            rule_id: "ARCH-BOUNDARY".into(),
+                            path,
+                            message: format!(
+                                "forbidden dependency: {} -> {} (observed {} -> {})",
+                                rule.source, rule.target, node, target
+                            ),
+                        });
+                        // One complete counterexample establishes this rule's
+                        // failure; listing all paths adds no acceptance evidence.
+                        break 'search;
+                    }
+                    if let std::collections::btree_map::Entry::Vacant(entry) = parents.entry(target)
+                    {
+                        entry.insert(Some(node));
+                        pending.push_back(target);
+                    }
+                }
+            }
+        }
+        Ok(findings)
     }
 }

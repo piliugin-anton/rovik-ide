@@ -884,6 +884,11 @@ impl Controller {
                 text,
             });
         }
+        items.extend(crate::architecture::policy_context(
+            &self.ledger,
+            setup,
+            candidate,
+        )?);
         let profiles = self.ledger.store_json("profile", &setup.profiles, now)?;
         items.push(ContextItem {
             item_id: "profiles".into(),

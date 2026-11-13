@@ -139,4 +139,12 @@ After pushing the final phase, inspect the PR's CI results and fix regressions.
   existing tests timed out in the broad local run and passed individually. The
   native application test required exact delivery approval, applied the accepted
   candidate and invalidated its receipt after an edit. Clippy added no warnings.
-- Phase 4: pending.
+- Phase 4: implemented. Approved architecture
+  rules enter implementation context, and authenticated observations feed advisory
+  Problems and source-matched local markers. Applied candidates use an exact
+  authenticated receipt binding. Raw filesystem changes invalidate feedback before
+  asynchronous reloads; cloud findings remain historical until desktop source
+  correspondence can be established. All 1,198 frontend cases and 3,856 Rust
+  cases passed, including the previously timing-sensitive tests in the full run.
+  Types and formatting passed, and Clippy added no warnings. The native
+  application test confirmed the receipt bridge and invalidation after an edit.

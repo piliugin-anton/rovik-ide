@@ -5,6 +5,7 @@ import {
   displayedHarnessStatus,
   eligibleHarnessChat,
   harnessRequest,
+  onHarnessInputsChanged,
   verificationInputProblem,
   verifyChanges,
   type HarnessInspection,
@@ -179,4 +180,24 @@ test('an application receipt verifies only its exact current checkout and saved 
     'stale'
   );
   assert.equal(displayedHarnessStatus({ ...applied, applicationReceipt: undefined }, []), 'stale');
+});
+
+test('trusted configuration changes invalidate editor feedback before the RPC completes', async () => {
+  const invalidated: unknown[] = [];
+  const stop = onHarnessInputsChanged((target) => invalidated.push(target));
+  try {
+    const target = { root: '/project', dialogId: 'cloud-chat' };
+    const pending = harnessRequest(target, {
+      action: 'configure',
+      setupId: 'setup',
+      engine: { kind: 'docker', executable: '/usr/bin/docker' },
+      expectedSnapshotDigest: 'sha256:reviewed',
+    });
+    assert.deepEqual(invalidated, [target]);
+    await pending;
+    await harnessRequest(target, { action: 'architectureFeedback', runId: 'run-1' });
+    assert.equal(invalidated.length, 1);
+  } finally {
+    stop();
+  }
 });

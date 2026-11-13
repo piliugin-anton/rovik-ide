@@ -1340,6 +1340,24 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_ne!(candidate_digest, observed_digest, "Deleted selected untracked input is a candidate tombstone, not a Git baseline deletion");
+        let feedback = project.architecture_feedback(&setup.run_id).unwrap();
+        assert_eq!(feedback["freshness"], "unavailable", "This fixture has no architecture checks; applied tombstones must not make its source stale");
+        assert_eq!(
+            feedback["evidenceCandidateDigest"],
+            candidate_digest.as_str()
+        );
+        assert_eq!(feedback["currentSnapshotDigest"], observed_digest.as_str());
+        assert_eq!(
+            feedback["applicationBinding"]["candidateDigest"],
+            candidate_digest.as_str()
+        );
+        assert_eq!(
+            feedback["applicationBinding"]["observedSnapshotDigest"],
+            observed_digest.as_str()
+        );
+        assert!(feedback["applicationBinding"]["receiptDigest"]
+            .as_str()
+            .is_some_and(|digest| !digest.is_empty()));
         assert!(!project.root.join(removed).exists());
         assert_eq!(
             std::fs::read_to_string(project.root.join(added)).unwrap(),
@@ -1372,5 +1390,8 @@ mod tests {
             .current_application_binding(&setup.run_id)
             .unwrap()
             .is_none());
+        let edited_feedback = project.architecture_feedback(&setup.run_id).unwrap();
+        assert_eq!(edited_feedback["freshness"], "stale");
+        assert!(edited_feedback["applicationBinding"].is_null());
     }
 }

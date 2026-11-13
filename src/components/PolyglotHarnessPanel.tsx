@@ -2,6 +2,8 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'so
 import { open } from '@tauri-apps/plugin-dialog';
 import { onFileDeleted, onFileWritten } from '../lib/approvals';
 import PolyglotApproval, { SubjectFields } from './PolyglotApproval';
+import { architectureFeedback } from '../lib/architectureFeedback';
+import { closeAppSettings } from '../lib/appSettings';
 import {
   displayedHarnessStatus,
   harnessRequest,
@@ -512,6 +514,22 @@ export default function PolyglotHarnessPanel(props: {
             <p class="settings-hint">
               Run {current().runId} · {current().state}
             </p>
+            <button
+              type="button"
+              class="link-button"
+              disabled={busy() || loading()}
+              onClick={() => {
+                void architectureFeedback.show(
+                  target(),
+                  current().runId,
+                  props.executionLabel ??
+                    (props.dialogId ? 'Selected chat’s host' : 'This computer')
+                );
+                closeAppSettings();
+              }}
+            >
+              Show architecture feedback
+            </button>
             <p class="settings-hint">
               Snapshot <code>{current().snapshotDigest}</code>
             </p>

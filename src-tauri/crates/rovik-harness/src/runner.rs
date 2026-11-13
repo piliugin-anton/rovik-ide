@@ -740,6 +740,7 @@ pub fn admit_observation(
         observation.report.as_deref(),
         &spec.success_exit_codes,
     );
+    let mut architecture_diagnostics = Vec::new();
     if matches!(
         definition.parser,
         crate::registry::Parser::PackProtocol
@@ -788,14 +789,14 @@ pub fn admit_observation(
                     observation.exit_code,
                 )?;
             } else {
-                let graph = crate::pack_protocol::verify_index(
+                let indexed = crate::pack_protocol::verify_index_observation(
                     &request,
                     &observation.stdout,
                     &spec.configuration_digest,
                 )?;
                 require(
-                    observation.exit_code == Some(0),
-                    "configured graph process failed",
+                    observation.exit_code == Some(0) && !observation.incomplete(),
+                    "configured graph process did not complete successfully",
                 )?;
                 let graph = ledger.store_json(
                     "graph",
@@ -803,13 +804,28 @@ pub fn admit_observation(
                         evidence_key: key.clone(),
                         checker_digest: spec.checker_digest.clone(),
                         check_id: spec.check_id.clone(),
-                        graph,
+                        graph: indexed.graph,
                     },
                     now,
                 )?;
                 evidence.push(graph.digest);
-                normalized.status = Status::Pass;
-                normalized.failure_category = None;
+                if indexed.findings.is_empty() {
+                    normalized.status = Status::Pass;
+                    normalized.failure_category = None;
+                } else {
+                    normalized.status = Status::Fail;
+                    normalized.failure_category = Some(crate::FailureCategory::Implementation);
+                    architecture_diagnostics = indexed
+                        .findings
+                        .into_iter()
+                        .map(|finding| Diagnostic {
+                            rule_id: finding.rule_id,
+                            message: finding.message,
+                            file: None,
+                            line: None,
+                        })
+                        .collect();
+                }
                 normalized.diagnostic = None;
             }
             Ok(())
@@ -864,15 +880,14 @@ pub fn admit_observation(
         skipped_case_ids: normalized.inventory.skipped,
         evidence,
         runner_receipt_id: receipt.receipt_id.clone(),
-        diagnostics: normalized
-            .diagnostic
+        diagnostics: architecture_diagnostics
             .into_iter()
-            .map(|message| Diagnostic {
+            .chain(normalized.diagnostic.into_iter().map(|message| Diagnostic {
                 rule_id: "native-observation".into(),
                 message,
                 file: None,
                 line: None,
-            })
+            }))
             .collect(),
     };
     result.validate()?;
@@ -1201,3 +1216,7 @@ mod recovery_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runner/architecture_tests.rs"]
+mod architecture_tests;

@@ -200,6 +200,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   decisions stay with the task. Applying accepted changes needs an exact delivery
   approval and a current destination. Cloud tasks can apply and keep results on
   the host; automatic verified transfer to the desktop is not yet available.
+- **Editor architecture feedback.** Show authenticated architecture findings in
+  Architecture Problems. Local markers and file navigation require matching
+  saved source; edits remove current markers. Cloud findings remain historical
+  host evidence. Reviewed architecture rules also guide verified implementation.
+  Feedback is advisory and cannot grant acceptance.
 - **Local Docker setup.** On startup, Rovik installs Docker when it is missing
   on a supported desktop. Progress and retry actions appear alongside the
   browser installation notifications. Linux uses signed distribution packages

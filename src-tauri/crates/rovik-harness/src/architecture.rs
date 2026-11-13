@@ -51,6 +51,207 @@ pub fn admitted_graphs(
     Ok(graphs)
 }
 
+/// One configured architecture request, resolved only from protected planned assets.
+#[derive(Debug, Clone)]
+pub struct ProtectedArchitecture {
+    /// Registered check receiving the observation.
+    pub check_id: String,
+    /// Trusted registered parser identity for this exact planned check.
+    pub checker_digest: crate::identity::Digest,
+    /// Exact target/flag/runtime configuration.
+    pub configuration_digest: crate::identity::Digest,
+    /// Exact protected request bytes.
+    pub request_digest: crate::identity::Digest,
+    /// Validated native collector inputs, including reviewed boundaries.
+    pub input: crate::pack_protocol::NativeInput,
+}
+
+/// Resolve architecture only from registered checks and their immutable oracle requests.
+pub fn protected_inputs(
+    ledger: &crate::ledger::Ledger,
+    setup: &crate::controller::TaskSetup,
+) -> Result<Vec<ProtectedArchitecture>> {
+    let mut policies = Vec::new();
+    for check in &setup.plan.checks {
+        let command = setup.registry.get(&check.command_id)?;
+        if command.parser != crate::registry::Parser::PackProtocol {
+            continue;
+        }
+        command.validate()?;
+        let request_id = check
+            .validated_parameters
+            .get("request_id")
+            .ok_or_else(|| {
+                Error::new("configured check has no protected request identity".into())
+            })?;
+        crate::id(request_id)?;
+        let source = setup
+            .oracle
+            .files
+            .get(&format!("requests/{request_id}.json"))
+            .ok_or_else(|| {
+                Error::new("configured request is absent from the protected oracle".into())
+            })?;
+        ledger.verify_reference(&source.content)?;
+        let request: crate::pack_protocol::Request =
+            crate::wire::decode(&ledger.read(&source.content.digest)?)?;
+        require(
+            request.request_id == *request_id
+                && request.operation == crate::pack_protocol::Operation::Index,
+            "configured check must name its exact protected index request",
+        )?;
+        let input = request.native_input()?;
+        let configuration = input
+            .profile
+            .configurations
+            .iter()
+            .find(|config| config.id == input.configuration_id)
+            .ok_or_else(|| Error::new("unknown architecture configuration".into()))?;
+        require(
+            configuration.digest()? == check.configuration_digest
+                && command.checker_digest == check.checker_digest,
+            "architecture request disagrees with the registered check",
+        )?;
+        if input.architecture.is_some() || !input.forbidden_edges.is_empty() {
+            policies.push(ProtectedArchitecture {
+                check_id: check.check_id.clone(),
+                checker_digest: check.checker_digest.clone(),
+                configuration_digest: check.configuration_digest.clone(),
+                request_digest: source.content.digest.clone(),
+                input,
+            });
+        }
+    }
+    Ok(policies)
+}
+
+/// Query current approval of the exact protected assets, including expiry and revocation.
+pub fn oracle_approved(
+    ledger: &crate::ledger::Ledger,
+    setup: &crate::controller::TaskSetup,
+) -> Result<bool> {
+    ledger.approval_current(
+        &setup.run_id,
+        &crate::plan::ApprovalRequirement {
+            subject_digest: setup.oracle.digest()?,
+            approval_type: "oracle".into(),
+            obligation_ids: vec![],
+        },
+        &crate::identity::Digest::of_json(&setup.contract.scope)?,
+        &crate::identity::Digest::of_json(&setup.policy)?,
+        &setup.authority,
+        crate::runner::now_ms()?,
+    )
+}
+
+/// Exact approved architecture constraints enter mandatory context before any proposed edits.
+pub fn policy_context(
+    ledger: &crate::ledger::Ledger,
+    setup: &crate::controller::TaskSetup,
+    candidate: &crate::snapshot::Snapshot,
+) -> Result<Vec<crate::context::ContextItem>> {
+    let inputs = protected_inputs(ledger, setup)?;
+    if inputs.is_empty() {
+        return Ok(vec![]);
+    }
+    require(
+        oracle_approved(ledger, setup)?,
+        "architecture policy needs current approval of the protected oracle before model execution",
+    )?;
+    let revision = candidate.digest()?;
+    let mut seen = BTreeSet::new();
+    let mut items = Vec::new();
+    for input in inputs {
+        if !seen.insert(input.request_digest.clone()) {
+            continue;
+        }
+        items.push(crate::context::ContextItem {
+            item_id: format!("architecture:{}", input.request_digest.hex()),
+            text: String::from_utf8(ledger.read(&input.request_digest)?)
+                .map_err(|_| Error::new("protected architecture request is not UTF-8".into()))?,
+            artifact_digest: input.request_digest,
+            trust: crate::context::Trust::ApprovedSpec,
+            source_revision: revision.clone(),
+            mandatory: true,
+        });
+    }
+    Ok(items)
+}
+
+/// An authenticated graph observation for explanation only, including architecture failures.
+#[derive(Debug, Clone)]
+pub struct ObservedGraph {
+    /// Immutable graph artifact attached to the receipt.
+    pub graph_digest: crate::identity::Digest,
+    /// Completed native result; a failing result remains failing.
+    pub result: crate::evidence::CheckResult,
+    /// Exact collector output and input binding.
+    pub evidence: GraphEvidence,
+}
+
+/// Read complete authenticated observations without granting them passing-check authority.
+/// Failed collector, partial, stale-generation and control runs never provide these graphs.
+pub fn observed_graphs(
+    ledger: &crate::ledger::Ledger,
+    run_id: &str,
+    key: &crate::identity::EvidenceKey,
+) -> Result<Vec<ObservedGraph>> {
+    let mut graphs = Vec::new();
+    for result in feedback_results(ledger, run_id, key)? {
+        if !(result.status == crate::evidence::Status::Pass
+            || (result.status == crate::evidence::Status::Fail
+                && result.failure_category == Some(crate::FailureCategory::Implementation)))
+        {
+            continue;
+        }
+        for digest in &result.evidence {
+            if ledger.reference(digest)?.kind != "graph" {
+                continue;
+            }
+            let graph: GraphEvidence = crate::wire::decode(&ledger.read(digest)?)?;
+            require(
+                graph.evidence_key == *key
+                    && graph.checker_digest == result.checker_digest
+                    && graph.check_id == result.check_id
+                    && graph.graph.configuration_digest == result.configuration_digest,
+                "advisory graph attribution disagrees with authenticated evidence",
+            )?;
+            graphs.push(ObservedGraph {
+                graph_digest: digest.clone(),
+                result: result.clone(),
+                evidence: graph,
+            });
+        }
+    }
+    Ok(graphs)
+}
+
+/// Completed authenticated candidate results for advisory diagnostics, including failed collectors.
+/// Baseline/control observations and unfinished operations remain excluded.
+pub fn feedback_results(
+    ledger: &crate::ledger::Ledger,
+    run_id: &str,
+    key: &crate::identity::EvidenceKey,
+) -> Result<Vec<crate::evidence::CheckResult>> {
+    let controls: BTreeSet<_> = ledger
+        .operations(run_id)?
+        .into_iter()
+        .filter(|operation| matches!(operation.kind.as_str(), "baseline" | "negative_control"))
+        .map(|operation| operation.operation_id)
+        .collect();
+    let mut results = Vec::new();
+    for result in ledger.completed_results(run_id, &crate::identity::Digest::of_json(key)?)? {
+        require(
+            result.evidence_key == *key,
+            "advisory result has a different evidence binding",
+        )?;
+        if !controls.contains(&result.operation_id) {
+            results.push(result);
+        }
+    }
+    Ok(results)
+}
+
 /// A component's approved responsibility; names alone never establish a role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

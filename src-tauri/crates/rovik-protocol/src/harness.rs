@@ -263,6 +263,11 @@ pub enum Operation {
         /// The editor confirms it has saved all included buffers.
         saved_buffers: bool,
     },
+    /// Read advisory architecture findings bound to current saved source and reviewed policy.
+    ArchitectureFeedback {
+        /// Controller-issued run identity.
+        run_id: String,
+    },
     /// Read durable state and independently computed evidence freshness.
     Status {
         /// Controller-issued run identity.
@@ -316,6 +321,7 @@ impl Operation {
             | Self::Configure { .. }
             | Self::Verify { .. }
             | Self::Status { .. }
+            | Self::ArchitectureFeedback { .. }
             | Self::Resume { .. } => true,
             Self::ApplicationState
             | Self::ReleaseApplication { .. }
@@ -332,7 +338,8 @@ impl Operation {
     pub fn observes_applied_workspace(&self) -> bool {
         matches!(
             self,
-            Self::Status { .. }
+            Self::ArchitectureFeedback { .. }
+                | Self::Status { .. }
                 | Self::Inspect { .. }
                 | Self::Approvals { .. }
                 | Self::ReviewChanges { .. }
@@ -351,6 +358,7 @@ impl Operation {
     /// The host capability required before serializing this action or forwarding model credentials.
     pub fn required_feature(&self) -> &'static str {
         match self {
+            Self::ArchitectureFeedback { .. } => crate::features::POLYGLOT_ARCHITECTURE,
             Self::PrepareApplication { .. }
             | Self::ApplyApplication { .. }
             | Self::RecoverApplication { .. }
@@ -458,6 +466,25 @@ mod tests {
             saved_buffers: true
         }
         .requires_current_source());
+    }
+
+    #[test]
+    fn architecture_feedback_requires_current_source_and_its_own_host_capability() {
+        let operation: Operation = serde_json::from_value(
+            serde_json::json!({"action":"architectureFeedback","runId":"run"}),
+        )
+        .unwrap();
+        assert!(operation.requires_current_source());
+        assert!(operation.observes_applied_workspace());
+        assert!(operation.requires_workspace_lock());
+        assert_eq!(
+            operation.required_feature(),
+            crate::features::POLYGLOT_ARCHITECTURE
+        );
+        assert!(serde_json::from_value::<Operation>(
+            serde_json::json!({"action":"architectureFeedback","runId":"run","verified":true})
+        )
+        .is_err());
     }
 
     #[test]

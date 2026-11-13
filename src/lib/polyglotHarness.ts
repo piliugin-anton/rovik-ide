@@ -171,14 +171,26 @@ export type HarnessOperation =
       expectedSnapshotDigest: string;
       savedBuffers: true;
     }
-  | { action: 'status' | 'approvals' | 'cancel' | 'resume' | 'recover'; runId: string }
+  | {
+      action: 'status' | 'approvals' | 'cancel' | 'resume' | 'recover' | 'architectureFeedback';
+      runId: string;
+    }
   | { action: 'approve'; runId: string; request: HarnessApprovalRequest };
+
+const inputListeners = new Set<(target: HarnessTarget) => void>();
+/** Invalidate saved-input editor feedback before changing trusted setup selection. */
+export function onHarnessInputsChanged(listener: (target: HarnessTarget) => void): () => void {
+  inputListeners.add(listener);
+  return () => inputListeners.delete(listener);
+}
 
 /** The same RPC reaches the local backend or the selected chat's cloud host. */
 export function harnessRequest<T>(
   target: HarnessTarget,
   request: HarnessOperation | HarnessPlanOperation
 ): Promise<T> {
+  if (['configure', 'importSetup', 'prepareWorkspace'].includes(request.action))
+    for (const listener of inputListeners) listener(target);
   return invoke<T>('polyglot_harness', {
     root: target.root,
     executionHost: target.dialogId ? 'chat' : 'local',

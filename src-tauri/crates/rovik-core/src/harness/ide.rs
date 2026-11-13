@@ -26,6 +26,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+#[path = "ide_architecture.rs"]
+mod architecture;
 #[path = "ide_plan.rs"]
 mod plan;
 
@@ -625,6 +627,7 @@ impl IdeProject {
 
     fn dispatch(&self, request: Operation) -> Result<Value> {
         match request {
+            Operation::ArchitectureFeedback { run_id } => self.architecture_feedback(&run_id),
             Operation::ApplicationState => self.application_guard(),
             Operation::ReleaseApplication {
                 run_id,

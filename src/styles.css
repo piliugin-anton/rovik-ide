@@ -11213,3 +11213,21 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: nowrap;
   color: var(--fg-dim);
 }
+
+/* Architecture evidence is advisory and scoped to the selected saved source. */
+.architecture-problems {
+  flex: 0 0 auto;
+  max-height: min(32vh, 300px);
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.architecture-problems ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.architecture-problems p {
+  margin: 4px 0;
+}

@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import PolyglotHarnessPanel from './PolyglotHarnessPanel';
+import { architectureFeedback } from '../lib/architectureFeedback';
+import { architectureContext, architectureEvidence } from '../test/architectureFixtures';
 import type { HarnessApproval, HarnessInspection, HarnessRun } from '../lib/polyglotHarness';
 
 const engine = { kind: 'docker' as const, executable: '/usr/bin/docker' };
@@ -466,4 +468,25 @@ test('failed verification reports the observed check, cases and actionable sourc
   assert.match(root.textContent!, /architecture: fail/);
   assert.match(root.textContent!, /Failed cases: domain-isolation/);
   assert.match(root.textContent!, /Domain cannot import the database adapter \(src\/domain.ts:4\)/);
+});
+
+test('a verification result opens advisory feedback for its exact run and explicit host', async () => {
+  const inspection = { ...makeInspection(), runs: [makeRun('verified')] };
+  reset(inspection);
+  answer = ({ request }) =>
+    request.action === 'architectureFeedback' ? architectureEvidence(request.runId) : inspection;
+  architectureFeedback.updateContext({ ...architectureContext, chatId: 'cloud-chat' });
+  cleanup.push(() => architectureFeedback.dismiss());
+  const root = await page({ unsavedFiles: [], dialogId: 'cloud-chat' });
+  button(root, 'Show architecture feedback').click();
+  await flush();
+  const action = calls.find((call) => call.args.request.action === 'architectureFeedback');
+  assert.deepEqual(action?.args.request, { action: 'architectureFeedback', runId: 'run-1' });
+  assert.equal(action?.args.executionHost, 'chat');
+  assert.equal(action?.args.dialogId, 'cloud-chat');
+  assert.equal(architectureFeedback.view()?.feedback?.runId, 'run-1');
+  assert.equal(
+    calls.some((call) => call.args.request.action === 'approve'),
+    false
+  );
 });

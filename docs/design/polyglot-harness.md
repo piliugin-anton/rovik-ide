@@ -117,6 +117,40 @@ manually integrating host changes, acknowledge the checkbox and select **Allow
 synchronization**. This releases host synchronization protection without claiming
 desktop delivery.
 
+## Editor architecture feedback
+
+In a project verification result, choose **Show architecture feedback** to open
+**Architecture Problems · advisory** below the editor. It displays authenticated
+graph observations, reviewed policies and unavailable-check diagnostics. Findings
+with a source file offer a **(file-level)** link. Graph evidence without source
+spans does not claim an exact line; Monaco anchors are labelled file-level.
+
+Feedback uses the approved architecture policy from the protected oracle. Verified
+implementation also receives those exact reviewed rules before its first model
+call. Available observations can include genuine architecture failures, but they
+never grant acceptance or imply every required collector ran. Strict acceptance
+still requires the complete configured matrix.
+
+Markers require the displayed file's exact bytes to match authenticated evidence.
+Unsaved edits and source, configuration, project or host changes remove current
+markers. Filesystem changes invalidate feedback even for unopened dependencies.
+Applying an accepted candidate locally can use its current authenticated
+application receipt to establish the new workspace binding; unchanged file hashes
+remain required. Failed reads leave historical findings visible without claiming
+that they describe current code.
+
+Feedback from a chat host remains historical host evidence in the desktop.
+Matching individual files or a host application receipt does not establish
+whole-project correspondence with the desktop, so remote feedback does not publish
+editor markers or enable source navigation. Current editor markers require
+matching local verification evidence.
+
+**Refresh architecture feedback** rereads stored evidence and checks freshness; it
+does not rerun verification or call a model. Run **Verify changes** for new evidence
+after editing source. **Cancel architecture read** ignores a pending response, and
+**Dismiss architecture feedback** closes the view and clears its markers.
+TypeScript and language-server diagnostics retain their own owners.
+
 ## Trust boundary
 
 The controller owns run transitions, policy, approved contracts, command
@@ -386,8 +420,10 @@ hosts retain their rootless Podman setup.
 
 Project setup, model-free **Verify changes**, verified plan implementation and
 verified Autopilot use the shared core service and typed desktop/daemon RPCs
-described above. Editor architecture feedback is the next integration phase. The [integration plan](polyglot-ide-integration.md)
-records their acceptance criteria and implementation status.
+described above. Editor architecture feedback reuses authenticated graph evidence
+and approved rules without granting acceptance. The
+[integration plan](polyglot-ide-integration.md) records their acceptance criteria
+and implementation status.
 
 An approved bug-fix or API-refactor plan with explicit behavioral acceptance
 criteria is the intended first implementation use case. Strict tasks use one

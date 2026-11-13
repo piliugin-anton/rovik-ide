@@ -3,6 +3,7 @@ import { startPageRequests } from './lib/pageRequests';
 import { startBackendEvents } from './lib/backendEvents';
 import {
   batch,
+  untrack,
   createSignal,
   createMemo,
   For,
@@ -18,6 +19,11 @@ import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
+import ArchitectureProblems from './components/ArchitectureProblems';
+import { architectureFeedback } from './lib/architectureFeedback';
+import { startArchitectureMarkers } from './lib/architectureMonaco';
+import { ensureDiagnosticsReporting } from './lib/diagnostics';
+import { onHarnessInputsChanged } from './lib/polyglotHarness';
 import BrowserView from './components/BrowserView';
 import MarkdownViewSwitch from './components/MarkdownViewSwitch';
 import ChatPanel from './components/ChatPanel';
@@ -223,6 +229,41 @@ export default function App() {
   /** The file tabs among them: a new list only when one of them changed. */
   const openFiles = createMemo(() => tabs().filter(isFileTab), [], {
     equals: (a, b) => a.length === b.length && a.every((f, i) => f === b[i]),
+  });
+  createEffect(() => {
+    const chat = eligibleHarnessChat(
+      currentProject()?.id,
+      chatStore.projectId(),
+      chatStore.state.active,
+      cloud.hosts
+    );
+    const context = {
+      root: rootPath(),
+      projectId: currentProject()?.id,
+      chatProjectId: chatStore.projectId(),
+      chatId: chat?.dialogId ?? null,
+      hostId: chat?.hostId,
+      unsavedFiles: openFiles()
+        .filter((file) => file.dirty && !file.readOnly)
+        .map((file) => file.path),
+    };
+    untrack(() => architectureFeedback.updateContext(context));
+    ensureDiagnosticsReporting(context.root);
+  });
+  onMount(() => onCleanup(startArchitectureMarkers()));
+  onCleanup(onFileWritten((path) => architectureFeedback.sourceChanged(path)));
+  onCleanup(onFileDeleted((path) => architectureFeedback.sourceChanged(path)));
+  onCleanup(onHarnessInputsChanged((target) => architectureFeedback.inputsChanged(target)));
+  onCleanup(
+    onBackendRestored(() =>
+      architectureFeedback.invalidate(
+        'The execution backend reconnected. Refresh architecture feedback to confirm its current source.'
+      )
+    )
+  );
+  onCleanup(() => {
+    architectureFeedback.dismiss();
+    ensureDiagnosticsReporting(null);
   });
   /** Changes the file tabs; the browser tabs stay where they are. */
   function setOpenFiles(next: OpenFile[] | ((files: OpenFile[]) => OpenFile[])) {
@@ -1943,6 +1984,10 @@ export default function App() {
 
     unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
+      // Graph findings depend on every source, including unopened files and directories.
+      // Invalidate before any asynchronous reload or source-kind filtering can run.
+      const architecturePath = operation === 'unknown' ? rootPath() : path;
+      if (architecturePath) architectureFeedback.sourceChanged(architecturePath);
       // Too much at once for the watcher to say what (a branch switch, an
       // unpacked archive): everything open is checked again.
       const everything = operation === 'unknown';
@@ -2444,6 +2489,7 @@ export default function App() {
           </Show>
         </div>
 
+        <ArchitectureProblems />
         <TerminalPanel
           rootPath={rootPath}
           collapsed={terminalCollapsed}
