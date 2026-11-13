@@ -641,3 +641,37 @@ impl Ledger {
         Ok(approvals)
     }
 }
+
+impl Ledger {
+    /// Match the complete report to the controller's final observation-only event.
+    pub(crate) fn require_benchmark_report(&self, run_id: &str, report: &Digest) -> Result<()> {
+        require(
+            self.run(run_id)?.state == State::Stopped,
+            "benchmark run is not closed",
+        )?;
+        let event: String = self.connection.query_row(
+            "SELECT event_digest FROM events WHERE run_id=?1 ORDER BY sequence DESC LIMIT 1",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        let event: serde_json::Value = wire::decode(&self.read(&Digest::parse(&event)?)?)?;
+        require(
+            event["kind"] == "benchmark_complete"
+                && event["report"].as_str() == Some(report.as_str())
+                && event["production_acceptance"] == false,
+            "benchmark report differs from the durable controller observation",
+        )
+    }
+    /// Close an observation-only benchmark run with its report linked into durable history.
+    /// It can never be resumed as an accepted production candidate; accounting remains intact.
+    pub(crate) fn finish_benchmark(&mut self, run_id: &str, evidence: &Digest) -> Result<()> {
+        let current = self.run(run_id)?;
+        if current.state.terminal() {
+            return Ok(());
+        }
+        let now = runner::now_ms()?;
+        let event=self.store_json("event",&serde_json::json!({"kind":"benchmark_complete","report":evidence,"production_acceptance":false}),now)?;
+        self.transition(&current, State::Stopped, &event.digest, None, now)?;
+        Ok(())
+    }
+}

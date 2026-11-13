@@ -53,7 +53,7 @@ fn run() -> Result<i32> {
     if args.last().is_some_and(|arg| arg == "--json") {
         args.pop();
     }
-    let usage="usage: rovik-harness <absolute-state-dir> init | import <repository-id> <repository-path> [--dirty <untracked-paths.json>] | inventory <snapshot.json> | profile resolve <inventory.json> <selections.json> | contract import <contract.json> <registry.json> | plan <planning.json> | prepare <preparation.json> | draft <run-id> <domain|architect|oracle|reviewer> <inputs.json> <url> <rates.json> | promote <setup.json> | stage-replan <setup.json> | activate-replan <run-id> <setup-digest> | load-image <archive.tar> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> [reference] | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | resolve-replan <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> [reference] | gate <run-id> <repository-path> [reference] | verify-run <run-id> <repository-path> [reference] | merge-prepare <run-id> <new-run-id> <repository-path> <reference> <expected-head> | prepare-delivery <run-id> <repository-path> <reference> <message-file> | deliver <delivery.json> <bare-repository> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. ROVIK_HARNESS_ENGINE selects docker (default) or podman; ROVIK_HARNESS_DOCKER_BIN and ROVIK_HARNESS_PODMAN_BIN select absolute client paths. The state directory must be outside the repository.";
+    let usage="usage: rovik-harness <absolute-state-dir> init | pack conformance <suite.json> | eval validate <study.json> | eval run <study.json> <chat-completions-url> <rates.json> | import <repository-id> <repository-path> [--dirty <untracked-paths.json>] | inventory <snapshot.json> | profile resolve <inventory.json> <selections.json> | contract import <contract.json> <registry.json> | plan <planning.json> | prepare <preparation.json> | draft <run-id> <domain|architect|oracle|reviewer> <inputs.json> <url> <rates.json> | promote <setup.json> | stage-replan <setup.json> | activate-replan <run-id> <setup-digest> | load-image <archive.tar> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> [reference] | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | resolve-replan <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> [reference] | gate <run-id> <repository-path> [reference] | verify-run <run-id> <repository-path> [reference] | merge-prepare <run-id> <new-run-id> <repository-path> <reference> <expected-head> | prepare-delivery <run-id> <repository-path> <reference> <message-file> | deliver <delivery.json> <bare-repository> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. ROVIK_HARNESS_ENGINE selects docker (default) or podman; ROVIK_HARNESS_DOCKER_BIN and ROVIK_HARNESS_PODMAN_BIN select absolute client paths. The state directory must be outside the repository.";
     if args.len() < 2 {
         return Err(Error::new(usage.into()));
     }
@@ -234,6 +234,59 @@ fn run() -> Result<i32> {
     let mut controller = Controller { ledger, backend };
     let mut exit_code = 0;
     match args[1].as_str() {
+        "pack" if args.len() == 4 && args[2] == "conformance" => {
+            let suite: rovik_harness::conformance::Suite = read(&args[3])?;
+            let report = controller.pack_conformance(
+                &Principal::current()?,
+                &suite,
+                &Cancellation::default(),
+            )?;
+            exit_code = if report.conforms { 0 } else { 2 };
+            print(&report)
+        }
+        "eval" if args.len() == 4 && args[2] == "validate" => {
+            let study: rovik_harness::study::Study = read(&args[3])?;
+            let maximum_planned_cost = study.preflight(&controller, &Principal::current()?)?;
+            print(
+                &serde_json::json!({"study_digest":Digest::of_json(&study)?,"maximum_planned_cost_microunits":maximum_planned_cost,"provider_calls":0}),
+            )
+        }
+        "eval" if args.len() == 6 && args[2] == "run" => {
+            let study: rovik_harness::study::Study = read(&args[3])?;
+            study.preflight(&controller, &Principal::current()?)?;
+            let runtime =
+                tokio::runtime::Runtime::new().map_err(|error| Error::new(error.to_string()))?;
+            let key = std::env::var("ROVIK_HARNESS_API_KEY").map_err(|_| {
+                Error::new("set ROVIK_HARNESS_API_KEY in the trusted controller environment".into())
+            })?;
+            let mut provider = HarnessProvider::new(
+                runtime.handle().clone(),
+                args[4].clone(),
+                key,
+                read::<Rates>(&args[5])?,
+            )?;
+            let cancel = Cancellation::default();
+            let interrupted = cancel.clone();
+            let signal = runtime.spawn(async move {
+                if let Err(error) = tokio::signal::ctrl_c().await {
+                    eprintln!("cannot observe interrupt signal: {error}");
+                }
+                interrupted.cancel();
+            });
+            let result =
+                controller.evaluate_study(&Principal::current()?, &study, &mut provider, &cancel);
+            signal.abort();
+            let report = result?;
+            let summary = if report.complete {
+                Some(controller.summarize_study(&study, &report)?)
+            } else {
+                None
+            };
+            exit_code = if report.complete { 0 } else { 2 };
+            print(
+                &serde_json::json!({"report_digest":Digest::of_json(&report)?,"report":report,"summary":summary}),
+            )
+        }
         "load-image" if args.len() == 3 => {
             controller.backend.import_image(Path::new(&args[2]))?;
             print(&serde_json::json!({"loaded":true,"backend":controller.backend.version()}))

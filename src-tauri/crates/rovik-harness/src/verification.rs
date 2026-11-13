@@ -1,10 +1,12 @@
 //! Explicit fresh verification consumes new native attempts, never cached verdicts.
 use crate::{
     approvals::Principal,
-    controller::{Controller, Integration},
-    evidence::{GateDecision, Status},
+    controller::{Controller, Integration, TaskSetup},
+    evidence::{CheckResult, GateDecision, Status},
+    plan::CheckSpec,
     require,
     runner::{self, Cancellation},
+    snapshot::Snapshot,
     state::State,
     Error, Result,
 };
@@ -144,4 +146,40 @@ impl Controller {
         }
         self.verify(run_id, integration)
     }
+}
+
+pub(crate) fn run_matrix(
+    controller: &mut Controller,
+    config: &TaskSetup,
+    candidate: &Snapshot,
+    selected: &[CheckSpec],
+    cancel: &Cancellation,
+) -> Result<Vec<CheckResult>> {
+    let key = controller.select_binding(config, candidate)?;
+    let mut pending: Vec<_> = selected.iter().collect();
+    let mut done = BTreeSet::new();
+    let mut results = vec![];
+    while !pending.is_empty() {
+        let at = pending
+            .iter()
+            .position(|check| {
+                check.dependencies.iter().all(|dependency| {
+                    done.contains(&(dependency.clone(), check.configuration_digest.clone()))
+                        || !selected.iter().any(|prior| {
+                            prior.check_id == *dependency
+                                && prior.configuration_digest == check.configuration_digest
+                        })
+                })
+            })
+            .ok_or_else(|| Error::new("study check dependencies cannot be scheduled".into()))?;
+        require(
+            !cancel.is_cancelled() && runner::now_ms()? < config.deadline_ms,
+            "study cancelled or deadline exhausted",
+        )?;
+        let check = pending.remove(at);
+        let result = controller.check(config, candidate, &key, check, "matrix", cancel)?;
+        done.insert((check.check_id.clone(), check.configuration_digest.clone()));
+        results.push(result);
+    }
+    Ok(results)
 }

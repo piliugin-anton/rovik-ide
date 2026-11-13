@@ -172,8 +172,13 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   tests, immutable snapshots and sandbox receipts. C, C++, Rust, Node.js JavaScript,
   strict TypeScript and Python/pytest fixtures exercise the workflow, with
   offline dependencies, bounded repairs, approval maintenance
-  and recovery after controller loss. JavaScript, TypeScript and Python also support
-  protected checks for direct and transitive project import boundaries.
+  and recovery after controller loss. Preparation roles, derived verification plans,
+  reviewed replanning, fresh CI checks and merge-candidate preparation use the same
+  durable ledger. Architecture checks cover configured component boundaries, with
+  import graphs for JavaScript, TypeScript and Python and optional libclang semantic
+  collection for C/C++. Workspace checks include Cargo tests/doctests and CTest.
+  The CLI also provides native pack conformance and a budgeted live-model study
+  runner; published model-quality results require a separately configured study.
   See [Polyglot harness](docs/design/polyglot-harness.md)
   for supported targets, measured limits and operator setup.
 - **Local Docker setup.** On startup, Rovik installs Docker when it is missing

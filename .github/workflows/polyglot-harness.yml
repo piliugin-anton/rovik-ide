@@ -55,7 +55,7 @@ jobs:
         working-directory: src-tauri
         env:
           ROVIK_HARNESS_EVALUATION_OUTPUT: ${{ runner.temp }}/native-evaluation-v1.json
-        run: cargo test --locked -p rovik-harness --test controller --test packs --test risk --test evaluation --test runtimes --test imports --test workspace --test verification -- --ignored --test-threads=1
+        run: cargo test --locked -p rovik-harness --test controller --test packs --test risk --test evaluation --test runtimes --test imports --test workspace --test verification --test conformance --test study -- --ignored --test-threads=1
       - name: Prepare isolation fixture outside verification
         run: |
           docker pull alpine:3.22.0

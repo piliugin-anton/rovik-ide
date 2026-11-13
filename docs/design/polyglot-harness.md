@@ -204,8 +204,9 @@ files and model output cannot invoke this management interface.
 
 `run` uses an explicitly selected repository, model endpoint and rates file;
 `ROVIK_HARNESS_API_KEY` supplies the credential. Rates contain `input`,
-`cached_input` and `output` microunits per million tokens. `status`, `verify` and
-`export` expose the durable result and immutable candidate. Export requires a new
+`cached_input` and `output` microunits per million tokens. `status`, `gate` and
+`export` inspect the durable result and immutable candidate; `verify` runs a fresh
+final verification attempt. Export requires a new
 absolute directory and writes `patch.json`, `candidate.json`, `setup.json`,
 `evidence.json`, referenced blobs and a hash manifest. The patch includes exact
 preimages, additions, deletions, modes and binary identities; applying it in memory
@@ -321,11 +322,11 @@ draft diff, while verified delivery requires the accepted candidate's evidence.
 The controller and sandbox adapters are Rust. The image supplies
 `/usr/local/bin/rovik-harness-tool`, which adapts Cargo and CMake
 inside the existing offline sandbox. It consumes one bounded JSON request and
-returns one correlated protocol-v1 response. Probe, index, proposed-plan and
-explanation operations share this boundary. Proposed plans and explanations are
-advisory; only configured indexing can produce a static graph result, and the
-Rust core independently checks its precision, configuration, references, required
-test discovery, flags and forbidden transitive edges before admitting evidence.
+returns one correlated protocol-v1 response. Probe, index, plan derivation, native workspace checks and explanation operations
+share this boundary. Plans derive from registered capabilities and obligations;
+explanations remain advisory. The Rust core independently validates graph precision,
+configuration, references, test inventory, compiler flags and boundary findings
+before admitting evidence.
 Requests live in the approved oracle, selected by registered request IDs.
 The same executable runs protected C/C++ consumers, interop regressions and the
 native evaluation bank. No Python orchestration or separate deployed service is
@@ -344,9 +345,10 @@ resolve graph is insufficient. CMake always configures a fresh build directory;
 a preexisting compilation database is rejected. Required consumer commands cannot
 be omitted from any configuration. Missing tools, other compilers, targets,
 freestanding runtimes and unresolved profiles block rather than falling back to
-lexical assurance. C/C++ graph support currently uses GCC dependency output;
-Clang, cross-target execution and mixed-language compilation databases need their
-own conformance configuration before they are supported.
+lexical assurance. C/C++ graphs combine configured GCC dependency output with
+optional pinned libclang semantic collection. Clang as the build compiler,
+cross-target execution and mixed-language compilation databases need their own
+conformance configuration before they are supported.
 
 Run `cargo test -p rovik-harness --test controller --test packs -- --ignored
 --test-threads=1` with the native Docker opt-in and pinned image environment above.
@@ -354,8 +356,10 @@ These tests exercise all three public APIs, a feature-gated forbidden Cargo edge
 and configured C/C++ include edges. Standard tests cover protocol corruption,
 missing required discovery (including doctest obligations), insufficient graph
 precision, transitive boundary violations and omitted consumers. Declaring a
-required doctest still requires its separate registered behavioral command; a
-Cargo dependency graph alone never establishes doctest execution.
+required doctest uses the registered `CargoDocTests` behavioral command; a Cargo
+dependency graph alone never establishes doctest execution. `CargoTests` inventories
+each compiled workspace test binary independently. `CargoFmt`, `CargoCheck`,
+`CargoClippy`, `ClangTidy` and `Ctest` provide the other configured workspace checks.
 
 ### JavaScript, TypeScript and Python
 
@@ -496,9 +500,11 @@ Nonempty `risk_policy.routes` must be hashed into
 `policy.facts.risk_policy_digest`, so approvals and evidence bind the routing
 rules. Each applicable route requires registered behavioral commands in every
 final configuration and authenticated review of the exact candidate. Advisory
-success does not discharge a risk. New concurrency signals currently block: this
-release has no conformant race/linearizability runner, and sequential consumers
-cannot supply that assurance.
+success does not discharge a risk. Concurrency routes require registered behavioral
+cases for schedules, linearizability, cancellation and shutdown in every configured
+target, plus candidate review. The bounded Python fixture detects a lockless lost
+update and exercises cancellation/joining. Missing suites block; these schedules do
+not establish freedom from all races or provide an unconfigured ThreadSanitizer run.
 
 The interop bank separately compiles a C producer and actual C, C++ and Rust
 consumers. It checks C/Rust struct size and field offset, returned values/status,
@@ -664,7 +670,8 @@ still requires a selected model, explicit token/cost budgets, representative
 repositories and independent ground truth. Model quality, human review effort,
 sequential extension effort, monetary cost per successful task, and production
 latency are unmeasured. The initial native bank does not claim the full workload
-coverage proposed by that study; concurrency remains unsupported as above.
+coverage proposed by that study. The live-provider runner described below supplies
+the comparison workflow, while the recorded measurements remain native-only.
 No prompts, policies or permanent guidance are automatically promoted from a run.
 
 Run the native evaluation with `cargo test -p rovik-harness --test evaluation --
@@ -802,3 +809,70 @@ has replaced a failed check identity. It requires the complete passing replaceme
 matrix and a current `replan-resolution` approval. Unchanged check identities use
 `resolve-failure`. Both retain the original failed result, and revocation immediately
 blocks acceptance again.
+
+## Native conformance and live-provider studies
+
+`pack conformance <suite.json>` executes pinned positive and negative fixtures
+through the registered native matrix, without model calls. A suite references
+stored setup/candidate digests and an exact expected status and failing-case set
+for each check/configuration. Every selected configuration needs a passing fixture
+and a known wrong implementation. Infrastructure errors and missing tests cannot
+count as successful mutant rejection. The JSON report includes authenticated
+results, and a mismatched suite exits nonzero. Shared protocol/schema corruption
+fixtures remain part of the ordinary Rust test suite.
+
+`eval validate <study.json>` validates a proposed study and prints its identity and
+maximum planned model spend without calling a provider. `eval run <study.json>
+<chat-completions-url> <rates.json>` runs the selected provider with the same API-key
+handling as `run`. The model ID, context/output limits, prices and per-stage caps
+are explicit. The planned total must fit `maximum_total_cost`; unknown usage or
+an overrun stops further model calls and leaves the real reservation visible.
+A reused study/run identity is rejected, preventing an accidental budget reset.
+Benchmark runs terminate as `stopped` with their measured reports linked into
+history; they cannot be resumed as accepted production runs.
+
+The three arms are existing instructions plus existing CI, approved contract/design
+and profile guidance plus the same CI, and the same guidance plus the complete
+required native matrix. All arms retain host isolation, protected-asset separation
+and the same source-write scope. They share proposal limits, model settings and
+budgets. The repeated trials rotate arm order. Benchmark decisions cannot grant
+production acceptance, merge approval or deployment authority. Cases requiring
+independent human/model review or policy exceptions must first be separated into
+an explicitly reviewed evaluation; this automated native comparison does not
+silently count those decisions as satisfied.
+
+A `Study` references operator-registered `TaskSetup` artifacts and independent
+held-out setup artifacts in the same ledger. Both use the same immutable base,
+profiles, dependency assets and image; their protected test assets must differ.
+The operator reviews that the withheld cases are meaningful independent ground
+truth. Merely giving two files different hashes does not establish that fact.
+Register setup files with `put operation`, snapshots with `put snapshot`, and
+public request/instruction text with `put context` after importing their referenced
+assets. The exact serialized types are in `study.rs` and `conformance.rs`.
+
+Each case declares its language, workload, risk group, whether it is a negative
+example for adding abstractions, and ordered stages. Later stages carry the actual
+previous accepted proposal. Unrelated dependency changes are retained; conflicting
+changes block instead of silently restoring a reference implementation. Include
+prior behavior in follow-on test suites. A failed predecessor skips its dependent
+stages, which remain visible in the denominator. Rust, C, C++, JavaScript,
+TypeScript and Python use the same study protocol and their registered native packs.
+
+Held-out tests run only after generation/repair for that stage. Their contract,
+cases and diagnostics are never supplied to the provider. Reports preserve native
+result IDs, incomplete judgments, repairs, domain-decision requests, changed-file
+counts for extension work, actual model spend and full stage latency. Summaries
+authenticate complete trial reports and check decisions and billing against the
+ledger. They separate language, workload,
+risk and arm; binomial estimates have descriptive 95% Wilson intervals, grouping
+extension stages by case/repetition. Ratios use decimal strings in canonical JSON.
+These intervals describe the selected repeated dataset, not a production guarantee.
+Human review duration, tool monetary cost and semantic design quality need separate
+review measurements; they are not invented from model confidence or file counts.
+
+The automated tests exercise all six language families with scripted responses to
+check context separation, budgets and report integrity. Those fixtures are explicitly
+protocol smoke tests, not live-model quality results or a representative held-out
+study. Running and publishing such a study still requires a selected provider,
+credentials, an explicit spending cap, and reviewed representative repository tasks.
+The existing 108-observation native verifier bank remains separately reported.

@@ -343,8 +343,16 @@ impl TaskSetup {
                     .ok_or_else(|| {
                         Error::new("pack request must be a protected oracle artifact".into())
                     })?;
-                let request: crate::pack_protocol::Request =
-                    wire::decode(&ledger.read(&entry.content.digest)?)?;
+                let bytes = ledger.read(&entry.content.digest)?;
+                require(
+                    bytes.ends_with(b"\n"),
+                    "protected pack request must end with newline",
+                )?;
+                let request: crate::pack_protocol::Request = wire::decode(&bytes)?;
+                require(
+                    request.request_id == *request_id,
+                    "protected pack request identity mismatch",
+                )?;
                 let (profile, configuration_id) = if definition.parser
                     == crate::registry::Parser::PackTests
                 {
@@ -801,7 +809,11 @@ impl Controller {
         }
         Ok(result)
     }
-    fn context(&self, setup: &TaskSetup, candidate: &Snapshot) -> Result<context::ContextBundle> {
+    pub(crate) fn context(
+        &self,
+        setup: &TaskSetup,
+        candidate: &Snapshot,
+    ) -> Result<context::ContextBundle> {
         let now = runner::now_ms()?;
         let revision = candidate.digest()?;
         let mut items = Vec::new();
@@ -1022,9 +1034,20 @@ impl Controller {
         provider: &mut dyn Provider,
         cancel: &Cancellation,
         candidate: Snapshot,
-        mut feedback: Vec<serde_json::Value>,
+        feedback: Vec<serde_json::Value>,
     ) -> Result<Snapshot> {
         let context = self.context(setup, &candidate)?;
+        self.implement_with_context(setup, provider, cancel, candidate, feedback, context)
+    }
+    pub(crate) fn implement_with_context(
+        &mut self,
+        setup: &TaskSetup,
+        provider: &mut dyn Provider,
+        cancel: &Cancellation,
+        candidate: Snapshot,
+        mut feedback: Vec<serde_json::Value>,
+        context: context::ContextBundle,
+    ) -> Result<Snapshot> {
         let mut diagnostics: BTreeSet<_> =
             if let Some(binding) = self.ledger.run(&setup.run_id)?.binding_digest {
                 self.ledger
