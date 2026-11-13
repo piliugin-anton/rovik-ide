@@ -14,6 +14,7 @@ fn input(ledger: &Ledger) -> NativeInput {
         snapshot_handle: "snapshot:active".into(),
         configuration_id: setup.profiles[0].configurations[0].id.clone(),
         profile: setup.profiles[0].clone(),
+        architecture: None,
         forbidden_edges: vec![ForbiddenEdge {
             source: "domain".into(),
             target: "io".into(),
@@ -142,7 +143,13 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
         runner::{Cancellation, DockerBackend},
     };
     assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
-    for language in [Language::Rust, Language::C, Language::Cpp] {
+    for (language, semantic) in [
+        (Language::Rust, false),
+        (Language::C, false),
+        (Language::Cpp, false),
+        (Language::C, true),
+        (Language::Cpp, true),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::open(&dir.path().join("state")).unwrap();
         let image = Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap();
@@ -155,10 +162,30 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
             snapshot_handle: "snapshot:active".into(),
             configuration_id: setup.profiles[0].configurations[0].id.clone(),
             profile: setup.profiles[0].clone(),
+            architecture: None,
             forbidden_edges: vec![],
             required_test_ids: Default::default(),
             typescript_project: None,
         };
+        if semantic {
+            use rovik_harness::architecture::{ArchitecturePolicy, Component, Role, Visibility};
+            input.architecture = Some(ArchitecturePolicy {
+                schema_version: 1,
+                components: vec![Component {
+                    id: "fixture".into(),
+                    context_id: "fixture".into(),
+                    selectors: vec!["**".into()],
+                    role: Role::Application,
+                    visibility: Visibility::Public,
+                    pure: false,
+                }],
+                baseline_external_edges: Default::default(),
+                approved_external_edges: Default::default(),
+                approved_cycle_edges: Default::default(),
+                include_test_dependencies: false,
+                require_symbol_precision: true,
+            });
+        }
         let mut files = vec![];
         let cmake=format!("cmake_minimum_required(VERSION 3.25)\nproject(graph LANGUAGES {})\noption(FORBIDDEN \"edge\" OFF)\nadd_executable(consumer src/main.{})\nif(FORBIDDEN)\n target_compile_definitions(consumer PRIVATE FORBIDDEN)\nendif()\nenable_testing()\nadd_test(NAME consumer-smoke COMMAND consumer)\n",if language==Language::C {"C"}else{"CXX"},if language==Language::C {"c"}else{"cpp"});
         if language == Language::Rust {
@@ -255,7 +282,11 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
             if enabled {
                 assert!(checked.unwrap_err().message.contains("forbidden"));
             } else {
-                checked.unwrap();
+                let graph = checked.unwrap();
+                if semantic {
+                    assert_eq!(graph.precision, Precision::ClangSemantic);
+                    assert!(graph.nodes.iter().any(|node| node.kind == "symbol"));
+                }
             }
             // Exercise the same protected-request admission path used by the controller.
             use rovik_harness::{
@@ -340,6 +371,12 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
                 result.status,
                 if enabled { Status::Fail } else { Status::Pass }
             );
+            assert!(
+                rovik_harness::architecture::admitted_graphs(&ledger, run_id, &key)
+                    .unwrap()
+                    .is_empty(),
+                "an admitted but unfinished operation cannot supply retrieval evidence"
+            );
             let artifact = ledger.store_json("result", &result, now).unwrap();
             ledger
                 .complete(
@@ -380,6 +417,7 @@ fn effective_native_commands_must_retain_the_required_sanitizer_mode() {
         snapshot_handle: "snapshot:active".into(),
         configuration_id: setup.profiles[0].configurations[0].id.clone(),
         profile: setup.profiles[0].clone(),
+        architecture: None,
         forbidden_edges: vec![],
         required_test_ids: Default::default(),
         typescript_project: None,

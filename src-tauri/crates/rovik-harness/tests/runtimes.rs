@@ -76,6 +76,7 @@ fn runtime_evidence_requires_protected_profiles_versions_cases_and_complete_repo
             snapshot_handle: input.snapshot_handle.clone(),
             profile: input.profile.clone(),
             configuration_id: input.configuration_id.clone(),
+            architecture: None,
             forbidden_edges: vec![],
             required_test_ids: Default::default(),
             typescript_project: None,

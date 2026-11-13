@@ -222,7 +222,11 @@ fn cmake_feature(value: &str) -> bool {
         && (matches!(value, "ON" | "OFF")
             || (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())))
 }
-fn cmake_graph(language: Language, config: &Configuration, build_root: &str) -> Result<Graph> {
+pub(super) fn cmake_graph(
+    language: Language,
+    config: &Configuration,
+    build_root: &str,
+) -> Result<Graph> {
     let build = Path::new(BUILD);
     require(
         !build.exists(),
@@ -442,6 +446,96 @@ fn cmake_graph(language: Language, config: &Configuration, build_root: &str) -> 
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SemanticGraph {
+    clang_version: String,
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+}
+fn semantic_graph(graph: &mut Graph) -> Result<()> {
+    let mut nodes: BTreeMap<_, _> = graph
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.clone()))
+        .collect();
+    for unit in &graph.compiler_commands {
+        let mut command = vec!["/usr/local/bin/rovik-clang-graph".into()];
+        let mut skip = false;
+        for arg in unit.argv.iter().skip(1) {
+            if skip {
+                skip = false;
+                continue;
+            }
+            if ["-o", "-MF", "-MT", "-MQ"].contains(&arg.as_str()) {
+                skip = true;
+            } else if !["-c", "-MD", "-MMD", "-MP"].contains(&arg.as_str()) {
+                // Clang 14 spells its C++23 mode c++2b. Unsupported constructs
+                // produce a capability failure; GCC remains the build compiler.
+                command.push(if arg == "-std=c++23" {
+                    "-std=c++2b".into()
+                } else {
+                    arg.clone()
+                });
+            }
+        }
+        command.push("-fsyntax-only".into());
+        let output = super::checked_as(
+            &command,
+            Path::new(BUILD),
+            crate::FailureCategory::Capability,
+        )?;
+        let semantic: SemanticGraph = wire::decode(output.as_bytes())?;
+        require(
+            semantic.clang_version.contains("clang version 14.0.6"),
+            "unregistered semantic collector version",
+        )?;
+        let ids: BTreeMap<_, _> = semantic
+            .nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    format!(
+                        "symbol:{}",
+                        crate::identity::Digest::of(node.id.as_bytes()).hex()
+                    ),
+                )
+            })
+            .collect();
+        for mut node in semantic.nodes {
+            node.id = ids[&node.id].clone();
+            node.path = node.path.as_deref().map(relative).transpose()?;
+            if let Some(old) = nodes.get(&node.id) {
+                require(
+                    old.path == node.path && old.kind == node.kind,
+                    "semantic declaration ownership is ambiguous across translation units",
+                )?;
+            }
+            nodes.insert(node.id.clone(), node);
+        }
+        for mut edge in semantic.edges {
+            edge.source = ids
+                .get(&edge.source)
+                .ok_or_else(|| Error::new("unresolved semantic source".into()))?
+                .clone();
+            edge.target = ids
+                .get(&edge.target)
+                .ok_or_else(|| Error::new("unresolved semantic target".into()))?
+                .clone();
+            graph.edges.push(edge);
+        }
+    }
+    graph.nodes = nodes.into_values().collect();
+    graph
+        .edges
+        .sort_by(|a, b| (&a.source, &a.target, &a.kind).cmp(&(&b.source, &b.target, &b.kind)));
+    graph
+        .edges
+        .dedup_by(|a, b| a.source == b.source && a.target == b.target && a.kind == b.kind);
+    graph.precision = Precision::ClangSemantic;
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Explanation {
     parser_version: u32,
     diagnostic: String,
@@ -484,11 +578,23 @@ fn dispatch(request: &Request) -> Result<Value> {
                     json!({"language":input.profile.language,"profile_resolution":"resolved","compiler":compiler,"configuration_digest":config.digest()?,"observed":{"compiler":compiler},"configured":input.profile.facts,"uncertain":[],"capabilities":["compile","protected-consumer",if input.profile.language==Language::Rust {"cargo-resolved-graph"}else{"configured-build-graph"}],"unsupported_obligations":[]}),
                 );
             }
-            let graph = if input.profile.language == Language::Rust {
+            let mut graph = if input.profile.language == Language::Rust {
                 rust_graph(config, &input.profile.build_root)?
             } else {
                 cmake_graph(input.profile.language, config, &input.profile.build_root)?
             };
+            if input
+                .architecture
+                .as_ref()
+                .is_some_and(|policy| policy.require_symbol_precision)
+            {
+                require(
+                    matches!(input.profile.language, Language::C | Language::Cpp),
+                    "the selected language has no registered symbol collector",
+                )
+                .map_err(|error| error.with_category(crate::FailureCategory::Capability))?;
+                semantic_graph(&mut graph)?;
+            }
             Ok(json!({"language":input.profile.language,"graph":graph}))
         }
     }

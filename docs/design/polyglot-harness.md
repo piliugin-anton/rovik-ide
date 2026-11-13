@@ -727,3 +727,25 @@ preserves earlier inputs, results, events and spent budgets. It cannot expand th
 budget, extend the deadline or change approval authority. Outstanding operations
 must first be reconciled. Semantic questions from the implementer can produce an
 architect draft; activation still requires the operator's exact replacement intake.
+
+Architecture requests can bind an `architecture` ownership map to their protected
+`NativeInput`. It enforces ARCH-001 through ARCH-005: private context/module
+boundaries, transitive dependencies from pure domain components to adapters,
+unapproved component cycles, forbidden dependencies of public contracts, and new
+external dependency edges. Test-only edges are excluded unless explicitly selected.
+Ownership must be complete and unambiguous at the collector's declared granularity.
+
+C and C++ requests with `require_symbol_precision` also run the pinned libclang
+collector under the configured translation-unit arguments. It records declaration,
+reference, and signature-type relationships in addition to CMake target/include
+edges. Unsupported syntax or collector limits block the check. Cargo graphs remain
+package-level; JavaScript, TypeScript and Python graphs remain resolved project
+imports. Those collectors cannot claim symbol-level precision. Import/build graphs
+use conservative public-contract dependency checks; semantic graphs use collected
+signature-type edges for ARCH-004.
+
+The runner attaches each accepted graph to its authenticated receipt with the exact
+candidate, configuration, checker and environment identities. The context builder
+uses those graphs to include affected components and their transitive consumers.
+Unmapped changes require full coverage, and final verification always retains the
+complete declared matrix.

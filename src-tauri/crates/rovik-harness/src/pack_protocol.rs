@@ -56,6 +56,9 @@ pub struct NativeInput {
     pub configuration_id: String,
     /// Architecture rules owned by the core.
     pub forbidden_edges: Vec<ForbiddenEdge>,
+    /// Reviewed ownership, privacy, cycles, purity and dependency-change policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<crate::architecture::ArchitecturePolicy>,
     /// Native tests which discovery must retain.
     #[serde(default)]
     pub required_test_ids: BTreeSet<String>,
@@ -83,6 +86,9 @@ impl Request {
             "unknown snapshot capability",
         )?;
         input.profile.require_resolved()?;
+        if let Some(policy) = &input.architecture {
+            policy.validate()?;
+        }
         require(
             input
                 .profile
@@ -164,6 +170,8 @@ pub enum Precision {
     CargoResolved,
     /// Fresh configured compiler dependencies and CMake codemodel.
     ConfiguredBuild,
+    /// Configured CMake relationships plus libclang declaration and type references.
+    ClangSemantic,
     /// Parsed project imports resolved against the prepared runtime. External modules are leaves.
     ProjectImports,
     /// Discovery only; cannot establish a boundary.
@@ -292,6 +300,14 @@ impl Graph {
             self.precision
                 == match input.profile.language {
                     Language::Rust => Precision::CargoResolved,
+                    Language::C | Language::Cpp
+                        if input
+                            .architecture
+                            .as_ref()
+                            .is_some_and(|policy| policy.require_symbol_precision) =>
+                    {
+                        Precision::ClangSemantic
+                    }
                     Language::C | Language::Cpp => Precision::ConfiguredBuild,
                     Language::JavaScript | Language::TypeScript | Language::Python => {
                         Precision::ProjectImports
@@ -307,6 +323,15 @@ impl Graph {
                 nodes.contains(edge.source.as_str()) && nodes.contains(edge.target.as_str()),
                 "unresolved graph edge",
             )?;
+        }
+        if let Some(policy) = &input.architecture {
+            let findings = policy.evaluate(self)?;
+            if !findings.is_empty() {
+                return Err(Error::classified(
+                    crate::FailureCategory::Implementation,
+                    serde_json::to_string(&findings).map_err(|e| Error::new(e.to_string()))?,
+                ));
+            }
         }
         let mut outgoing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for edge in &self.edges {

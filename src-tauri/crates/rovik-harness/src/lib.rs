@@ -6,6 +6,7 @@
 //! authority. Adapters must validate provenance before admitting evidence.
 
 pub mod approvals;
+pub mod architecture;
 pub mod artifacts;
 pub mod baseline;
 pub mod broker;

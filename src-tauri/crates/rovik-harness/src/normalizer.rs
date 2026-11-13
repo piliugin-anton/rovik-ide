@@ -13,12 +13,13 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn checker_digest(parser: Parser) -> crate::identity::Digest {
     crate::identity::Digest::of(
         format!(
-            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}:{}",
+            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}:{}:{}",
             include_str!("normalizer.rs"),
             include_str!("pack_protocol.rs"),
             include_str!("runtime.rs"),
             include_str!("node_report.rs"),
-            include_str!("failure.rs")
+            include_str!("failure.rs"),
+            include_str!("architecture.rs")
         )
         .as_bytes(),
     )

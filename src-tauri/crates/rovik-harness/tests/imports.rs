@@ -16,6 +16,7 @@ fn input(ledger: &Ledger, language: Language) -> NativeInput {
         snapshot_handle: "snapshot:active".into(),
         configuration_id: setup.profiles[0].configurations[0].id.clone(),
         profile: setup.profiles[0].clone(),
+        architecture: None,
         forbidden_edges: vec![ForbiddenEdge {
             source: "domain/**".into(),
             target: "infrastructure/**".into(),

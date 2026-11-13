@@ -836,16 +836,60 @@ impl Controller {
             source_revision: revision.clone(),
             mandatory: false,
         });
+        let mut relevant: BTreeSet<_> = setup
+            .design
+            .existing_code_considered
+            .iter()
+            .map(|code| code.file.clone())
+            .collect();
+        let changes: BTreeSet<_> = setup
+            .base
+            .files
+            .keys()
+            .chain(candidate.files.keys())
+            .filter(|path| setup.base.files.get(*path) != candidate.files.get(*path))
+            .cloned()
+            .collect();
+        // A prior snapshot's graph is retrieval guidance only. It cannot skip final checks.
+        let mut graphed = BTreeSet::new();
+        for snapshot in [&setup.base, candidate] {
+            if !graphed.insert(snapshot.digest()?) {
+                continue;
+            }
+            for observed in crate::architecture::admitted_graphs(
+                &self.ledger,
+                &setup.run_id,
+                &self.key(setup, snapshot)?,
+            )? {
+                let affected = crate::architecture::impact(&observed.graph, &changes);
+                for node in &observed.graph.nodes {
+                    if affected.affected_nodes.contains(&node.id) {
+                        if let Some(path) = &node.path {
+                            relevant.insert(path.clone());
+                        }
+                    }
+                }
+                let artifact = self.ledger.store_json(
+                    "context",
+                    &serde_json::json!({"graph":observed,"impact":affected}),
+                    now,
+                )?;
+                items.push(ContextItem {
+                    item_id: format!("impact:{}", artifact.digest.hex()),
+                    artifact_digest: artifact.digest.clone(),
+                    text: String::from_utf8(self.ledger.read(&artifact.digest)?)
+                        .map_err(|e| Error::new(e.to_string()))?,
+                    trust: Trust::ObservedCode,
+                    source_revision: snapshot.digest()?,
+                    mandatory: false,
+                });
+            }
+        }
         items.extend(context::ranked_sources(
             &self.ledger,
             candidate,
             &setup.contract.intent,
-            &setup
-                .design
-                .existing_code_considered
-                .iter()
-                .map(|code| code.file.clone())
-                .collect::<Vec<_>>(),
+            &relevant.into_iter().collect::<Vec<_>>(),
             Some(&setup.contract.scope),
         )?);
         context::build(

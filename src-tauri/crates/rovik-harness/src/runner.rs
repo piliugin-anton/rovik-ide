@@ -770,7 +770,7 @@ pub fn admit_observation(
                     observation.exit_code,
                 )?;
             } else {
-                crate::pack_protocol::verify_index(
+                let graph = crate::pack_protocol::verify_index(
                     &request,
                     &observation.stdout,
                     &spec.configuration_digest,
@@ -779,6 +779,17 @@ pub fn admit_observation(
                     observation.exit_code == Some(0),
                     "configured graph process failed",
                 )?;
+                let graph = ledger.store_json(
+                    "graph",
+                    &crate::architecture::GraphEvidence {
+                        evidence_key: key.clone(),
+                        checker_digest: spec.checker_digest.clone(),
+                        check_id: spec.check_id.clone(),
+                        graph,
+                    },
+                    now,
+                )?;
+                evidence.push(graph.digest);
                 normalized.status = Status::Pass;
                 normalized.failure_category = None;
                 normalized.diagnostic = None;
