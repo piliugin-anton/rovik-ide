@@ -1,5 +1,8 @@
 FROM node@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS node
 FROM rust@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca CURL_CA_BUNDLE=/run/secrets/proxy_ca; fi && \
+    RUSTUP_USE_CURL=1 rustup component add rustfmt clippy
 RUN --mount=from=node,source=/usr/local,target=/opt/node,ro --mount=type=secret,id=proxy_ca \
     cp /opt/node/bin/node /usr/local/bin/node && \
     cp -a /opt/node/lib/node_modules /usr/local/lib/ && \

@@ -13,13 +13,14 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn checker_digest(parser: Parser) -> crate::identity::Digest {
     crate::identity::Digest::of(
         format!(
-            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}:{}:{}",
+            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}:{}:{}:{}",
             include_str!("normalizer.rs"),
             include_str!("pack_protocol.rs"),
             include_str!("runtime.rs"),
             include_str!("node_report.rs"),
             include_str!("failure.rs"),
-            include_str!("architecture.rs")
+            include_str!("architecture.rs"),
+            include_str!("native_checks.rs")
         )
         .as_bytes(),
     )
@@ -98,9 +99,11 @@ pub fn normalize(
     success_codes: &[i32],
 ) -> Normalized {
     let parsed = match parser {
-        Parser::PackProtocol | Parser::PackTests => Err(Error::new(
-            "pack response requires protected request validation".into(),
-        )),
+        Parser::PackProtocol | Parser::PackTests | Parser::PackBuild | Parser::PackNativeTests => {
+            Err(Error::new(
+                "pack response requires protected request validation".into(),
+            ))
+        }
         Parser::ExitCode => Ok(Inventory {
             schema_version: 1,
             ..Default::default()

@@ -20,6 +20,10 @@ pub enum Parser {
     PackProtocol,
     /// Runtime test protocol checked against protected profiles and native reports.
     PackTests,
+    /// Closed native workspace build, formatting and static analysis operations.
+    PackBuild,
+    /// Closed native workspace tests with independently discovered inventory.
+    PackNativeTests,
 }
 
 /// Parameter types validate entire argv elements before process launch.
@@ -228,7 +232,10 @@ impl CommandDefinition {
         }
         require(
             (self.kind == CheckKind::Static)
-                == matches!(self.parser, Parser::ExitCode | Parser::PackProtocol),
+                == matches!(
+                    self.parser,
+                    Parser::ExitCode | Parser::PackProtocol | Parser::PackBuild
+                ),
             "behavioral command cannot use exit-code-only normalization",
         )?;
         if matches!(self.parser, Parser::InventoryJson | Parser::CtestJunit) {

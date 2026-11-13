@@ -743,7 +743,10 @@ pub fn admit_observation(
     );
     if matches!(
         definition.parser,
-        crate::registry::Parser::PackProtocol | crate::registry::Parser::PackTests
+        crate::registry::Parser::PackProtocol
+            | crate::registry::Parser::PackTests
+            | crate::registry::Parser::PackBuild
+            | crate::registry::Parser::PackNativeTests
     ) {
         let checked = (|| -> Result<()> {
             let oracle: Snapshot = wire::decode(&ledger.read(&key.oracle_digest)?)?;
@@ -762,7 +765,23 @@ pub fn admit_observation(
                 request.request_id == *request_id,
                 "protected pack request identity mismatch",
             )?;
-            if definition.parser == crate::registry::Parser::PackTests {
+            if matches!(
+                definition.parser,
+                crate::registry::Parser::PackBuild | crate::registry::Parser::PackNativeTests
+            ) {
+                let input = crate::native_checks::input(&request)?;
+                require(
+                    input.check.behavioral()
+                        == (definition.parser == crate::registry::Parser::PackNativeTests),
+                    "native operation and registered result kind disagree",
+                )?;
+                normalized = crate::native_checks::verify(
+                    &request,
+                    &observation.stdout,
+                    &spec.configuration_digest,
+                    observation.exit_code,
+                )?;
+            } else if definition.parser == crate::registry::Parser::PackTests {
                 normalized = crate::runtime::verify(
                     &request,
                     &observation.stdout,

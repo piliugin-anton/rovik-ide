@@ -21,6 +21,7 @@ pub mod failure;
 pub mod fixtures;
 pub mod identity;
 pub mod ledger;
+pub mod native_checks;
 mod node_report;
 pub mod normalizer;
 pub mod onboarding;

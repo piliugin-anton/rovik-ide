@@ -4,6 +4,7 @@ mod evaluation;
 mod imports;
 mod interop;
 mod native;
+mod native_checks;
 mod runtime;
 
 use crate::{

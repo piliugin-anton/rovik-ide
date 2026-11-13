@@ -749,3 +749,18 @@ candidate, configuration, checker and environment identities. The context builde
 uses those graphs to include affected components and their transitive consumers.
 Unmapped changes require full coverage, and final verification always retains the
 complete declared matrix.
+
+Native workspace operations are registered through `packs::workspace_command` and
+protected `native_check` requests. Rust supports workspace formatting, checking,
+Clippy, separate test-binary inventories, and per-package doctests with explicit
+features, target and compiler flags. C/C++ support configured Clang-Tidy and full
+CTest execution after building the selected targets. These project tests supplement
+protected acceptance oracles and public consumers; they do not replace them.
+
+Concurrency is supported when its approved risk route supplies distinct protected
+cases for schedules, linearizability, cancellation and shutdown in every required
+configuration, plus a candidate-bound `concurrency-review`. Missing properties or
+configurations block acceptance. The conformance fixture demonstrates lost-update
+detection and worker cancellation/joining. Passing those schedules does not prove
+race freedom; tasks requiring sanitizer instrumentation or a stronger model must
+register that additional evidence explicitly.

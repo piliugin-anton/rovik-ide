@@ -30,6 +30,8 @@ pub enum Operation {
     Index,
     /// Run protected runtime tests and return their complete native report.
     Test,
+    /// Execute a registered native workspace build or test operation.
+    NativeCheck,
     /// Propose checks for independent core validation.
     PlanChecks,
     /// Attribute native diagnostics without changing their outcome.

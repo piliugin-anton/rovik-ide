@@ -128,6 +128,7 @@ fn deleted_cleanup_and_new_ffi_cannot_be_downgraded_by_worker_tags() {
         policy.routes.insert(
             risk.into(),
             RiskRoute {
+                concurrency_cases: Default::default(),
                 commands: [setup.registry.commands[0].id.clone()].into(),
                 reviews: [format!("review-{risk}")].into(),
             },
@@ -151,6 +152,185 @@ fn deleted_cleanup_and_new_ffi_cannot_be_downgraded_by_worker_tags() {
         .unwrap_err()
         .message
         .contains("concurrency"));
+}
+
+#[test]
+fn concurrency_routes_require_distinct_cases_for_every_property_and_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
+    let mut setup = fixtures::quota_runtime(
+        &ledger,
+        "concurrent",
+        Digest::of(b"image"),
+        "base",
+        rovik_harness::profile::Language::Python,
+    )
+    .unwrap();
+    let mut route = RiskRoute {
+        commands: [setup.registry.commands[0].id.clone()].into(),
+        reviews: ["concurrency-review".into()].into(),
+        concurrency_cases: Default::default(),
+    };
+    for property in ["schedules", "linearizability", "cancellation", "shutdown"] {
+        route
+            .concurrency_cases
+            .insert(property.into(), [format!("test_{property}")].into());
+    }
+    setup
+        .plan
+        .review_requirements
+        .push("concurrency-review".into());
+    setup.plan.checks[0].expected_case_ids = route
+        .concurrency_cases
+        .values()
+        .flatten()
+        .cloned()
+        .collect();
+    let assessment = risk::Assessment {
+        risks: ["concurrency".into()].into(),
+        sources: Default::default(),
+    };
+    let mut policy = RiskPolicy {
+        routes: [("concurrency".into(), route)].into(),
+    };
+    policy
+        .validate(&assessment, &setup.plan, &setup.registry)
+        .unwrap();
+    setup
+        .plan
+        .configurations
+        .push(Digest::of(b"another-target"));
+    assert!(policy
+        .validate(&assessment, &setup.plan, &setup.registry)
+        .is_err());
+    setup.plan.configurations.pop();
+    policy
+        .routes
+        .get_mut("concurrency")
+        .unwrap()
+        .concurrency_cases
+        .remove("shutdown");
+    assert!(policy
+        .validate(&assessment, &setup.plan, &setup.registry)
+        .is_err());
+}
+
+#[test]
+#[ignore = "requires ROVIK_HARNESS_DOCKER=1 and the pinned runtime image"]
+fn protected_concurrency_cases_detect_lost_updates_and_observe_cancellation_and_shutdown() {
+    use rovik_harness::{
+        evidence::Status,
+        pack_protocol::{Operation, Request},
+        packs,
+        profile::Language,
+        registry::CommandRegistry,
+        runner::{Cancellation, ContainerBackend},
+        runtime::{self, TestInput},
+    };
+    assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
+    let image = Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap();
+    for broken in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(&dir.path().join("state")).unwrap();
+        let mut setup = fixtures::quota_runtime(
+            &ledger,
+            "concurrency",
+            image.clone(),
+            "base",
+            Language::Python,
+        )
+        .unwrap();
+        let source = include_str!("../fixtures/concurrency/counter.py");
+        let source = if broken {
+            format!(
+                "import contextlib\n{}",
+                source.replace("threading.Lock()", "contextlib.nullcontext()")
+            )
+        } else {
+            source.into()
+        };
+        let candidate = fixtures::snapshot(
+            &ledger,
+            "base",
+            &[("counter.py", &source), ("requirements.lock", "")],
+        )
+        .unwrap();
+        let cases = [
+            "test_schedules",
+            "test_linearizability",
+            "test_cancellation",
+            "test_shutdown",
+        ];
+        let input = TestInput {
+            snapshot_handle: "snapshot:active".into(),
+            profile: setup.profiles[0].clone(),
+            configuration_id: setup.profiles[0].configurations[0].id.clone(),
+            test_files: vec!["test_counter.py".into()],
+            typescript_project: None,
+            required_test_ids: cases.iter().map(|s| s.to_string()).collect(),
+        };
+        let request = Request {
+            protocol_version: 1,
+            request_id: "concurrency".into(),
+            operation: Operation::Test,
+            payload: serde_json::to_value(&input).unwrap(),
+        };
+        let text = format!("{}\n", serde_json::to_string(&request).unwrap());
+        let oracle = fixtures::snapshot(
+            &ledger,
+            "oracle",
+            &[
+                ("requests/concurrency.json", &text),
+                (
+                    "test_counter.py",
+                    include_str!("../fixtures/concurrency/test_counter.py"),
+                ),
+            ],
+        )
+        .unwrap();
+        let command = packs::runtime_test_command(["concurrency".into()].into()).unwrap();
+        let registry = CommandRegistry {
+            commands: vec![command.clone()],
+        };
+        setup.environment.registry_digest = Digest::of_json(&registry).unwrap();
+        let mut spec = setup.plan.checks[0].clone();
+        spec.command_id = command.id;
+        spec.checker_digest = command.checker_digest;
+        spec.expected_case_ids = cases.iter().map(|s| s.to_string()).collect();
+        spec.minimum_test_count = 4;
+        spec.validated_parameters = [("request_id".into(), "concurrency".into())].into();
+        let observation = ContainerBackend::local(&support::docker_path())
+            .unwrap()
+            .execute(
+                &ledger,
+                &candidate,
+                &oracle,
+                &setup.dependencies,
+                &setup.environment,
+                &registry,
+                &spec,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        let result = runtime::verify(
+            &request,
+            observation.stdout(),
+            &spec.configuration_digest,
+            observation.exit_code(),
+        )
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(observation.stderr())));
+        assert_eq!(
+            result.status,
+            if broken { Status::Fail } else { Status::Pass }
+        );
+        assert_eq!(result.inventory.executed(), 4);
+        if broken {
+            assert!(result
+                .inventory
+                .failed
+                .contains(&"test_linearizability".into()));
+        }
+    }
 }
 
 #[test]

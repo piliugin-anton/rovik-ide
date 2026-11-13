@@ -319,7 +319,10 @@ impl TaskSetup {
             definition.render(&check.validated_parameters)?;
             if matches!(
                 definition.parser,
-                crate::registry::Parser::PackProtocol | crate::registry::Parser::PackTests
+                crate::registry::Parser::PackProtocol
+                    | crate::registry::Parser::PackTests
+                    | crate::registry::Parser::PackBuild
+                    | crate::registry::Parser::PackNativeTests
             ) {
                 let request_id = check
                     .validated_parameters
@@ -335,33 +338,52 @@ impl TaskSetup {
                     })?;
                 let request: crate::pack_protocol::Request =
                     wire::decode(&ledger.read(&entry.content.digest)?)?;
-                let (profile, configuration_id) =
-                    if definition.parser == crate::registry::Parser::PackTests {
-                        let input = crate::runtime::input(&request)?;
-                        require(
-                            input
-                                .test_files
-                                .iter()
-                                .chain(input.typescript_project.iter())
-                                .all(|path| self.oracle.files.contains_key(path)),
-                            "runtime tests and compiler project must be protected oracle assets",
-                        )?;
-                        require(
-                            check
-                                .expected_case_ids
-                                .iter()
-                                .all(|id| input.required_test_ids.contains(id)),
-                            "runtime request omits approved cases",
-                        )?;
-                        (input.profile, input.configuration_id)
-                    } else {
-                        let input = request.native_input()?;
-                        require(
-                            request.operation == crate::pack_protocol::Operation::Index,
-                            "advisory operation cannot authorize a check",
-                        )?;
-                        (input.profile, input.configuration_id)
-                    };
+                let (profile, configuration_id) = if definition.parser
+                    == crate::registry::Parser::PackTests
+                {
+                    let input = crate::runtime::input(&request)?;
+                    require(
+                        input
+                            .test_files
+                            .iter()
+                            .chain(input.typescript_project.iter())
+                            .all(|path| self.oracle.files.contains_key(path)),
+                        "runtime tests and compiler project must be protected oracle assets",
+                    )?;
+                    require(
+                        check
+                            .expected_case_ids
+                            .iter()
+                            .all(|id| input.required_test_ids.contains(id)),
+                        "runtime request omits approved cases",
+                    )?;
+                    (input.profile, input.configuration_id)
+                } else if matches!(
+                    definition.parser,
+                    crate::registry::Parser::PackBuild | crate::registry::Parser::PackNativeTests
+                ) {
+                    let input = crate::native_checks::input(&request)?;
+                    require(
+                        input.check.behavioral()
+                            == (definition.parser == crate::registry::Parser::PackNativeTests),
+                        "native workspace operation has the wrong registered result kind",
+                    )?;
+                    require(
+                        check
+                            .expected_case_ids
+                            .iter()
+                            .all(|id| input.native.required_test_ids.contains(id)),
+                        "native workspace request omits approved cases",
+                    )?;
+                    (input.native.profile, input.native.configuration_id)
+                } else {
+                    let input = request.native_input()?;
+                    require(
+                        request.operation == crate::pack_protocol::Operation::Index,
+                        "advisory operation cannot authorize a check",
+                    )?;
+                    (input.profile, input.configuration_id)
+                };
                 require(
                     request.request_id == *request_id
                         && self.profiles.contains(&profile)

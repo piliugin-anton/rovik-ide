@@ -25,6 +25,11 @@ pub struct RiskRoute {
     pub commands: BTreeSet<String>,
     /// Candidate-bound authenticated semantic review types.
     pub reviews: BTreeSet<String>,
+    /// Protected concurrency cases grouped by the property they exercise.
+    /// Required groups are schedules, linearizability, cancellation and shutdown.
+    /// This records tested schedules and never claims exhaustive race freedom.
+    #[serde(default)]
+    pub concurrency_cases: BTreeMap<String, BTreeSet<String>>,
 }
 /// Attributed risk assessment, recorded before verification and recomputed at the gate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,7 +258,6 @@ impl RiskPolicy {
         registry: &crate::registry::CommandRegistry,
     ) -> Result<()> {
         for risk in &assessment.risks {
-            require(risk != "concurrency", "concurrency requires a registered race/linearizability configuration; sequential consumers cannot establish it")?;
             let required = matches!(
                 risk.as_str(),
                 "resource-lifetime" | "ffi" | "unsafe" | "concurrency" | "public-api"
@@ -269,6 +273,19 @@ impl RiskPolicy {
                 !route.commands.is_empty() && !route.reviews.is_empty(),
                 "risk route requires native evidence and semantic review",
             )?;
+            if risk == "concurrency" {
+                let groups: BTreeSet<_> =
+                    route.concurrency_cases.keys().map(String::as_str).collect();
+                require(groups == ["schedules", "linearizability", "cancellation", "shutdown"].into()
+                    && route.concurrency_cases.values().all(|cases| !cases.is_empty())
+                    && route.reviews.contains("concurrency-review"),
+                    "concurrency requires protected schedule, linearizability, cancellation and shutdown cases plus concurrency-review")?;
+                let cases: Vec<_> = route.concurrency_cases.values().flatten().collect();
+                require(
+                    cases.iter().collect::<BTreeSet<_>>().len() == cases.len(),
+                    "concurrency properties need distinct observable cases",
+                )?;
+            }
             require(
                 route
                     .reviews
@@ -277,6 +294,18 @@ impl RiskPolicy {
                 format!("missing candidate review for {risk}"),
             )?;
             for configuration in &plan.configurations {
+                if risk == "concurrency" {
+                    let planned: BTreeSet<_> = plan
+                        .required_final()
+                        .filter(|check| {
+                            check.configuration_digest == *configuration
+                                && route.commands.contains(&check.command_id)
+                        })
+                        .flat_map(|check| check.expected_case_ids.iter())
+                        .collect();
+                    require(route.concurrency_cases.values().flatten().all(|case| planned.contains(case)),
+                        "concurrency property has no protected case in a required final configuration")?;
+                }
                 for command in &route.commands {
                     require(
                         registry.get(command)?.kind == crate::plan::CheckKind::Behavioral,

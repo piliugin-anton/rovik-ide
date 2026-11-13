@@ -142,6 +142,36 @@ fn native_command(id: &str, parser: Parser) -> CommandDefinition {
         },
     }
 }
+
+/// Register a closed workspace operation for protected request identities.
+pub fn workspace_command(
+    check: crate::native_checks::NativeCheck,
+    requests: std::collections::BTreeSet<String>,
+) -> Result<CommandDefinition> {
+    let mut command = graph_command(requests)?;
+    command.id = format!(
+        "native-{}",
+        serde_json::to_value(check)
+            .map_err(|e| crate::Error::new(e.to_string()))?
+            .as_str()
+            .ok_or_else(|| crate::Error::new("invalid native check name".into()))?
+    );
+    command.parser = if check.behavioral() {
+        Parser::PackNativeTests
+    } else {
+        Parser::PackBuild
+    };
+    command.kind = if check.behavioral() {
+        CheckKind::Behavioral
+    } else {
+        CheckKind::Static
+    };
+    command.checker_digest = normalizer::checker_digest(command.parser);
+    command.limits.timeout_ms = 600_000;
+    command.limits.build_bytes = 2 * 1024 * 1024 * 1024;
+    command.limits.memory_bytes = 2 * 1024 * 1024 * 1024;
+    Ok(command)
+}
 /// GCC 12 hosted C17 / C++23 reference API consumer; no implicit target or feature defaults.
 pub fn c_family_reference_command(profile: &Profile) -> Result<CommandDefinition> {
     profile.require_resolved()?;

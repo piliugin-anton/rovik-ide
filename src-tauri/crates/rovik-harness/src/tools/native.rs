@@ -59,7 +59,7 @@ fn relative(value: &str) -> Result<String> {
         "graph references an undeclared source root".into(),
     ))
 }
-fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
+pub(super) fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
     let profile = &input.profile;
     profile.require_resolved()?;
     let config = profile
@@ -547,6 +547,11 @@ fn dispatch(request: &Request) -> Result<Value> {
     )?;
     crate::id(&request.request_id)?;
     match request.operation {
+        Operation::NativeCheck => {
+            let input = crate::native_checks::input(request)?;
+            serde_json::to_value(super::native_checks::check(&input)?)
+                .map_err(|e| Error::new(e.to_string()))
+        }
         Operation::Test => {
             let input = crate::runtime::input(request)?;
             serde_json::to_value(super::runtime::check(&input)?)
@@ -630,6 +635,11 @@ pub(super) fn protocol(request_id: &str) -> Result<i32> {
         let result = dispatch(&request)?;
         if request.operation == Operation::Test {
             let output: crate::runtime::TestOutput = wire::decode(&wire::canonical(&result)?)?;
+            test_exit = output.exit_code;
+        }
+        if request.operation == Operation::NativeCheck {
+            let output: crate::native_checks::NativeCheckOutput =
+                wire::decode(&wire::canonical(&result)?)?;
             test_exit = output.exit_code;
         }
         Ok(result)
