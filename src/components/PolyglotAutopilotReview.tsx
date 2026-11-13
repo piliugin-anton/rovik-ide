@@ -8,6 +8,7 @@ import {
 } from '../lib/polyglotHarness';
 import { harnessProviderProblem, parseHarnessRates } from '../lib/polyglotPlan';
 import PolyglotHarnessPanel from './PolyglotHarnessPanel';
+import PolyglotReviewFrame from './PolyglotReviewFrame';
 import PolyglotProviderRates, { type ProviderRateField } from './PolyglotProviderRates';
 
 /** Per-task human review freezes only non-secret setup and provider prices. */
@@ -63,8 +64,32 @@ export default function PolyglotAutopilotReview(props: {
     }
   });
   return (
-    <section class="settings-section" aria-label="Verified Autopilot task setup">
-      <h3>Review this verified Autopilot task</h3>
+    <PolyglotReviewFrame
+      title="Review this verified Autopilot task"
+      label="Verified Autopilot task setup"
+      closeLabel="Cancel task start"
+      onClose={props.onCancel}
+      actions={
+        <button
+          type="button"
+          class="chat-action-button primary"
+          disabled={!canStart()}
+          onClick={() => {
+            const configuration = inspection()?.configuration;
+            const selectedRates = rates();
+            if (!canStart() || !configuration || !selectedRates) return;
+            props.onStart({
+              setupId: configuration.setupId,
+              configurationDigest: configuration.digest,
+              untracked: [...untracked()],
+              rates: { ...selectedRates },
+            });
+          }}
+        >
+          Start reviewed verified Autopilot task
+        </button>
+      }
+    >
       <p>
         Execution: {props.executionLabel}. Model: {props.profile.label}.
       </p>
@@ -144,27 +169,6 @@ export default function PolyglotAutopilotReview(props: {
         />{' '}
         I reviewed this task's protected setup, execution host, model and prices.
       </label>
-      <button
-        type="button"
-        class="chat-action-button primary"
-        disabled={!canStart()}
-        onClick={() => {
-          const configuration = inspection()?.configuration;
-          const selectedRates = rates();
-          if (!canStart() || !configuration || !selectedRates) return;
-          props.onStart({
-            setupId: configuration.setupId,
-            configurationDigest: configuration.digest,
-            untracked: [...untracked()],
-            rates: { ...selectedRates },
-          });
-        }}
-      >
-        Start reviewed verified Autopilot task
-      </button>
-      <button type="button" class="link-button" onClick={props.onCancel}>
-        Cancel task start
-      </button>
-    </section>
+    </PolyglotReviewFrame>
   );
 }

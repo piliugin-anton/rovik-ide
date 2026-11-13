@@ -25,6 +25,7 @@ import PolyglotHarnessPanel from './PolyglotHarnessPanel';
 import PolyglotApproval, { SubjectFields } from './PolyglotApproval';
 import PolyglotPreparation from './PolyglotPreparation';
 import PolyglotProviderRates from './PolyglotProviderRates';
+import PolyglotReviewFrame from './PolyglotReviewFrame';
 
 /** Reviewed saved-plan implementation, independent of the ordinary agent's repair loop. */
 export default function PolyglotPlanImplementation(props: {
@@ -257,8 +258,51 @@ export default function PolyglotPlanImplementation(props: {
   });
 
   return (
-    <section class="settings-section polyglot-plan" aria-label="Verified plan implementation">
-      <h3>{props.runId ? 'Verified Autopilot task' : 'Verified plan implementation'}</h3>
+    <PolyglotReviewFrame
+      title={props.runId ? 'Verified Autopilot task' : 'Verified plan implementation'}
+      label="Verified plan implementation"
+      closeLabel="Close verified implementation"
+      closeDisabled={!props.contextProblem && (busy() || run()?.status === 'running')}
+      onClose={props.onClose}
+      actions={
+        <>
+          <Show when={!run() && !props.runId && !props.contextProblem}>
+            <button
+              type="button"
+              class="chat-action-button primary"
+              disabled={
+                unavailable() ||
+                !inputsReady() ||
+                !plan() ||
+                !inspection()?.configuration ||
+                !inspection()?.host.supported ||
+                !rates() ||
+                !criteriaReviewed() ||
+                !!inputProblem() ||
+                !!providerProblem()
+              }
+              onClick={() => void start()}
+            >
+              Start verified implementation
+            </button>
+          </Show>
+          <Show when={run()}>
+            {(current) => (
+              <Show when={current().canCancel}>
+                <button
+                  type="button"
+                  class="link-button"
+                  disabled={unavailable()}
+                  onClick={() => void runAction({ action: 'cancel', runId: current().runId })}
+                >
+                  Cancel implementation
+                </button>
+              </Show>
+            )}
+          </Show>
+        </>
+      }
+    >
       <p class="settings-hint">
         Execution: {props.executionLabel}. Model:{' '}
         {currentProfile()?.label ?? run()?.providerBinding?.model ?? 'Unavailable'}. The controller
@@ -381,24 +425,6 @@ export default function PolyglotPlanImplementation(props: {
           I reviewed these exact saved plan bytes and confirm the configured acceptance criteria
           cover the plan.
         </label>
-        <button
-          type="button"
-          class="chat-action-button primary"
-          disabled={
-            unavailable() ||
-            !inputsReady() ||
-            !plan() ||
-            !inspection()?.configuration ||
-            !inspection()?.host.supported ||
-            !rates() ||
-            !criteriaReviewed() ||
-            !!inputProblem() ||
-            !!providerProblem()
-          }
-          onClick={() => void start()}
-        >
-          Start verified implementation
-        </button>
         <For
           each={
             inspection()?.runs.filter(
@@ -586,16 +612,6 @@ export default function PolyglotPlanImplementation(props: {
                 Recover interrupted implementation
               </button>
             </Show>
-            <Show when={current().canCancel}>
-              <button
-                type="button"
-                class="link-button"
-                disabled={unavailable()}
-                onClick={() => void runAction({ action: 'cancel', runId: current().runId })}
-              >
-                Cancel implementation
-              </button>
-            </Show>
             <button
               type="button"
               class="link-button"
@@ -775,14 +791,6 @@ export default function PolyglotPlanImplementation(props: {
           </div>
         )}
       </Show>
-      <button
-        type="button"
-        class="link-button"
-        disabled={!props.contextProblem && (busy() || run()?.status === 'running')}
-        onClick={props.onClose}
-      >
-        Close verified implementation
-      </button>
-    </section>
+    </PolyglotReviewFrame>
   );
 }

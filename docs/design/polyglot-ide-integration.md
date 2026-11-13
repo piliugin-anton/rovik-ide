@@ -75,6 +75,10 @@ execution inputs to produce contract/design/oracle drafts and derive the check
 matrix. Show missing decisions and approvals in ordinary language. Never infer
 protected test adequacy, domain semantics or execution support from filenames.
 
+Plan and Autopilot setup reviews share the chat's available height with the
+conversation and composer. Long plans and evidence scroll in a keyboard-focusable
+region while the heading and Start, Cancel or Close controls stay visible.
+
 Resolve the chosen provider, endpoint, credentials and pricing through the existing
 trusted host configuration. Reuse the harness provider and durable model accounting.
 The harness owns implementation and bounded repair for a verified task. Stream its

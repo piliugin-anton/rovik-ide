@@ -64,6 +64,8 @@ test('each task needs fresh explicit setup and price review before freezing non-
   );
   await flush();
   assert.equal(start(root).disabled, true);
+  assert.ok(root.querySelector('.polyglot-review-actions')!.contains(start(root)));
+  assert.equal(root.querySelector('.polyglot-review-body')!.contains(start(root)), false);
   assert.deepEqual(
     calls.map((call) => call.action),
     ['inspect']

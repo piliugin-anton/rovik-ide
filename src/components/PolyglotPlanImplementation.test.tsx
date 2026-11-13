@@ -84,6 +84,30 @@ function ready(root: HTMLElement) {
   reviewed(root);
 }
 
+test('review controls remain outside the scrollable evidence before and during implementation', async () => {
+  const root = await page();
+  const body = root.querySelector<HTMLElement>('.polyglot-review-body')!;
+  const footer = root.querySelector('.polyglot-review-actions')!;
+  assert.ok(body.contains(root.querySelector('pre')), 'the exact plan is in the evidence region');
+  assert.equal(body.tabIndex, 0, 'the evidence can receive keyboard scrolling');
+  assert.equal(body.getAttribute('role'), 'region');
+  assert.ok(footer.contains(button(root, 'Start verified implementation')));
+  assert.ok(footer.contains(button(root, 'Close verified implementation')));
+  assert.equal(body.contains(footer), false, 'scrolling long evidence cannot hide the controls');
+
+  respond = (request) =>
+    request.action === 'inspectPlan'
+      ? savedHarnessPlan
+      : request.action === 'inspect'
+        ? planInspection()
+        : implementationRun('running');
+  ready(root);
+  button(root, 'Start verified implementation').click();
+  await flush();
+  assert.ok(footer.contains(button(root, 'Cancel implementation')));
+  assert.equal(button(root, 'Close verified implementation').disabled, true);
+});
+
 test('plan review starts only the trusted controller with saved bytes and explicit rates', async () => {
   const root = await page();
   assert.match(root.textContent!, /Build host/);
