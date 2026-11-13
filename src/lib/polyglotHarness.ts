@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { DialogSummary } from '../types';
-import type { HarnessPlanOperation } from './polyglotPlan';
+import type { HarnessPlanOperation, HarnessRates } from './polyglotPlan';
 
 /** A known chat on the currently selected project's execution host. */
 export interface HarnessChatContext {
@@ -57,13 +57,38 @@ export interface HarnessApproval {
 }
 
 export type HarnessRunStatus =
-  'running' | 'verified' | 'failed' | 'blocked' | 'stale' | 'cancelled';
+  'running' | 'verified' | 'applied' | 'failed' | 'blocked' | 'stale' | 'cancelled';
+
+/** Persisted provider identity excludes credentials; each resume resolves current secrets. */
+export interface HarnessProviderBinding {
+  profileId: string;
+  model: string;
+  endpoint: string;
+  rates: HarnessRates;
+}
+
+export interface HarnessApplicationReceipt {
+  subjectDigest: string;
+  candidateDigest: string;
+  root: string;
+  head: string;
+  location: 'local' | 'host';
+  applied: true;
+  deliveredLocally: boolean;
+  paths: string[];
+  appliedAtMs: number;
+  current: boolean;
+  journalId?: string;
+  synchronizationReleased?: boolean;
+}
 
 export interface HarnessRun {
   runId: string;
   kind?: 'verification' | 'implementation';
   planDigest?: string;
-  providerBinding?: unknown;
+  providerBinding?: HarnessProviderBinding;
+  application?: { subjectDigest: string; subject: unknown };
+  applicationReceipt?: HarnessApplicationReceipt;
   drafts?: { role: string; draft: unknown; advisory: true; requiresReview: true }[];
   state: string;
   status: HarnessRunStatus;
@@ -180,6 +205,11 @@ export function displayedHarnessStatus(
   unsavedFiles: readonly string[] | undefined,
   snapshotDigest?: string
 ): HarnessRunStatus {
+  if (run.status === 'applied') {
+    return verificationInputProblem(unsavedFiles) !== null || !run.applicationReceipt?.current
+      ? 'stale'
+      : 'applied';
+  }
   if (
     run.status === 'verified' &&
     (verificationInputProblem(unsavedFiles) !== null ||

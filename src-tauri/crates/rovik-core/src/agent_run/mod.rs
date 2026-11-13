@@ -203,6 +203,10 @@ struct RunControl {
     /// effort: it and its subagents follow the configuration with the
     /// kinds the pipeline needs on (D17, `autopilot::subagent_config`).
     autopilot: Option<autopilot::Effort>,
+    /// Immutable whole-task cap while a strict planning carrier is active.
+    strict_budget: Option<rovik_protocol::autopilot::Budget>,
+    /// Safe reviewed identity and prices, never provider credentials.
+    strict_pricing: Option<autopilot::StrictTask>,
     /// An Autopilot lead's (U04): when it started, what its replies and its
     /// subagents' cost so far, and what the task spent before it.
     started: std::time::Instant,
@@ -394,19 +398,30 @@ impl AgentState {
     /// follows its lead's; an Autopilot task's run has the kinds its
     /// pipeline needs on (D17).
     pub fn config_for(&self, dialog_id: &str) -> AgentConfig {
-        let (resolver, lead, effort) = {
+        let (resolver, lead, effort, strict_budget) = {
             let inner = self.lock();
             let lead = Self::lead_of(&inner, dialog_id);
             let effort = inner.runs.get(lead).and_then(|r| r.autopilot);
             // A candidate's chat follows the configuration of the chat whose
             // task it implements (T05).
             let owner = inner.candidates.get(lead).map_or(lead, |c| c.main.as_str());
-            (inner.resolver.clone(), owner.to_string(), effort)
+            (
+                inner.resolver.clone(),
+                owner.to_string(),
+                effort,
+                inner
+                    .runs
+                    .get(lead)
+                    .and_then(|run| run.strict_budget.clone()),
+            )
         };
         // Asked without the lock: the resolver may take locks of its own.
-        let config = resolver
+        let mut config = resolver
             .and_then(|resolve| resolve(&lead))
             .unwrap_or_else(|| self.config());
+        if let Some(budget) = strict_budget {
+            config.autopilot.budget = budget;
+        }
         match effort {
             Some(effort) => autopilot::run_config(config, effort),
             None => config,
@@ -437,6 +452,45 @@ impl AgentState {
             run.autopilot = Some(effort);
             run.spent_before = before;
         }
+    }
+
+    /// Pin the persisted task cap for this planning carrier and all its children.
+    pub(super) fn set_strict_budget(
+        &self,
+        dialog_id: &str,
+        budget: rovik_protocol::autopilot::Budget,
+    ) {
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.strict_budget = Some(budget);
+        }
+    }
+
+    /// Retain reviewed prices only for the exact selected planning model route.
+    pub(super) fn set_strict_task(&self, dialog_id: &str, task: autopilot::StrictTask) {
+        self.set_strict_budget(dialog_id, task.budget.clone());
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.strict_pricing = Some(task);
+        }
+    }
+
+    /// Add a reviewed-price receipt without inventing missing provider token counts.
+    pub(super) fn price_usage(
+        &self,
+        dialog_id: &str,
+        profile: &ModelProfile,
+        usage: Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        usage.map(|usage| {
+            let inner = self.lock();
+            match inner
+                .runs
+                .get(Self::lead_of(&inner, dialog_id))
+                .and_then(|run| run.strict_pricing.as_ref())
+            {
+                Some(task) => autopilot::priced_usage(task, profile, usage),
+                None => usage,
+            }
+        })
     }
 
     /// A reply's reported cost for Autopilot, and tokens not already settled
@@ -745,6 +799,8 @@ impl AgentState {
                 steer: steer.clone(),
                 child: None,
                 autopilot: None,
+                strict_budget: None,
+                strict_pricing: None,
                 started: std::time::Instant::now(),
                 spent: budget::Spent::default(),
                 spent_before: budget::Spent::default(),
@@ -1082,7 +1138,10 @@ impl AgentState {
             let others = inner.runs.iter().any(|(chat, r)| {
                 chat != dialog_id
                     && (r.parent.as_deref() == Some(dialog_id)
-                        || inner.candidates.get(chat).is_some_and(|c| c.main == dialog_id))
+                        || inner
+                            .candidates
+                            .get(chat)
+                            .is_some_and(|c| c.main == dialog_id))
             });
             if others {
                 return None;
@@ -1571,14 +1630,21 @@ pub(crate) static ANSWER_AT_DEADLINE: Mutex<std::collections::BTreeSet<String>> 
 /// `agent_start`'s run, which the Autopilot driver starts its stages with.
 pub(super) async fn start_run(
     core: &Core,
-    request: StartRequest,
+    mut request: StartRequest,
 ) -> Result<Option<String>, String> {
     let (state, db) = (&core.agents, &core.db);
     if let Some(config) = request.config.clone() {
         state.set_config(config);
     }
     let dialog_id = request.dialog_id.clone();
+    rovik_protocol::harness::normalize_verified_autopilot(
+        &mut request,
+        &state.config_for(&dialog_id).autopilot,
+    )?;
     check_project(db, &dialog_id, request.root.as_deref()).await?;
+    if autopilot::strict_guard_start(core, &request).await? {
+        return Ok(None);
+    }
     // A message that starts an Autopilot task: its plan's record is written
     // before its run's start is told (`Run::prepare`), the driver at work
     // meanwhile.
@@ -1942,7 +2008,9 @@ pub async fn agent_stop(core: &Core, dialog_id: String) -> bool {
 /// Stops the chat's run, or its task's stage that waits out the provider's
 /// rate limit: whether either was there to stop.
 async fn stop_now(core: &Core, dialog_id: &str) -> bool {
-    core.agents.stop(core, dialog_id) || autopilot::stop_waiting(core, dialog_id).await
+    core.agents.stop(core, dialog_id)
+        || autopilot::stop_strict(core, dialog_id).await
+        || autopilot::stop_waiting(core, dialog_id).await
 }
 
 pub fn agent_resolve_approval(
@@ -2377,6 +2445,31 @@ mod run_control_tests {
             .unwrap()
             .reserve(1, 300)
             .is_err());
+    }
+
+    #[test]
+    fn a_strict_planning_carrier_and_its_children_keep_the_frozen_cap_when_settings_change() {
+        let state = super::AgentState::default();
+        state.register("strict-budget", "model", None).unwrap();
+        state.set_autopilot(
+            "strict-budget",
+            super::autopilot::Effort::Balanced,
+            Default::default(),
+        );
+        let pinned = rovik_protocol::autopilot::Budget {
+            max_hours: Some(1.0),
+            max_cost: Some(2.0),
+            max_tokens: Some(1000),
+        };
+        state.set_strict_budget("strict-budget", pinned.clone());
+        state
+            .register_child("strict-child", "strict-budget", "call", "model", None)
+            .unwrap();
+        state.set_config(super::AgentConfig::default());
+        assert_eq!(state.config_for("strict-budget").autopilot.budget, pinned);
+        assert_eq!(state.config_for("strict-child").autopilot.budget, pinned);
+        assert!(state.request_admission("strict-budget").is_some());
+        assert!(state.request_admission("strict-child").is_some());
     }
 
     #[test]

@@ -29,6 +29,16 @@ use std::{
 #[path = "ide_plan.rs"]
 mod plan;
 
+#[path = "ide_application.rs"]
+mod application;
+pub use application::application_guard;
+#[path = "ide_autopilot.rs"]
+mod autopilot;
+pub use autopilot::{
+    ensure_autopilot, validate_autopilot_assets, validate_implementation_provider, AutopilotIntake,
+    AutopilotReadiness,
+};
+
 type ActiveRuns = BTreeMap<(PathBuf, String), Cancellation>;
 static ACTIVE: OnceLock<Mutex<ActiveRuns>> = OnceLock::new();
 static OWNERSHIP: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -233,6 +243,7 @@ impl IdeProject {
             CREATE TABLE IF NOT EXISTS configuration(singleton INTEGER PRIMARY KEY CHECK(singleton=1), value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS captures(digest TEXT PRIMARY KEY, untracked TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, input TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0, owner TEXT, error TEXT, created_ms INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS applications(subject TEXT PRIMARY KEY, run_id TEXT NOT NULL, value TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', receipt TEXT, created_ms INTEGER NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_run ON runs(active) WHERE active=1;")?;
         Ok(database)
     }
@@ -614,6 +625,33 @@ impl IdeProject {
 
     fn dispatch(&self, request: Operation) -> Result<Value> {
         match request {
+            Operation::ApplicationState => self.application_guard(),
+            Operation::ReleaseApplication {
+                run_id,
+                subject_digest,
+                acknowledged,
+            } => self.release_application(&run_id, &Digest::parse(&subject_digest)?, acknowledged),
+            Operation::PrepareApplication { run_id } => self.prepare_application(&run_id),
+            Operation::ApplyApplication {
+                run_id,
+                subject_digest,
+                saved_buffers,
+            } => self.apply_application(
+                &run_id,
+                &Digest::parse(&subject_digest)?,
+                saved_buffers,
+                false,
+            ),
+            Operation::RecoverApplication {
+                run_id,
+                subject_digest,
+                saved_buffers,
+            } => self.apply_application(
+                &run_id,
+                &Digest::parse(&subject_digest)?,
+                saved_buffers,
+                true,
+            ),
             Operation::InspectPlan { plan_path } => encode(&self.read_plan(&plan_path)?),
             Operation::PrepareWorkspace { input } => {
                 let ledger = self.ledger()?;
@@ -737,14 +775,13 @@ impl IdeProject {
                         && request.policy_digest == Digest::of_json(&setup.policy)?,
                     "Approval must name this exact run, scope and policy.",
                 )?;
+                let mut pending = controller.pending_approvals(&run_id)?;
+                pending.extend(self.application_requirements(&controller, &run_id)?);
                 check(
-                    controller
-                        .pending_approvals(&run_id)?
-                        .iter()
-                        .any(|pending| {
-                            pending.subject_digest == request.subject_digest
-                                && pending.approval_type == request.approval_type
-                        }),
+                    pending.iter().any(|pending| {
+                        pending.subject_digest == request.subject_digest
+                            && pending.approval_type == request.approval_type
+                    }),
                     "The requested approval is not a pending decision for this run.",
                 )?;
                 controller.ledger.grant(
@@ -1197,13 +1234,17 @@ impl IdeProject {
             self.read_plan(&binding.path)
                 .is_ok_and(|plan| plan.digest == binding.digest)
         });
+        let (application, application_receipt, application_current) =
+            self.application_fields(run_id)?;
         let stale = !configuration_current
             || !plan_current
-            || current_digest.as_ref() != Some(&input.snapshot_digest);
+            || (!application_current && current_digest.as_ref() != Some(&input.snapshot_digest));
         let worker_error = error.is_some();
         let mut reasons: Vec<String> = error.into_iter().collect();
-        if let Err(error) = current {
-            reasons.push(error.message);
+        if !application_current {
+            if let Err(error) = current {
+                reasons.push(error.message);
+            }
         }
         let gate = if candidate.is_some() {
             match self
@@ -1231,7 +1272,9 @@ impl IdeProject {
         let policy_digest = Digest::of_json(&setup.policy)?;
         let scope_digest = Digest::of_json(&setup.contract.scope)?;
         let mut pending = Vec::new();
-        for requirement in controller.pending_approvals(run_id)? {
+        let mut requirements = controller.pending_approvals(run_id)?;
+        requirements.extend(self.application_requirements(&controller, run_id)?);
+        for requirement in requirements {
             let request = ApprovalRequest {
                 run_id: Some(run_id.into()),
                 subject_digest: requirement.subject_digest.clone(),
@@ -1266,7 +1309,14 @@ impl IdeProject {
             pending.push(json!({"approvalType":requirement.approval_type,"subjectDigest":requirement.subject_digest,"scopeDigest":scope_digest,"policyDigest":policy_digest,
                 "summary":format!("Review the exact {} decision for this verification run.",requirement.approval_type),"request":request,"subject":subject,"subjectKind":reference.kind,"assets":assets}));
         }
-        let status = if stale {
+        let status = if application_current
+            && run.state == State::Accepted
+            && gate
+                .as_ref()
+                .is_some_and(|gate| gate.verdict == Verdict::Ready)
+        {
+            "applied"
+        } else if stale {
             "stale"
         } else if running {
             "running"
@@ -1311,6 +1361,7 @@ impl IdeProject {
         }
         Ok(
             json!({"runId":run_id,"kind":if input.plan.is_some(){"implementation"}else{"verification"},"planDigest":input.plan.as_ref().map(|p| &p.digest),"providerBinding":input.plan.as_ref().map(|p| &p.provider),"drafts":plan::drafts(&controller, run_id)?,"workspace":self.root,"state":run.state,"status":status,"snapshotDigest":input.snapshot_digest,
+            "application":application,"applicationReceipt":application_receipt,
             "candidateDigest":candidate.map(|candidate|candidate.digest()).transpose()?,"configurationDigest":input.configuration_digest,
             "reason":reasons.first(),"reasons":reasons,"pendingApprovals":pending,"checks":checks,"gate":gate,
             "budgets":budgets,"operations":operations,

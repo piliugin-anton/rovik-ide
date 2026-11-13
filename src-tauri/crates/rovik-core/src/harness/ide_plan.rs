@@ -32,7 +32,7 @@ pub(super) struct SavedPlan {
     pub content: String,
 }
 
-fn binding(selection: &ImplementationProvider) -> Result<ProviderBinding> {
+pub(super) fn binding(selection: &ImplementationProvider) -> Result<ProviderBinding> {
     let profile = &selection.profile;
     check(profile.connector_kind().is_none() && profile.connector.is_none()
         && !crate::anthropic::is_anthropic(&profile.base_url)
@@ -88,7 +88,7 @@ pub(super) fn provider(selection: &ImplementationProvider) -> Result<HarnessProv
 // UTF-8 byte per input token plus role instructions and message framing is a
 // conservative reservation; actual provider accounting releases unused budget.
 // Never increase the operator's total budget to make an underfunded task run.
-fn reserve_provider_limits(
+pub(super) fn reserve_provider_limits(
     limits: &mut rovik_harness::controller::WorkerLimits,
     rates: &ModelRates,
     budgets: &BTreeMap<String, u64>,
@@ -126,7 +126,10 @@ fn reserve_provider_limits(
     Ok(())
 }
 
-fn require_unchanged_protected_inputs(setup: &TaskSetup, captured: &Snapshot) -> Result<()> {
+pub(super) fn require_unchanged_protected_inputs(
+    setup: &TaskSetup,
+    captured: &Snapshot,
+) -> Result<()> {
     let protected = setup
         .policy
         .scopes
@@ -264,7 +267,7 @@ impl IdeProject {
         self.status(&setup.run_id)
     }
 
-    fn implementation_setup(
+    pub(super) fn implementation_setup(
         &self,
         configuration: &Configuration,
         captured: Snapshot,

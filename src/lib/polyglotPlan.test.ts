@@ -137,3 +137,76 @@ test('a strict session blocks project changes and chat ownership changes without
     /project changed/
   );
 });
+
+test('resumed verified runs accept rotated credentials while preserving provider model and endpoint identity', async () => {
+  const { boundHarnessProviderProblem } = await import('./polyglotPlan');
+  const binding = {
+    profileId: planProfile.id,
+    model: planProfile.model,
+    endpoint: `${planProfile.baseUrl}/chat/completions`,
+    rates: { input: 1, cachedInput: 0, output: 2 },
+  };
+  assert.equal(
+    boundHarnessProviderProblem(binding, { ...planProfile, apiKey: 'rotated-secret' }),
+    null
+  );
+  assert.match(boundHarnessProviderProblem(binding, undefined)!, /unavailable/);
+  for (const changed of [
+    { id: 'other::model' },
+    { model: 'different' },
+    { baseUrl: 'https://elsewhere.invalid/v1' },
+  ]) {
+    assert.match(
+      boundHarnessProviderProblem(binding, { ...planProfile, ...changed })!,
+      /different provider, model or endpoint/
+    );
+  }
+});
+
+test('strict provider review rejects credential-bearing endpoint URLs before their identity is persisted', () => {
+  for (const baseUrl of [
+    'https://user:secret@example.invalid/v1',
+    'https://example.invalid/v1?api_key=secret',
+    'https://example.invalid/v1#secret',
+  ]) {
+    assert.match(harnessProviderProblem({ ...planProfile, baseUrl })!, /API key field/);
+  }
+});
+
+test('reviewed task dispatch rechecks chat, project, host and editor state after asynchronous preparation', async () => {
+  const { dispatchReviewedTask } = await import('./polyglotPlan');
+  const captured = { root: '/project', projectId: 'project', owner: 'host-a', dialogId: 'chat' };
+  for (const mutation of ['root', 'project', 'host', 'chat', 'unsaved']) {
+    let current = {
+      root: '/project',
+      projectId: 'project',
+      chatProjectId: 'project',
+      owner: 'host-a',
+      dialogId: 'chat',
+    };
+    let unsaved: string[] = [];
+    let finish: (value: string) => void = () => {};
+    let dispatched = 0;
+    const pending = dispatchReviewedTask({
+      captured,
+      current: () => current,
+      unsavedFiles: () => unsaved,
+      prepare: () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+      dispatch: async () => {
+        dispatched++;
+        return true;
+      },
+    });
+    if (mutation === 'root') current = { ...current, root: '/other-checkout' };
+    if (mutation === 'project') current = { ...current, projectId: 'other-project' };
+    if (mutation === 'host') current = { ...current, owner: 'host-b' };
+    if (mutation === 'chat') current = { ...current, dialogId: 'other-chat' };
+    if (mutation === 'unsaved') unsaved = ['src/new.ts'];
+    finish('prepared');
+    await assert.rejects(pending, /changed|Save or undo/);
+    assert.equal(dispatched, 0, mutation);
+  }
+});

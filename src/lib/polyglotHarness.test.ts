@@ -144,3 +144,39 @@ test('only a known host chat belonging to the open project can be offered for ve
   );
   assert.equal(eligibleHarnessChat('project-1', 'project-1', chat, []), undefined);
 });
+
+test('an application receipt verifies only its exact current checkout and saved editor state', () => {
+  const applied: HarnessRun = {
+    runId: 'run',
+    state: 'ACCEPTED',
+    status: 'applied',
+    snapshotDigest: 'before-application',
+    candidateDigest: 'candidate',
+    pendingApprovals: [],
+    canResume: false,
+    canRecover: false,
+    canCancel: false,
+    applicationReceipt: {
+      subjectDigest: 'subject',
+      candidateDigest: 'candidate',
+      root: '/host/project',
+      head: 'head',
+      location: 'host',
+      applied: true,
+      deliveredLocally: false,
+      paths: ['src/fix.ts'],
+      appliedAtMs: 1,
+      current: true,
+    },
+  };
+  assert.equal(displayedHarnessStatus(applied, [], 'after-application'), 'applied');
+  assert.equal(displayedHarnessStatus(applied, ['src/fix.ts']), 'stale');
+  assert.equal(
+    displayedHarnessStatus(
+      { ...applied, applicationReceipt: { ...applied.applicationReceipt!, current: false } },
+      []
+    ),
+    'stale'
+  );
+  assert.equal(displayedHarnessStatus({ ...applied, applicationReceipt: undefined }, []), 'stale');
+});

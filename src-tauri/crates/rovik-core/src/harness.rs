@@ -51,7 +51,8 @@ impl Rates {
             cost_microunits,
         })
     }
-    fn usage(&self, value: serde_json::Value) -> Result<Usage> {
+    /// Price actual provider counts; missing or invalid usage remains unresolved.
+    pub(crate) fn usage(&self, value: serde_json::Value) -> Result<Usage> {
         let input = value
             .get("prompt_tokens")
             .and_then(|n| n.as_u64())
@@ -62,12 +63,22 @@ impl Rates {
             .ok_or_else(|| Error::new("provider omitted completion token usage".into()))?;
         let cached = value
             .pointer("/prompt_tokens_details/cached_tokens")
-            .and_then(|n| n.as_u64());
+            .map(|n| {
+                n.as_u64().ok_or_else(|| {
+                    Error::new("provider supplied invalid cached token usage".into())
+                })
+            })
+            .transpose()?;
         let cached_count = cached.unwrap_or(0);
         let uncached = input
             .checked_sub(cached_count)
             .ok_or_else(|| Error::new("provider cache count exceeds input count".into()))?;
-        let numerator = (u128::from(uncached) * u128::from(self.input))
+        let input_rate = if cached.is_some() {
+            self.input
+        } else {
+            self.input.max(self.cached_input)
+        };
+        let numerator = (u128::from(uncached) * u128::from(input_rate))
             .checked_add(u128::from(cached_count) * u128::from(self.cached_input))
             .and_then(|n| n.checked_add(u128::from(output) * u128::from(self.output)))
             .ok_or_else(|| Error::new("model cost overflow".into()))?;
@@ -173,6 +184,7 @@ mod git_delivery;
 pub mod ide;
 pub mod ide_prepare;
 pub mod ide_setup;
+pub mod ide_source;
 pub use git_delivery::{DeliveryCandidate, DeliveryReceipt, MergeCandidate};
 
 /// Integration observer for one explicitly selected Git repository and reference.

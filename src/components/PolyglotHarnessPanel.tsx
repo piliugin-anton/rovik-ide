@@ -16,6 +16,7 @@ import {
 const STATUS_LABEL = {
   running: 'Verification running',
   verified: 'Verified',
+  applied: 'Verified changes applied to the named checkout',
   failed: 'Verification failed',
   blocked: 'Verification blocked',
   stale: 'Verification is stale',

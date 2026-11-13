@@ -155,6 +155,14 @@ impl Results {
         }
     }
 
+    /// Whether the owning computer explicitly keeps this chat's result on its host.
+    pub fn keeps_on_host(&self, dialog_id: &str) -> bool {
+        matches!(
+            self.store.autonomy_of(dialog_id).delivery,
+            Delivery::KeepOnHost
+        )
+    }
+
     /// D15, H04: the chat's task delivered a landable result, which goes to
     /// its branch on its project's remote when its computer has this server
     /// push its results, and its pull request opens when it asked. None:

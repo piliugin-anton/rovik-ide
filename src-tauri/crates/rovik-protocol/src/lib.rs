@@ -65,6 +65,10 @@ pub mod features {
     pub const POLYGLOT_HARNESS: &str = "polyglot-harness";
     /// Reviewed plan implementation and preparation with ephemeral provider credentials.
     pub const POLYGLOT_IMPLEMENTATION: &str = "polyglot-implementation";
+    /// Authenticated reviewed checkout application with durable landing receipts.
+    pub const POLYGLOT_APPLICATION: &str = "polyglot-application";
+    /// Frozen strict Autopilot tasks with authenticated source and application receipts.
+    pub const POLYGLOT_AUTOPILOT: &str = "polyglot-autopilot";
     /// Reads current context files, including task cards, without a mounted volume.
     pub const CONTEXT_FILES: &str = "context-files";
     /// Incremental project-memory exchange, including edits and deletion markers.

@@ -126,9 +126,30 @@ pub async fn stage_for(
     start: &StartKind,
     effort: Effort,
 ) -> Result<Option<StageRun>, String> {
+    stage_for_bound(core, dialog_id, start, effort, None).await
+}
+
+/// Freeze strict task authority after ordinary run ownership has been registered.
+pub(in crate::agent_run) async fn stage_for_request(
+    core: &Core,
+    request: &StartRequest,
+    effort: Effort,
+) -> Result<Option<StageRun>, String> {
+    let frozen = super::strict::freeze(core, request).await?;
+    stage_for_bound(core, &request.dialog_id, &request.start, effort, frozen).await
+}
+
+async fn stage_for_bound(
+    core: &Core,
+    dialog_id: &str,
+    start: &StartKind,
+    effort: Effort,
+    frozen: Option<super::strict::StrictTask>,
+) -> Result<Option<StageRun>, String> {
     if let StartKind::Send { message } = start {
         if starts_task(message) {
-            let record = StageRecord::running(&message.id, Stage::Plan, 1, effort);
+            let mut record = StageRecord::running(&message.id, Stage::Plan, 1, effort);
+            record.strict_task = frozen;
             return record_run(core, dialog_id, &record).await.map(Some);
         }
         let Some(record) = record_named(message.meta.as_ref()) else {
@@ -146,6 +167,14 @@ pub async fn stage_for(
     let Some((_, records)) = current_task(core, dialog_id).await? else {
         return Ok(None);
     };
+    if super::strict::owns(&records)
+        && (records.iter().any(|r| r.record.name == Stage::Implement)
+            || records
+                .last()
+                .is_some_and(|r| matches!(r.record.name, Stage::Prepare | Stage::Tests)))
+    {
+        return Err("This verified task must resume its durable controller; an ordinary agent run cannot own its implementation or delivery.".into());
+    }
     let last = records.last().expect("a task has a record");
     if last.record.status == Status::Running {
         return Ok(last.record.name.has_run().then(|| StageRun::of(last)));
@@ -547,15 +576,23 @@ pub(super) async fn advance(
                 continue;
             }
         }
-        let record = match stage.carrier() {
-            Carrier::Inside { run, key } => {
-                inside_record(core, dialog_id, &records, stage, run, key).await?
-            }
-            Carrier::Agent | Carrier::Ide => {
-                match start_stage(core, dialog_id, &records, stage, round, settings).await? {
-                    Started::Run => return Ok(()),
-                    Started::Recorded => continue,
-                    Started::Ended(record) => *record,
+        let record = if super::strict::owns(&records)
+            && matches!(
+                stage,
+                Stage::Review | Stage::Checks | Stage::Break | Stage::Acceptance
+            ) {
+            super::strict::inside(core, &records, stage, round).await?
+        } else {
+            match stage.carrier() {
+                Carrier::Inside { run, key } => {
+                    inside_record(core, dialog_id, &records, stage, run, key).await?
+                }
+                Carrier::Agent | Carrier::Ide => {
+                    match start_stage(core, dialog_id, &records, stage, round, settings).await? {
+                        Started::Run => return Ok(()),
+                        Started::Recorded => continue,
+                        Started::Ended(record) => *record,
+                    }
                 }
             }
         };
@@ -586,7 +623,9 @@ pub(super) async fn over_budget(
         true => task_spent(core, dialog_id).await?,
         false => total_spent(records.iter().map(|r| &r.record)),
     };
-    let budget = core.agents.config_for(dialog_id).autopilot.budget;
+    let budget = super::strict::frozen_budget(records)
+        .cloned()
+        .unwrap_or_else(|| core.agents.config_for(dialog_id).autopilot.budget);
     Ok(budget::over(&budget, &spent))
 }
 
@@ -633,6 +672,10 @@ pub(super) async fn start_stage(
         // A task's plan starts with its message, never here.
         Stage::Plan => Started::Run,
         Stage::Implement => {
+            if super::strict::owns(records) {
+                super::strict::start(core, dialog_id, records, round, settings, None).await?;
+                return Ok(Started::Run);
+            }
             // T05: Thorough's implementation is two candidates', each in a
             // working copy of its own, where copies can be made; else one
             // implementation, as Balanced's.
@@ -646,6 +689,15 @@ pub(super) async fn start_stage(
             }
             Started::when(start_implement(core, dialog_id, records, round, settings, None).await?)
         }
+        Stage::Prepare | Stage::Tests if super::strict::owns(records) => {
+            if super::strict::preparation(core, dialog_id, records, stage, round, settings, None)
+                .await?
+            {
+                Started::Recorded
+            } else {
+                Started::Run
+            }
+        }
         // S03: the installs, unless the settings turned them off.
         Stage::Prepare if !core.agents.config_for(dialog_id).autopilot.prepare => {
             skipped("Off in the settings".into())
@@ -655,6 +707,9 @@ pub(super) async fn start_stage(
         Stage::Prepare | Stage::Tests => Started::when(
             start_harness_stage(core, dialog_id, records, stage, round, settings).await?,
         ),
+        Stage::Pick if super::strict::owns(records) => {
+            skipped("One durable controller owns verified implementation and repairs.".into())
+        }
         Stage::Pick if crate::agent_run::candidates::ran(records) => Started::when(
             start_harness_stage(core, dialog_id, records, stage, round, settings).await?,
         ),
@@ -665,6 +720,10 @@ pub(super) async fn start_stage(
         // S09: the delivery's record and the report, in a run of its own;
         // a task the user stopped has no report: they're there.
         Stage::Deliver => {
+            if super::strict::owns(records) {
+                super::strict::delivery(core, dialog_id, records, round).await?;
+                return Ok(Started::Run);
+            }
             let record = StageRecord::running(task, stage, round, effort);
             let id = add_stage(core, dialog_id, &record).await?;
             if !undelivered(&task_outcome(records)) {
@@ -749,7 +808,10 @@ async fn retry_plan(
     let retries = notes
         .iter()
         .filter(|m| {
-            m.meta.as_ref().and_then(|v| v.get("harness")).and_then(Value::as_str)
+            m.meta
+                .as_ref()
+                .and_then(|v| v.get("harness"))
+                .and_then(Value::as_str)
                 == Some(crate::agent_run::plan_review::PLAN_RETRY)
         })
         .count() as u32;
@@ -769,7 +831,14 @@ async fn retry_plan(
     let spent = total_spent(plans.iter().map(|r| &r.record));
     let share = budget::share(&config.budget, fix.budget_share, fix.max_minutes);
     let over_share = budget::over(&share, &spent).is_some();
-    if !plan_retry_due(&outcome, record.effort, retries, &fix, over_share, state.as_ref()) {
+    if !plan_retry_due(
+        &outcome,
+        record.effort,
+        retries,
+        &fix,
+        over_share,
+        state.as_ref(),
+    ) {
         return Ok(false);
     }
     let why = failure_summary(&outcome).to_lowercase();
@@ -980,6 +1049,9 @@ pub(in crate::agent_run) async fn go_on(
     let Some(_driving) = try_drive_lock(dialog_id) else {
         return Ok(Some(None));
     };
+    if super::strict::guard_start(core, request).await? {
+        return Ok(Some(None));
+    }
     if core.agents.is_running(dialog_id) || crate::chat_hold::elsewhere(dialog_id) {
         return Ok(Some(None));
     }

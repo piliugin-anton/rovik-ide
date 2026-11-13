@@ -385,3 +385,211 @@ test('a start response arriving after the chat changes owners cannot claim an ac
   assert.doesNotMatch(root.textContent!, /Accepted — verified candidate/);
   assert.match(root.textContent!, /execution host changed/);
 });
+
+test('reopening a durable strict run uses its current bound credentials and never starts a new plan', async () => {
+  reset();
+  const binding = {
+    profileId: planProfile.id,
+    model: planProfile.model,
+    endpoint: `${planProfile.baseUrl}/chat/completions`,
+    rates: { input: 3, cachedInput: 1, output: 7 },
+  };
+  const [credential, setCredential] = createSignal('rotated-secret');
+  respond = () => ({ ...implementationRun(), providerBinding: binding });
+  const root = container();
+  cleanups.push(
+    render(
+      () => (
+        <PolyglotPlanImplementation
+          target={{ root: '/project', dialogId: 'owner' }}
+          runId="durable-run"
+          profile={{ ...planProfile, model: 'unrelated-active-model' }}
+          resolveProvider={() => ({ ...planProfile, apiKey: credential() })}
+          unsavedFiles={[]}
+          executionLabel="Owner host"
+          onClose={() => {}}
+        />
+      ),
+      root
+    )
+  );
+  await flush();
+  assert.deepEqual(
+    calls.map((entry) => entry.args.request.action),
+    ['status']
+  );
+  assert.equal(calls[0].args.request.runId, 'durable-run');
+  assert.equal(root.querySelector<HTMLInputElement>('[aria-label="Input rate"]')!.value, '3');
+  assert.equal(root.querySelector<HTMLInputElement>('[aria-label="Input rate"]')!.disabled, true);
+  setCredential('newest-secret');
+  button(root, 'Resume verified implementation').click();
+  await flush();
+  const resume = calls.find((entry) => entry.args.request.action === 'resumeImplementation')!.args
+    .request;
+  assert.equal(resume.provider.profile.apiKey, 'newest-secret');
+  assert.equal(resume.provider.profile.model, planProfile.model);
+  assert.deepEqual(resume.provider.rates, binding.rates);
+  assert.equal(
+    calls.some((entry) =>
+      ['implementPlan', 'resume', 'chat_send'].includes(entry.args.request.action)
+    ),
+    false
+  );
+  assert.doesNotMatch(root.textContent!, /newest-secret|rotated-secret/);
+});
+
+test('a missing bound provider blocks strict resume while leaving decisions and historical results readable', async () => {
+  reset();
+  respond = () => ({
+    ...implementationRun(),
+    providerBinding: {
+      profileId: planProfile.id,
+      model: planProfile.model,
+      endpoint: `${planProfile.baseUrl}/chat/completions`,
+      rates: { input: 0, cachedInput: 0, output: 0 },
+    },
+  });
+  const root = container();
+  cleanups.push(
+    render(
+      () => (
+        <PolyglotPlanImplementation
+          target={{ root: '/project' }}
+          runId="durable-run"
+          resolveProvider={() => undefined}
+          unsavedFiles={[]}
+          executionLabel="This computer"
+          onClose={() => {}}
+        />
+      ),
+      root
+    )
+  );
+  await flush();
+  assert.match(root.textContent!, /bound provider is unavailable/);
+  assert.equal(button(root, 'Resume verified implementation').disabled, true);
+  assert.equal(button(root, 'Refresh implementation result').disabled, false);
+});
+
+test('applying a verified candidate requires the exact delivery review and labels host-only receipts honestly', async () => {
+  reset();
+  let current = implementationRun('verified');
+  const approval: HarnessApproval = {
+    approvalType: 'delivery',
+    summary: 'Apply candidate to host checkout',
+    subjectKind: 'delivery',
+    subjectDigest: 'sha256:delivery',
+    scopeDigest: 'sha256:scope',
+    policyDigest: 'sha256:policy',
+    subject: {
+      candidateDigest: 'sha256:candidate',
+      root: '/host/project',
+      location: 'host',
+      paths: ['src/fix.ts'],
+    },
+    assets: [],
+    request: {
+      run_id: 'implementation-1',
+      subject_digest: 'sha256:delivery',
+      scope_digest: 'sha256:scope',
+      policy_digest: 'sha256:policy',
+      approval_type: 'delivery',
+      expires_ms: null,
+    },
+  };
+  respond = (request) => {
+    if (request.action === 'reviewChanges')
+      return {
+        runId: 'implementation-1',
+        candidateDigest: 'sha256:candidate',
+        patch: '+ corrected behavior',
+      };
+    if (request.action === 'prepareApplication')
+      current = {
+        ...current,
+        application: { subjectDigest: 'sha256:delivery', subject: approval.subject },
+        pendingApprovals: [approval],
+      };
+    if (request.action === 'approve') current = { ...current, pendingApprovals: [] };
+    if (request.action === 'applyApplication')
+      current = {
+        ...current,
+        status: 'applied',
+        applicationReceipt: {
+          subjectDigest: 'sha256:delivery',
+          candidateDigest: 'sha256:candidate',
+          root: '/host/project',
+          head: 'head',
+          location: 'host',
+          applied: true,
+          deliveredLocally: false,
+          paths: ['src/fix.ts'],
+          appliedAtMs: 1,
+          current: true,
+        },
+      };
+    if (request.action === 'releaseApplication')
+      current = {
+        ...current,
+        applicationReceipt: { ...current.applicationReceipt!, synchronizationReleased: true },
+      };
+    return current;
+  };
+  const root = container();
+  cleanups.push(
+    render(
+      () => (
+        <PolyglotPlanImplementation
+          target={{ root: '/project', dialogId: 'host' }}
+          runId="implementation-1"
+          unsavedFiles={[]}
+          executionLabel="Build host"
+          onClose={() => {}}
+        />
+      ),
+      root
+    )
+  );
+  await flush();
+  assert.equal(button(root, 'Prepare application review').disabled, true);
+  button(root, 'Review verified changes').click();
+  await flush();
+  button(root, 'Prepare application review').click();
+  await flush();
+  assert.equal(button(root, 'Apply reviewed verified changes').disabled, true);
+  assert.equal(
+    calls.some((entry) => entry.args.request.action === 'approve'),
+    false
+  );
+  button(root, 'Review delivery').click();
+  assert.match(root.textContent!, /\/host\/project/);
+  button(root, 'Approve delivery').click();
+  await flush();
+  assert.equal(button(root, 'Apply reviewed verified changes').disabled, false);
+  button(root, 'Apply reviewed verified changes').click();
+  await flush();
+  const applied = calls.find((entry) => entry.args.request.action === 'applyApplication')!.args
+    .request;
+  assert.equal(applied.subjectDigest, 'sha256:delivery');
+  assert.equal(applied.savedBuffers, true);
+  assert.match(root.textContent!, /Applied on execution host/);
+  assert.match(root.textContent!, /Desktop delivery remains a separate step/);
+  assert.doesNotMatch(root.textContent!, /Applied to local checkout/);
+  assert.equal(button(root, 'Allow synchronization').disabled, true);
+  const acknowledgement = [...root.querySelectorAll('label')]
+    .find((entry) => entry.textContent?.includes('preserved or manually integrated'))!
+    .querySelector<HTMLInputElement>('input')!;
+  acknowledgement.checked = true;
+  acknowledgement.dispatchEvent(new Event('change', { bubbles: true }));
+  button(root, 'Allow synchronization').click();
+  await flush();
+  assert.deepEqual(
+    calls.find((entry) => entry.args.request.action === 'releaseApplication')!.args.request,
+    {
+      action: 'releaseApplication',
+      runId: 'implementation-1',
+      subjectDigest: 'sha256:delivery',
+      acknowledged: true,
+    }
+  );
+});

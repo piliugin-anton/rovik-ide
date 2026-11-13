@@ -62,6 +62,9 @@ jobs:
       - name: Implement a saved IDE plan with the selected model and native verification
         working-directory: src-tauri
         run: cargo test --locked -p rovik-core --lib harness::ide::plan::tests::native_plan_implementation -- --ignored --test-threads=1
+      - name: Apply only an approved verified candidate and authenticate its receipt
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-core --lib harness::ide::application::tests::native_accepted_candidate -- --ignored --test-threads=1
       - name: Prepare isolation fixture outside verification
         run: |
           docker pull alpine:3.22.0

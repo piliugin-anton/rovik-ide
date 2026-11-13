@@ -31,7 +31,53 @@ pub struct HarnessRequest {
 }
 
 impl HarnessRequest {
-    pub(crate) async fn dispatch(self, backend: &DesktopBackend) -> DesktopResult {
+    pub(crate) async fn dispatch(
+        self,
+        backend: &DesktopBackend,
+        session: Option<&std::sync::Arc<crate::desktop_session::Session>>,
+    ) -> DesktopResult {
+        // Serialize application ownership with project opens/closures in every window.
+        // A saved-buffer assertion from one window cannot authorize overwriting another's editor.
+        let applying = matches!(
+            self.request,
+            Operation::ApplyApplication { .. } | Operation::RecoverApplication { .. }
+        );
+        let _project_turn = if applying {
+            Some(backend.project_changes.lock().await)
+        } else {
+            None
+        };
+        if applying {
+            let owner = session.ok_or_else(|| {
+                serde_json::Value::String(
+                    "Reconnect the IDE session before applying reviewed changes.".into(),
+                )
+            })?;
+            if owner.is_closed() {
+                return Err(serde_json::Value::String(
+                    "The IDE session ended before application.".into(),
+                ));
+            }
+            let root = std::path::PathBuf::from(&self.root);
+            let lookup = root.clone();
+            let id = backend
+                .core
+                .db
+                .read(move |db| rovik_core::chat_db::projects::opened_project_at(db, &lookup))
+                .await
+                .map_err(serde_json::Value::String)?
+                .ok_or_else(|| {
+                    serde_json::Value::String(
+                        "Open this registered project before applying reviewed changes.".into(),
+                    )
+                })?;
+            if let Some(other) = backend
+                .remote
+                .project_open_elsewhere(owner.id(), &id, Some(&root))
+            {
+                return Err(serde_json::Value::String(format!("{} is open in another window. Save its buffers and close it there before applying changes.",other.display())));
+            }
+        }
         if let Some(dialog_id) = self.selected_chat().map_err(serde_json::Value::String)? {
             return match backend
                 .dispatch(Request::Harness {

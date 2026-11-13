@@ -77,7 +77,45 @@ same unchanged plan exposes its saved **Open implementation …** entries.
 **Accepted — verified candidate** identifies a private candidate that passed the
 reviewed gate. **Review verified changes** opens its diff; **Export review bundle**
 saves a bundle on the execution host. These actions preserve the working tree and
-index. Applying a candidate is added by the following delivery integration phase.
+index. Applying a candidate requires the separate delivery review described below.
+
+## Verified Autopilot and applying candidates
+
+Enable **Settings → Autopilot → Require verified delivery**. This also applies to
+hosts set to **Works on its own**. Before sending each task, review its prepared
+setup, execution host, model and explicit provider rates, then select **Start
+reviewed verified Autopilot task**. The option defaults off for existing settings.
+
+**Plan** generates the saved plan. **Prepare** checks the pinned local image and
+prepared dependencies. **Tests** validates protected acceptance assets and their
+case inventory; this stage does not claim those tests have passed. **Implement**
+pauses for exact approvals, then uses the same controller as verified plan
+implementation. Actual baseline, negative-control and final verification remain
+controller-owned. Ordinary Autopilot tasks keep their existing implementation path.
+
+Use **Open verified task decisions and result** to review or resume the durable
+run. Cancellation and recovery preserve ownership and accounting. Turning off the
+global option cannot downgrade an existing verified task. Provider identity,
+prices, setup, workspace and task budget remain bound; credentials may be refreshed
+for the same provider. Implementation receives the remaining task budget, and
+retries do not reset spending. Unpriced alternate models or interrupted requests
+with unknown usage block bounded continuation.
+
+A verified candidate has not yet been applied. Select **Review verified changes**,
+then **Prepare application review**. Review and approve the exact delivery subject
+before choosing **Apply reviewed verified changes**. The backend rechecks evidence,
+approvals, the destination, index and saved file preimages, and records a durable
+application receipt. Conflicting files, changed authority or a moved destination
+block application. Interrupted writes have an explicit recovery path; a draft or
+an ordinary check result cannot grant verified delivery.
+
+Cloud application changes the host worktree. A current receipt completes a task
+configured to keep results on that host as **Applied on host**; it does not update
+the desktop checkout. Automatic verified transfer to other destinations is not
+implemented, and those tasks remain awaiting delivery. After preserving or
+manually integrating host changes, acknowledge the checkbox and select **Allow
+synchronization**. This releases host synchronization protection without claiming
+desktop delivery.
 
 ## Trust boundary
 
@@ -346,10 +384,9 @@ hosts retain their rootless Podman setup.
 
 ## IDE integration roadmap
 
-Project setup, model-free **Verify changes** and verified plan implementation are
-available through the shared core service and typed desktop/daemon RPCs described
-above. The next phases add Autopilot integration and editor architecture feedback,
-in that order. The [integration plan](polyglot-ide-integration.md)
+Project setup, model-free **Verify changes**, verified plan implementation and
+verified Autopilot use the shared core service and typed desktop/daemon RPCs
+described above. Editor architecture feedback is the next integration phase. The [integration plan](polyglot-ide-integration.md)
 records their acceptance criteria and implementation status.
 
 An approved bug-fix or API-refactor plan with explicit behavioral acceptance
@@ -517,9 +554,11 @@ a conservative lexical supplement, not proof that a program has no other risks.
 All six languages use the Linux container backend, immutable input mounts,
 network denial, resource limits, approvals and evidence bindings. The feature is
 enabled by creating and approving a strict harness task with the corresponding
-profile and registry; there is no new Autopilot toggle or replacement for its
-prepare stage. It runs on the machine executing the headless harness and requires
-no separately deployed controller service.
+profile and registry, through the IDE workflows above or the headless CLI.
+Autopilot's **Require verified delivery** option keeps Prepare responsible for
+prepared execution assets and Tests responsible for the protected acceptance
+assets. The controller runs on the selected execution host and requires no
+separately deployed controller service.
 
 Build the tool and image as described above, then run
 `cargo test -p rovik-harness --test runtimes -- --ignored --test-threads=1`

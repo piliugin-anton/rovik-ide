@@ -102,7 +102,7 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
-                Self::Harness(request) => request.dispatch(backend).await,
+                Self::Harness(request) => request.dispatch(backend, session).await,
                 Self::Workload(request) => request.dispatch(backend, session).await,
                 Self::Formatter(request) => request.dispatch(backend, session),
                 Self::Pages(request) => request.dispatch(backend, session),

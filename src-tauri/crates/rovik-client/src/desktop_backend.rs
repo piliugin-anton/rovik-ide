@@ -175,6 +175,12 @@ impl DesktopBackend {
             }
             Request::AgentStatus => return self.remote.status().await.map(Response::AgentStatus),
             Request::AgentStart(start) => return self.remote.start(*start).await,
+            Request::VerifiedAutopilotStart { .. } => {
+                return Err(rovik_protocol::Fail::new(
+                    rovik_protocol::FailCode::BadRequest,
+                    "Verified Autopilot source bindings are derived by desktop routing, never accepted from a window.",
+                ));
+            }
             Request::AgentSteer { dialog_id, message } => {
                 return self.remote.steer(&dialog_id, message).await
             }

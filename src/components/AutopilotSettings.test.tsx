@@ -55,6 +55,7 @@ test('autopilot settings: what the page is, and where the rest is set', () => {
   const { root, opened } = page();
   const titles = [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
   assert.deepEqual(titles, [
+    'Verified delivery',
     'Effort',
     'Budget per task',
     'Plan fixing',
@@ -243,4 +244,16 @@ test('autopilot settings: Thorough says which of its kinds still need a model (T
   assert.equal(note(balanced.root)!.classList.contains('warning'), false);
   // Each chosen: nothing to say.
   assert.equal(note(page({ effort: 'thorough' }).root), undefined);
+});
+
+test('verified delivery opt-in persists without silently changing the existing preparation stage', () => {
+  const { root, settings } = page();
+  const verified = checkbox(root, 'Require verified delivery');
+  assert.equal(verified.checked, false);
+  verified.click();
+  assert.equal(settings().requireVerifiedDelivery, true);
+  assert.equal(autopilotConfig(settings()).prepare, true);
+  assert.match(root.textContent!, /Applies to hosts that work on their own/);
+  verified.click();
+  assert.equal(normalizeAutopilotSettings(settings()).requireVerifiedDelivery, undefined);
 });

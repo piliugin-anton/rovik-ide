@@ -40,6 +40,34 @@ pub struct SourceBinding {
     pub tracked_paths: Vec<String>,
 }
 
+/// Whether this user message requests a new verified Autopilot task.
+/// Explicit message mode wins over a host's default; internal stage prompts are excluded.
+pub fn starts_verified_autopilot(
+    request: &crate::agent::StartRequest,
+    configuration: &crate::autopilot::AutopilotConfig,
+) -> bool {
+    if !configuration.require_verified_delivery {
+        return false;
+    }
+    let crate::agent::StartKind::Send { message } = &request.start else {
+        return false;
+    };
+    if message
+        .meta
+        .as_ref()
+        .is_some_and(|meta| meta.get("harness").is_some())
+    {
+        return false;
+    }
+    message
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("mode"))
+        .and_then(Value::as_str)
+        .or(request.mode.as_deref())
+        == Some("autopilot")
+}
+
 /// Explicit billing rates in microunits per million tokens, including deliberate zero rates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -74,6 +102,29 @@ pub enum DraftRole {
     Oracle,
 }
 
+/// Preserve the effective strict mode in the durable user message before task creation.
+pub fn normalize_verified_autopilot(
+    request: &mut crate::agent::StartRequest,
+    configuration: &crate::autopilot::AutopilotConfig,
+) -> Result<bool, String> {
+    let starts = starts_verified_autopilot(request, configuration);
+    if starts {
+        if let crate::agent::StartKind::Send { message } = &mut request.start {
+            let meta = message.meta.get_or_insert_with(|| serde_json::json!({}));
+            let fields = meta
+                .as_object_mut()
+                .ok_or("The task's message metadata must be an object.")?;
+            if fields.get("mode").is_some_and(|mode| !mode.is_string()) {
+                return Err("The task's message mode must be a string.".into());
+            }
+            fields
+                .entry("mode")
+                .or_insert_with(|| serde_json::json!("autopilot"));
+        }
+    }
+    Ok(starts)
+}
+
 /// User management actions, never exposed through the worker tool broker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -83,6 +134,40 @@ pub enum DraftRole {
     deny_unknown_fields
 )]
 pub enum Operation {
+    /// Prepare the exact accepted patch and destination for separate delivery approval.
+    PrepareApplication {
+        /// Durable accepted controller run.
+        run_id: String,
+    },
+    /// Apply only the authenticated, reviewed candidate to its bound execution workspace.
+    ApplyApplication {
+        /// Durable accepted controller run.
+        run_id: String,
+        /// Exact prepared application artifact reviewed by the operator.
+        subject_digest: String,
+        /// The IDE saved all editor buffers before requesting destination writes.
+        saved_buffers: bool,
+    },
+    /// Reconcile an interrupted private application journal under the same approval.
+    RecoverApplication {
+        /// Durable accepted controller run.
+        run_id: String,
+        /// Exact prepared application artifact.
+        subject_digest: String,
+        /// The IDE saved all editor buffers before recovering destination writes.
+        saved_buffers: bool,
+    },
+    /// Explicitly allow later host synchronization after the operator preserves applied changes.
+    ReleaseApplication {
+        /// Run whose host output is protected.
+        run_id: String,
+        /// Exact application receipt being acknowledged.
+        subject_digest: String,
+        /// Operator confirms the host changes were preserved or manually integrated.
+        acknowledged: bool,
+    },
+    /// Transport-only query: applied or interrupted output must not be overwritten by synchronization.
+    ApplicationState,
     /// Read the exact saved plan on the execution host for review.
     InspectPlan {
         /// In-project saved plan path.
@@ -217,7 +302,9 @@ impl Operation {
     /// Both desktop routing and the daemon use this classification before capturing inputs.
     pub fn requires_current_source(&self) -> bool {
         match self {
-            Self::InspectPlan { .. }
+            Self::PrepareApplication { .. }
+            | Self::ApplyApplication { .. }
+            | Self::InspectPlan { .. }
             | Self::PrepareWorkspace { .. }
             | Self::ImplementPlan { .. }
             | Self::ResumeImplementation { .. }
@@ -230,7 +317,10 @@ impl Operation {
             | Self::Verify { .. }
             | Self::Status { .. }
             | Self::Resume { .. } => true,
-            Self::ImportSetup { .. }
+            Self::ApplicationState
+            | Self::ReleaseApplication { .. }
+            | Self::RecoverApplication { .. }
+            | Self::ImportSetup { .. }
             | Self::Approvals { .. }
             | Self::Approve { .. }
             | Self::Cancel { .. }
@@ -238,9 +328,34 @@ impl Operation {
         }
     }
 
+    /// Actions allowed to observe or reconcile host output while desktop synchronization is blocked.
+    pub fn observes_applied_workspace(&self) -> bool {
+        matches!(
+            self,
+            Self::Status { .. }
+                | Self::Inspect { .. }
+                | Self::Approvals { .. }
+                | Self::ReviewChanges { .. }
+                | Self::ExportReview { .. }
+                | Self::PrepareApplication { .. }
+                | Self::ApplyApplication { .. }
+                | Self::RecoverApplication { .. }
+        )
+    }
+
+    /// Capture and recovery actions serialize with ordinary execution-workspace writes.
+    pub fn requires_workspace_lock(&self) -> bool {
+        self.requires_current_source() || matches!(self, Self::RecoverApplication { .. })
+    }
+
     /// The host capability required before serializing this action or forwarding model credentials.
     pub fn required_feature(&self) -> &'static str {
         match self {
+            Self::PrepareApplication { .. }
+            | Self::ApplyApplication { .. }
+            | Self::RecoverApplication { .. }
+            | Self::ReleaseApplication { .. }
+            | Self::ApplicationState => crate::features::POLYGLOT_APPLICATION,
             Self::InspectPlan { .. }
             | Self::PrepareWorkspace { .. }
             | Self::ImplementPlan { .. }
@@ -302,6 +417,47 @@ mod tests {
             );
             assert!(!format!("{operation:?}").contains("ephemeral-test-key"));
         }
+    }
+
+    #[test]
+    fn reviewed_application_requires_its_own_capability_and_explicit_write_confirmation() {
+        let requests = [
+            serde_json::json!({"action":"prepareApplication","runId":"run"}),
+            serde_json::json!({"action":"applyApplication","runId":"run","subjectDigest":"subject","savedBuffers":true}),
+            serde_json::json!({"action":"recoverApplication","runId":"run","subjectDigest":"subject","savedBuffers":true}),
+            serde_json::json!({"action":"releaseApplication","runId":"run","subjectDigest":"subject","acknowledged":true}),
+            serde_json::json!({"action":"applicationState"}),
+        ];
+        for request in requests {
+            let operation: Operation = serde_json::from_value(request.clone()).unwrap();
+            assert_eq!(
+                operation.required_feature(),
+                crate::features::POLYGLOT_APPLICATION
+            );
+            if let Some(field) = if request.get("savedBuffers").is_some() {
+                Some("savedBuffers")
+            } else if request.get("acknowledged").is_some() {
+                Some("acknowledged")
+            } else {
+                None
+            } {
+                let mut missing = request;
+                missing.as_object_mut().unwrap().remove(field);
+                assert!(serde_json::from_value::<Operation>(missing).is_err());
+            }
+        }
+        assert!(Operation::RecoverApplication {
+            run_id: "run".into(),
+            subject_digest: "subject".into(),
+            saved_buffers: true
+        }
+        .requires_workspace_lock());
+        assert!(!Operation::RecoverApplication {
+            run_id: "run".into(),
+            subject_digest: "subject".into(),
+            saved_buffers: true
+        }
+        .requires_current_source());
     }
 
     #[test]

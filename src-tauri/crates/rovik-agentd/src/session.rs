@@ -34,6 +34,8 @@ const FEATURES: &[&str] = &[
     features::CONTEXT_FILES,
     features::POLYGLOT_HARNESS,
     features::POLYGLOT_IMPLEMENTATION,
+    features::POLYGLOT_APPLICATION,
+    features::POLYGLOT_AUTOPILOT,
     features::MIRROR,
     features::HOST,
     features::CLEAN_UP,

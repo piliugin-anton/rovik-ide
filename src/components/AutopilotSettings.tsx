@@ -85,16 +85,37 @@ export default function AutopilotSettings(props: AutopilotSettingsProps) {
   return (
     <div class="permissions-settings">
       <p class="settings-hint">
-        In Autopilot, one message is a whole task, carried out without asking: the chat plans,
-        reviews, implements, checks and delivers it, and writes down what it couldn’t decide. A chat
-        is in Autopilot when you choose that mode next to the model picker, and every chat on a
-        cloud host set to “Works on its own” is (
+        In Autopilot, one message is a whole task: the chat plans, reviews, implements, checks and
+        delivers it, and writes down what it couldn’t decide. A chat is in Autopilot when you choose
+        that mode next to the model picker, and every chat on a cloud host set to “Works on its own”
+        is (
         <button class="link-button" onClick={() => props.onOpenPage('hosts')}>
           Cloud hosts
         </button>
         , where a host can override the effort and the budget). These settings apply to every such
         task started from this computer.
       </p>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Verified delivery</div>
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={s().requireVerifiedDelivery === true}
+            onChange={(event) =>
+              patch({ requireVerifiedDelivery: event.currentTarget.checked ? true : undefined })
+            }
+          />
+          <span>
+            Require verified delivery
+            <span class="setting-checkbox-sub">
+              Review a protected project setup and model rates for each task. Implementation,
+              repairs and final checks use the polyglot controller; exact decisions and applying
+              verified changes still require your review. Applies to hosts that work on their own.
+            </span>
+          </span>
+        </label>
+      </section>
 
       <section class="settings-section">
         <div class="settings-section-title">Effort</div>

@@ -194,6 +194,12 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Review exact approvals, provider prices and the resulting private candidate;
   cancellation and recovery preserve the same run and budget. This path needs a
   supported Linux execution host and an OpenAI-compatible Chat Completions model.
+- **Verified Autopilot delivery.** Enable **Require verified delivery** in
+  Autopilot settings and review the task's prepared setup and provider prices.
+  The controller owns implementation and repairs; restart, budget and approval
+  decisions stay with the task. Applying accepted changes needs an exact delivery
+  approval and a current destination. Cloud tasks can apply and keep results on
+  the host; automatic verified transfer to the desktop is not yet available.
 - **Local Docker setup.** On startup, Rovik installs Docker when it is missing
   on a supported desktop. Progress and retry actions appear alongside the
   browser installation notifications. Linux uses signed distribution packages

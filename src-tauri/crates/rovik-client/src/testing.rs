@@ -58,6 +58,8 @@ pub struct Fake {
     /// It answers `PageOpened` that the page isn't wanted any more (its
     /// command stopped waiting), once set.
     pub unwanted_pages: Arc<AtomicBool>,
+    /// Whether reviewed harness output prevents desktop-to-host synchronization.
+    pub application_blocked: Arc<AtomicBool>,
 }
 
 impl Connector for Fake {
@@ -117,6 +119,15 @@ async fn serve(mut io: DuplexStream, fake: Fake) {
                 let status = fake.status.lock().unwrap().clone();
                 let measured = fake.storage.lock().unwrap().clone();
                 let res = Ok(match (&req, info, status, measured) {
+                    (
+                        Request::Harness {
+                            operation: rovik_protocol::harness::Operation::ApplicationState,
+                            ..
+                        },
+                        ..,
+                    ) => Response::Harness(
+                        serde_json::json!({"blocked":fake.application_blocked.load(Ordering::Relaxed),"runs":[]}),
+                    ),
                     (Request::HostInfo, Some(info), _, _) => Response::HostInfo(info),
                     (Request::AgentStatus, _, Some(status), _) => Response::AgentStatus(status),
                     (Request::Storage, _, _, Some((before, _))) => Response::Storage(before),
@@ -224,7 +235,9 @@ fn answer(request: &Request) -> Response {
         Request::ClmReadRevision { dialog_id, number } => {
             Response::Text(format!("{dialog_id}:revision-{number}"))
         }
-        Request::AgentStart(_) => Response::RunId(Some("run-1".into())),
+        Request::AgentStart(_) | Request::VerifiedAutopilotStart { .. } => {
+            Response::RunId(Some("run-1".into()))
+        }
         Request::AgentStatus => Response::AgentStatus(AgentStatus::default()),
         Request::AgentStop { .. }
         | Request::AgentPause { .. }

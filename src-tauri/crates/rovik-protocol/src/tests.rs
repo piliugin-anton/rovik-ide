@@ -208,7 +208,8 @@ fn config() -> AgentConfig {
             options: Some(options()),
             max_tool_calls: Some(20),
             max_minutes: Some(2.5),
-            ..Default::default()
+            #[cfg(feature = "testing")]
+            extra_tools: Vec::new(),
         },
     );
     AgentConfig {
@@ -233,6 +234,8 @@ fn config() -> AgentConfig {
             ..Default::default()
         },
         autopilot: AutopilotConfig {
+            require_verified_delivery: true,
+            verified_delivery: None,
             effort: Effort::Thorough,
             budget: Budget {
                 max_hours: Some(1.5),
@@ -661,6 +664,21 @@ fn every_request_round_trips() {
                 },
             },
             Request::AgentStart(Box::new(start())),
+            Request::VerifiedAutopilotStart {
+                start: Box::new(start()),
+                source: Some(crate::harness::SourceBinding {
+                    head: "desktop-head".into(),
+                    snapshot: "synchronized-tree".into(),
+                    tracked_paths: vec!["src/lib.rs".into()],
+                }),
+            },
+            Request::VerifiedAutopilotStart {
+                start: Box::new(StartRequest {
+                    start: StartKind::Resume,
+                    ..start()
+                }),
+                source: None,
+            },
             Request::AgentStart(Box::new(StartRequest {
                 start: StartKind::RunChecks {
                     record_id: "r".into(),
@@ -1841,6 +1859,7 @@ fn autopilot_settings_round_trip_and_default_when_missing() {
     assert_eq!(
         round_trip(&config().autopilot),
         json!({
+            "requireVerifiedDelivery": true,
             "effort": "thorough",
             "budget": { "maxHours": 1.5, "maxCost": null },
             "prepare": false,
@@ -2123,7 +2142,10 @@ fn upper_reasoning_efforts_round_trip_without_aliasing() {
     for level in ["xhigh", "max"] {
         let effort: ReasoningEffort = serde_json::from_value(serde_json::json!(level)).unwrap();
         assert_eq!(effort.level(), level);
-        assert_eq!(serde_json::to_value(effort).unwrap(), serde_json::json!(level));
+        assert_eq!(
+            serde_json::to_value(effort).unwrap(),
+            serde_json::json!(level)
+        );
     }
 }
 
@@ -2153,4 +2175,23 @@ fn harness_management_requires_write_ownership_even_when_reading_status() {
         .target(),
         Some((crate::Target::Chat("owning-chat"), crate::Access::Write))
     );
+}
+
+#[test]
+fn verified_autopilot_is_opt_in_and_task_review_never_accepts_credentials() {
+    let old: AutopilotConfig = serde_json::from_value(json!({"effort":"balanced"})).unwrap();
+    assert!(!old.require_verified_delivery);
+    assert!(old.verified_delivery.is_none());
+    let reviewed = json!({"requireVerifiedDelivery":true,"verifiedDelivery":{"setupId":"sha256:setup","configurationDigest":"sha256:configuration","untracked":["src/new.rs"],"rates":{"input":1,"cachedInput":0,"output":2}}});
+    let decoded: AutopilotConfig = serde_json::from_value(reviewed.clone()).unwrap();
+    assert!(decoded.require_verified_delivery);
+    assert_eq!(
+        decoded.verified_delivery.as_ref().unwrap().untracked,
+        ["src/new.rs"]
+    );
+    let encoded = serde_json::to_value(decoded).unwrap();
+    assert_eq!(encoded["verifiedDelivery"], reviewed["verifiedDelivery"]);
+    let mut secret = reviewed;
+    secret["verifiedDelivery"]["apiKey"] = json!("never-persist");
+    assert!(serde_json::from_value::<AutopilotConfig>(secret).is_err());
 }

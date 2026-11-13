@@ -130,5 +130,13 @@ After pushing the final phase, inspect the PR's CI results and fix regressions.
   plan test made one priced model call, verified the private candidate and
   preserved dirty source and the Git index. Full Rust validation also exposed
   independent timing and file-history races; their fixes are delivered separately.
-- Phase 3: pending.
+- Phase 3: implemented. Strict task ownership,
+  prepared asset stages, frozen budgets/provider prices, restart and cancellation,
+  exact application approval and durable receipts are wired into Autopilot. Cloud
+  delivery currently supports keeping the applied result on its execution host;
+  other destinations remain awaiting delivery. All 1,172 frontend cases, types,
+  formatting and affected Rust cases passed after correcting test fixtures. Two
+  existing tests timed out in the broad local run and passed individually. The
+  native application test required exact delivery approval, applied the accepted
+  candidate and invalidated its receipt after an edit. Clippy added no warnings.
 - Phase 4: pending.

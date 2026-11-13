@@ -49,8 +49,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
             agent_run::check_project(db, &dialog_id, Some(&root))
                 .await
                 .map_err(|error| Fail::new(FailCode::BadRequest, error))?;
+            let lookup = dialog_id.clone();
             let project_id = db
-                .read(move |db| crate::chat_db::store::dialog_project(db, &dialog_id))
+                .read(move |db| crate::chat_db::store::dialog_project(db, &lookup))
                 .await
                 .map_err(|error| Fail::new(FailCode::BadRequest, error))?
                 .ok_or_else(|| {
@@ -59,7 +60,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
                         "Select a project-backed chat before using verification",
                     )
                 })?;
-            crate::harness::ide::execute(
+            let result = crate::harness::ide::execute(
                 core.paths.data_dir.join("harness"),
                 root.into(),
                 project_id,
@@ -67,7 +68,17 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
             )
             .await
             .map(Response::Harness)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+            if result.is_ok() {
+                agent_run::autopilot::reconcile_verified(core, &dialog_id).await;
+            }
+            result
+        }
+        Request::VerifiedAutopilotStart { .. } => {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                "A synchronized Autopilot source binding requires the owning cloud host",
+            ));
         }
         Request::AgentStart(start) => agent_run::agent_start(core, *start)
             .await

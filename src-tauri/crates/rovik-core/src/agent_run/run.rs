@@ -490,7 +490,7 @@ impl Run {
         let stage = match autopilot {
             true => {
                 let effort = config.autopilot.effort;
-                super::autopilot::stage_for(core, &dialog_id, &request.start, effort).await?
+                super::autopilot::stage_for_request(core, &request, effort).await?
             }
             false => None,
         };
@@ -526,6 +526,15 @@ impl Run {
                 // What its task spent before it counts against the budget (U04).
                 let before = super::autopilot::task_spent(core, &dialog_id).await?;
                 core.agents.set_autopilot(&dialog_id, effort, before);
+                if let Some((_, rows)) = super::autopilot::current_task(core, &dialog_id).await? {
+                    if let Some(task) = rows
+                        .first()
+                        .and_then(|r| r.record.strict_task.as_ref())
+                        .cloned()
+                    {
+                        core.agents.set_strict_task(&dialog_id, task);
+                    }
+                }
                 core.agents.config_for(&dialog_id)
             }
             false => config,
@@ -2120,6 +2129,7 @@ impl Run {
                     section,
                     calls: mcp_calls,
                 });
+            let actual_profile = self.profile.clone();
             let params = ChatParams {
                 admission: self.core.agents.request_admission(&self.dialog_id),
                 base_url: self.profile.base_url.clone(),
@@ -2323,6 +2333,10 @@ impl Run {
                     self.drop_reasoning_formats(&rejected, &unresolved);
                 }
                 self.take_effort();
+                let usage = self
+                    .core
+                    .agents
+                    .price_usage(&self.dialog_id, &actual_profile, usage);
                 if let Some(sub) = self.sub_mut() {
                     sub.note_usage(usage.as_ref());
                 }
@@ -2403,6 +2417,10 @@ impl Run {
                 self.drop_reasoning_formats(&rejected, &unresolved);
             }
 
+            let usage = self
+                .core
+                .agents
+                .price_usage(&self.dialog_id, &actual_profile, usage);
             if let Some(sub) = self.sub_mut() {
                 sub.note_usage(usage.as_ref());
             }

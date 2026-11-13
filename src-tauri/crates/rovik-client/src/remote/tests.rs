@@ -216,6 +216,175 @@ fn start(dialog_id: &str, kind: StartKind, current: Option<&str>) -> StartReques
     }
 }
 
+fn verified_start() -> StartRequest {
+    let mut request = start(
+        "chat",
+        StartKind::Send {
+            message: UserMessage {
+                id: "verified-task".into(),
+                content: "Implement the reviewed task".into(),
+                meta: None,
+                attachments: vec![],
+            },
+        },
+        None,
+    );
+    request.mode = Some("autopilot".into());
+    let mut config = AgentConfig::default();
+    config.autopilot.require_verified_delivery = true;
+    request.config = Some(config);
+    request
+}
+
+#[test]
+fn strict_mode_is_durable_and_never_overrides_an_explicit_other_mode() {
+    use rovik_protocol::harness::normalize_verified_autopilot;
+    let mut request = verified_start();
+    let configuration = request.config.as_ref().unwrap().autopilot.clone();
+    assert!(normalize_verified_autopilot(&mut request, &configuration).unwrap());
+    let StartKind::Send { message } = &mut request.start else {
+        unreachable!()
+    };
+    assert_eq!(message.meta.as_ref().unwrap()["mode"], "autopilot");
+    message.meta = Some(json!({"mode":"agent"}));
+    assert!(!normalize_verified_autopilot(&mut request, &configuration).unwrap());
+    let StartKind::Send { message } = &mut request.start else {
+        unreachable!()
+    };
+    message.meta = Some(json!({"harness":"internal-stage"}));
+    assert!(!normalize_verified_autopilot(&mut request, &configuration).unwrap());
+    let StartKind::Send { message } = &mut request.start else {
+        unreachable!()
+    };
+    message.meta = Some(json!(42));
+    assert!(normalize_verified_autopilot(&mut request, &configuration).is_err());
+    for mode in [Value::Null, json!(42)] {
+        let StartKind::Send { message } = &mut request.start else {
+            unreachable!()
+        };
+        message.meta = Some(json!({"mode":mode}));
+        assert!(normalize_verified_autopilot(&mut request, &configuration).is_err());
+    }
+}
+
+#[tokio::test]
+async fn strict_autopilot_never_sends_credentials_to_an_older_host() {
+    let app = App::new();
+    app.chat("chat", None, vec![]).await;
+    let (remote, fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    let error = remote.start(verified_start()).await.unwrap_err();
+    assert!(error.message.contains("update"), "{error}");
+    assert!(
+        !fake.requests.lock().unwrap().iter().any(|request| matches!(
+            request,
+            Request::AgentStart(_) | Request::VerifiedAutopilotStart { .. }
+        ))
+    );
+    remote.disconnect(HOST);
+}
+
+#[tokio::test]
+async fn autonomous_verified_starts_require_successful_project_synchronization() {
+    let app = App::new();
+    app.chat("chat", None, vec![]).await;
+    let fake = Fake::default();
+    fake.features.lock().unwrap().extend([
+        features::POLYGLOT_AUTOPILOT.into(),
+        features::PROJECTS.into(),
+    ]);
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    remote.set_policy(HOST, ApprovalPolicy::Autonomous);
+    let mut request = verified_start();
+    request.mode = None;
+    let error = remote.start(request).await.unwrap_err();
+    assert!(error.message.contains("project-backed"), "{error}");
+    assert!(
+        !fake.requests.lock().unwrap().iter().any(|request| matches!(
+            request,
+            Request::AgentStart(_) | Request::VerifiedAutopilotStart { .. }
+        ))
+    );
+    remote.disconnect(HOST);
+}
+
+#[tokio::test]
+async fn strict_autopilot_start_carries_the_real_head_and_index_without_a_local_path() {
+    use rovik_protocol::work::{ChatSync, SyncState};
+    let app = App::new();
+    let project = project_in(&app, "strict-task-project").await;
+    let root = app.dir.0.join("strict-task-project");
+    std::fs::write(root.join("source.txt"), "committed").unwrap();
+    let repository = git2::Repository::init(&root).unwrap();
+    let mut index = repository.index().unwrap();
+    index.add_path(std::path::Path::new("source.txt")).unwrap();
+    index.write().unwrap();
+    let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
+    let signature = git2::Signature::now("test", "test@example.com").unwrap();
+    let head = repository
+        .commit(Some("HEAD"), &signature, &signature, "baseline", &tree, &[])
+        .unwrap();
+    drop(tree);
+    std::fs::write(root.join("source.txt"), "dirty user work").unwrap();
+    std::fs::write(root.join("staged.txt"), "selected staged file").unwrap();
+    index.add_path(std::path::Path::new("staged.txt")).unwrap();
+    index.write().unwrap();
+    app.chat("chat", Some(&project), vec![]).await;
+    let fake = Fake::default();
+    fake.features.lock().unwrap().extend([
+        features::POLYGLOT_AUTOPILOT.into(),
+        features::PROJECTS.into(),
+    ]);
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let snapshot = remote.snapshot("chat").await.unwrap().unwrap();
+    remote
+        .lock()
+        .last_sync
+        .insert("chat".into(), snapshot.commit);
+    remote.synced(ChatSync {
+        dialog_id: "chat".into(),
+        state: SyncState::Synced,
+        files: vec![],
+    });
+    let mut request = verified_start();
+    request.root = Some(root.to_string_lossy().into_owned());
+    remote.start(request).await.unwrap();
+    let requests = fake.requests.lock().unwrap();
+    let (start, source) = requests
+        .iter()
+        .find_map(|request| match request {
+            Request::VerifiedAutopilotStart {
+                start,
+                source: Some(source),
+            } => Some((start, source)),
+            _ => None,
+        })
+        .expect("a source-bound start reaches the capable owner");
+    assert_eq!(start.root, None);
+    assert_eq!(source.head, head.to_string());
+    assert_eq!(source.snapshot, snapshot.commit.to_string());
+    assert_eq!(source.tracked_paths, ["source.txt", "staged.txt"]);
+    let StartKind::Send { message } = &start.start else {
+        unreachable!()
+    };
+    assert_eq!(message.meta.as_ref().unwrap()["mode"], "autopilot");
+    assert!(matches!(
+        Request::VerifiedAutopilotStart {
+            start: start.clone(),
+            source: Some(source.clone())
+        }
+        .target(),
+        Some((
+            rovik_protocol::Target::Chat("chat"),
+            rovik_protocol::Access::Write
+        ))
+    ));
+    drop(requests);
+    remote.disconnect(HOST);
+}
+
 #[tokio::test]
 async fn events_reach_the_frontend_as_6_1_says() {
     let app = App::new();
@@ -2934,5 +3103,85 @@ async fn implementation_does_not_use_an_unsynchronized_cloud_worktree() {
         .unwrap()
         .iter()
         .any(|request| matches!(request, Request::Harness { .. })));
+    remote.disconnect(HOST);
+}
+
+#[tokio::test]
+async fn applied_host_output_is_observed_without_resync_and_cannot_start_fresh_work() {
+    use rovik_protocol::harness::Operation;
+    use std::sync::atomic::Ordering;
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let fake = Fake::default();
+    fake.features.lock().unwrap().extend([
+        features::POLYGLOT_HARNESS.into(),
+        features::POLYGLOT_APPLICATION.into(),
+        features::PROJECTS.into(),
+    ]);
+    fake.application_blocked.store(true, Ordering::Relaxed);
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    // No desktop project exists: ordinary strict Status would fail source sync.
+    let status = remote
+        .route(
+            "chat",
+            Request::Harness {
+                dialog_id: "chat".into(),
+                root: Some("/desktop".into()),
+                source: None,
+                operation: Operation::Status {
+                    run_id: "applied".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        Response::Harness(json!({"dialogId":"chat","root":null}))
+    );
+    assert!(fake.requests.lock().unwrap().iter().any(|request| matches!(
+        request,
+        Request::Harness {
+            source: None,
+            operation: Operation::Status { .. },
+            ..
+        }
+    )));
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| matches!(request, Request::WorkSync { .. })));
+    fake.requests.lock().unwrap().clear();
+    let failure = remote
+        .route(
+            "chat",
+            Request::Harness {
+                dialog_id: "chat".into(),
+                root: None,
+                source: None,
+                operation: Operation::Verify {
+                    untracked: vec![],
+                    expected_snapshot_digest: "source".into(),
+                    saved_buffers: true,
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(failure
+        .message
+        .contains("have not been delivered to this computer"));
+    assert!(
+        !fake.requests.lock().unwrap().iter().any(|request| matches!(
+            request,
+            Request::Harness {
+                operation: Operation::Verify { .. },
+                ..
+            } | Request::WorkSync { .. }
+        ))
+    );
     remote.disconnect(HOST);
 }

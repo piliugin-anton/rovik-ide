@@ -43,6 +43,15 @@ pub enum Request {
     /// Boxed: a start is far bigger than any other request, and every
     /// request would take its size.
     AgentStart(Box<StartRequest>),
+    /// A strict Autopilot start with a desktop-authenticated synchronized source.
+    /// Only owning daemons accept this internal transport request. → `RunId`.
+    VerifiedAutopilotStart {
+        /// User start, with execution paths resolved by the host.
+        start: Box<StartRequest>,
+        /// Required for a new task. A durable strict task resumes its frozen binding.
+        #[serde(default)]
+        source: Option<crate::harness::SourceBinding>,
+    },
     AgentStop {
         dialog_id: String,
     },
@@ -451,7 +460,9 @@ impl Request {
         }
         match self {
             Request::Harness { dialog_id, .. } => chat(dialog_id, Write),
-            Request::AgentStart(start) => chat(&start.dialog_id, Write),
+            Request::AgentStart(start) | Request::VerifiedAutopilotStart { start, .. } => {
+                chat(&start.dialog_id, Write)
+            }
             Request::AgentStop { dialog_id }
             | Request::AgentPause { dialog_id, .. }
             | Request::AgentResolveApproval { dialog_id, .. }

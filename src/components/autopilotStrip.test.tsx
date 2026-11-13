@@ -710,3 +710,111 @@ test('a stage record spins only while its task’s run goes, not when another to
     api.getMessages = original;
   }
 });
+
+test('a durable strict task reopens its own decisions after restart instead of a stage repair action', () => {
+  const root = container();
+  const opened: string[] = [];
+  const shownRecords: string[] = [];
+  const rows: StageRow[] = JSON.parse(
+    JSON.stringify([
+      record('plan', 'plan', 'done', {
+        strictTask: {
+          schemaVersion: 1,
+          projectId: 'project',
+          root: '/host/project',
+          profileId: 'provider::model',
+          model: 'model',
+          endpoint: 'https://provider.invalid/v1/chat/completions',
+          configuration: {
+            setupId: 'setup',
+            configurationDigest: 'configuration',
+            untracked: [],
+            rates: { input: 1, cachedInput: 0, output: 2 },
+          },
+        },
+      }),
+      record('implement', 'implement', 'failed', {
+        strictRun: { runId: 'durable-run', stopped: false },
+        summary: 'Awaiting exact oracle approval',
+      }),
+    ])
+  );
+  const dispose = render(
+    () => (
+      <AutopilotStrip
+        rows={rows}
+        running={false}
+        onShow={(id) => shownRecords.push(id)}
+        onOpenVerified={(id) => opened.push(id)}
+      />
+    ),
+    root
+  );
+  try {
+    assert.match(root.textContent!, /Verified delivery required/);
+    const open = [...root.querySelectorAll('button')].find((entry) =>
+      entry.textContent?.includes('Open verified task decisions')
+    )!;
+    open.click();
+    assert.deepEqual(opened, ['durable-run']);
+    assert.deepEqual(shownRecords, [], 'strict action does not invoke ordinary stage continuation');
+  } finally {
+    dispose();
+  }
+});
+
+test('a paused strict preparation can be cancelled before a controller run exists', () => {
+  const root = container();
+  let cancellations = 0;
+  const [rows, setRows] = createSignal<StageRow[]>([
+    record('plan', 'plan', 'done', {
+      strictTask: {
+        schemaVersion: 1,
+        projectId: 'project',
+        root: '/project',
+        profileId: 'provider::model',
+        model: 'model',
+        endpoint: 'https://provider.invalid/v1/chat/completions',
+        configuration: {
+          setupId: 'setup',
+          configurationDigest: 'configuration',
+          untracked: [],
+          rates: { input: 0, cachedInput: 0, output: 0 },
+        },
+      },
+    }),
+    record('prepare', 'prepare', 'running', {
+      summary: 'Prepared setup changed; review another task.',
+    }),
+  ]);
+  const dispose = render(
+    () => (
+      <AutopilotStrip
+        rows={rows()}
+        running={false}
+        onShow={() => {}}
+        onCancelVerified={() => {
+          cancellations++;
+        }}
+      />
+    ),
+    root
+  );
+  const cancel = () =>
+    [...root.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Cancel verified task'
+    );
+  try {
+    assert.match(root.textContent!, /Prepared setup changed/);
+    assert.ok(cancel(), 'no runId or active ordinary run is needed to cancel the frozen task');
+    cancel()!.click();
+    assert.equal(cancellations, 1);
+    setRows((previous) => [
+      ...previous.slice(0, -1),
+      record('prepare', 'prepare', 'failed', { outcome: 'stopped' }),
+    ]);
+    assert.equal(cancel(), undefined, 'the persisted stop releases ownership');
+  } finally {
+    dispose();
+  }
+});

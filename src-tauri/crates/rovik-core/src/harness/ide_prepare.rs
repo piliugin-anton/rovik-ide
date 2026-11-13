@@ -581,6 +581,7 @@ pub fn build(
                 "design",
                 "oracle",
                 "design-review",
+                "delivery",
             ]
             .into_iter()
             .map(str::to_string)

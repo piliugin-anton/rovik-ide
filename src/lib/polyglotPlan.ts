@@ -5,6 +5,7 @@ import {
   type HarnessInspection,
   type HarnessRun,
   type HarnessTarget,
+  type HarnessProviderBinding,
 } from './polyglotHarness';
 import type { WorkspaceSetupInput } from './polyglotPreparation';
 
@@ -51,6 +52,14 @@ export type HarnessPlanOperation =
     }
   | { action: 'resumeImplementation'; runId: string; provider: HarnessProviderInput }
   | { action: 'reviewChanges' | 'exportReview'; runId: string }
+  | { action: 'prepareApplication'; runId: string }
+  | { action: 'releaseApplication'; runId: string; subjectDigest: string; acknowledged: true }
+  | {
+      action: 'applyApplication' | 'recoverApplication';
+      runId: string;
+      subjectDigest: string;
+      savedBuffers: true;
+    }
   | {
       action: 'draftPlan';
       runId: string;
@@ -64,6 +73,31 @@ export function harnessProviderProblem(profile: ModelProfile): string | null {
     return 'Choose an OpenAI-compatible model provider. Connector agents cannot run the verified worker.';
   if (profile.apiRoute === 'responses' || /api\.anthropic\.com/i.test(profile.baseUrl))
     return 'Choose a provider using Chat Completions. This verified worker does not support the selected API route.';
+  try {
+    const endpoint = new URL(profile.baseUrl);
+    if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
+      return 'Provider credentials must use the configured API key field; remove credentials, query parameters and fragments from the endpoint.';
+  } catch {
+    return 'The configured provider endpoint is not a valid URL.';
+  }
+  return null;
+}
+
+/** Rotated credentials are allowed; changing the endpoint, model or profile is not. */
+export function boundHarnessProviderProblem(
+  binding: HarnessProviderBinding,
+  profile: ModelProfile | undefined
+): string | null {
+  if (!profile)
+    return 'The bound provider is unavailable. Restore its configured model and credentials to resume.';
+  const problem = harnessProviderProblem(profile);
+  if (problem) return problem;
+  if (
+    binding.profileId !== profile.id ||
+    binding.model !== profile.model ||
+    binding.endpoint !== `${profile.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  )
+    return 'This run is bound to a different provider, model or endpoint. Restore its original configured provider to resume.';
   return null;
 }
 
@@ -134,4 +168,27 @@ export function verifiedPlanContextProblem(
   if (captured.owner !== current.owner)
     return 'The chat execution host changed or is unavailable. Reopen verified implementation on its current host; the previous run remains persisted.';
   return null;
+}
+
+/** Recheck provenance and editor state after asynchronous preparation, immediately before dispatch. */
+export async function dispatchReviewedTask<Prepared, Result>(args: {
+  captured: VerifiedPlanContext & { dialogId: string };
+  current: () => Parameters<typeof verifiedPlanContextProblem>[1] & { dialogId: string | null };
+  unsavedFiles: () => readonly string[] | undefined;
+  prepare: () => Promise<Prepared>;
+  dispatch: (prepared: Prepared) => Promise<Result>;
+}): Promise<Result> {
+  const check = () => {
+    const current = args.current();
+    const problem =
+      current.dialogId !== args.captured.dialogId
+        ? 'The active chat changed while preparing the reviewed task.'
+        : (verifiedPlanContextProblem(args.captured, current) ??
+          verificationInputProblem(args.unsavedFiles()));
+    if (problem) throw new Error(problem);
+  };
+  check();
+  const prepared = await args.prepare();
+  check();
+  return args.dispatch(prepared);
 }

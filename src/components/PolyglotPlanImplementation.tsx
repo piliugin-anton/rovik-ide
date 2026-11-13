@@ -9,9 +9,11 @@ import {
   type HarnessOperation,
   type HarnessRun,
   type HarnessTarget,
+  type HarnessProviderBinding,
 } from '../lib/polyglotHarness';
 import {
   harnessProviderProblem,
+  boundHarnessProviderProblem,
   implementVerifiedPlan,
   parseHarnessRates,
   type HarnessChangeReview,
@@ -22,17 +24,23 @@ import type { WorkspaceSetupInput } from '../lib/polyglotPreparation';
 import PolyglotHarnessPanel from './PolyglotHarnessPanel';
 import PolyglotApproval, { SubjectFields } from './PolyglotApproval';
 import PolyglotPreparation from './PolyglotPreparation';
+import PolyglotProviderRates from './PolyglotProviderRates';
 
 /** Reviewed saved-plan implementation, independent of the ordinary agent's repair loop. */
 export default function PolyglotPlanImplementation(props: {
   target: HarnessTarget;
-  planPath: string;
-  profile: ModelProfile;
+  planPath?: string;
+  /** Reopen the existing controller run, including an Autopilot-owned run. */
+  runId?: string;
+  profile?: ModelProfile;
+  /** Resolve current credentials for the persisted identity without persisting secrets. */
+  resolveProvider?: (binding: HarnessProviderBinding) => ModelProfile | undefined;
   unsavedFiles: readonly string[] | undefined;
   executionLabel: string;
   contextProblem?: string | null;
   onClose: () => void;
   onActiveChange?: (active: boolean) => void;
+  onRunChange?: (run: HarnessRun) => void;
 }) {
   const [plan, setPlan] = createSignal<HarnessPlan>();
   const [inspection, setInspection] = createSignal<HarnessInspection>();
@@ -49,28 +57,41 @@ export default function PolyglotPlanImplementation(props: {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal('');
   const [fresh, setFresh] = createSignal(false);
+  const [releaseReviewed, setReleaseReviewed] = createSignal<string>();
   const [setupRevision, setSetupRevision] = createSignal(0);
   const [pollRevision, setPollRevision] = createSignal(0);
   let generation = 0;
   let requestNumber = 0;
   let disposed = false;
-  const rates = () => parseHarnessRates(inputRate(), cachedRate(), outputRate());
-  const provider = () => ({ profile: props.profile, rates: rates()! });
+  const rates = () =>
+    run()?.providerBinding?.rates ?? parseHarnessRates(inputRate(), cachedRate(), outputRate());
+  const currentProfile = () => {
+    const binding = run()?.providerBinding;
+    return binding && props.resolveProvider ? props.resolveProvider(binding) : props.profile;
+  };
+  const provider = () => ({ profile: currentProfile()!, rates: rates()! });
   const inputProblem = () => props.contextProblem ?? verificationInputProblem(props.unsavedFiles);
   const unavailable = () => busy() || !!props.contextProblem;
-  const providerProblem = () => harnessProviderProblem(props.profile);
+  const providerProblem = () => {
+    const binding = run()?.providerBinding;
+    return binding
+      ? boundHarnessProviderProblem(binding, currentProfile())
+      : props.profile
+        ? harnessProviderProblem(props.profile)
+        : 'Choose the configured provider to make model calls.';
+  };
   const selectedSetup = () =>
     inspection()?.setups.find((setup) => setup.id === inspection()?.configuration?.setupId);
   const shownStatus = () => {
     const current = run();
     if (!current) return '';
-    return current.status === 'verified' && (!fresh() || !!props.contextProblem)
+    return ['verified', 'applied'].includes(current.status) && (!fresh() || !!props.contextProblem)
       ? 'stale'
       : displayedHarnessStatus(current, props.unsavedFiles, inspection()?.snapshotDigest);
   };
 
   async function readPlan() {
-    if (props.contextProblem) return;
+    if (props.contextProblem || !props.planPath) return;
     const scope = generation;
     const number = ++requestNumber;
     setBusy(true);
@@ -119,6 +140,8 @@ export default function PolyglotPlanImplementation(props: {
     setApproval(undefined);
     setFresh(true);
     setReview(undefined);
+    setReleaseReviewed(undefined);
+    props.onRunChange?.(value);
   };
   const runAction = (operation: HarnessOperation | HarnessPlanOperation) =>
     request<HarnessRun>(operation, acceptRun);
@@ -170,6 +193,7 @@ export default function PolyglotPlanImplementation(props: {
     props.target.root;
     props.target.dialogId;
     props.planPath;
+    props.runId;
     generation++;
     requestNumber++;
     setRun(undefined);
@@ -178,7 +202,9 @@ export default function PolyglotPlanImplementation(props: {
     setApproval(undefined);
     setReview(undefined);
     setFresh(false);
-    void untrack(readPlan);
+    setBusy(false);
+    if (props.runId) void untrack(() => runAction({ action: 'status', runId: props.runId! }));
+    else void untrack(readPlan);
   });
   createEffect(() => {
     if (props.contextProblem) {
@@ -194,7 +220,8 @@ export default function PolyglotPlanImplementation(props: {
   createEffect(() => {
     pollRevision();
     const current = run();
-    if (unavailable() || !current || !['running', 'verified'].includes(current.status)) return;
+    if (unavailable() || !current || !['running', 'verified', 'applied'].includes(current.status))
+      return;
     const scope = generation;
     const number = requestNumber;
     const timer = window.setTimeout(
@@ -208,6 +235,7 @@ export default function PolyglotPlanImplementation(props: {
             setRun(value);
             setFresh(true);
             setError('');
+            props.onRunChange?.(value);
           }
         } catch (cause) {
           if (!disposed && scope === generation && number === requestNumber) {
@@ -230,11 +258,12 @@ export default function PolyglotPlanImplementation(props: {
 
   return (
     <section class="settings-section polyglot-plan" aria-label="Verified plan implementation">
-      <h3>Verified plan implementation</h3>
+      <h3>{props.runId ? 'Verified Autopilot task' : 'Verified plan implementation'}</h3>
       <p class="settings-hint">
-        Execution: {props.executionLabel}. Model: {props.profile.label}. The controller generates a
-        separate candidate and only accepts it after the reviewed checks pass. Applying changes to
-        your project is a separate review.
+        Execution: {props.executionLabel}. Model:{' '}
+        {currentProfile()?.label ?? run()?.providerBinding?.model ?? 'Unavailable'}. The controller
+        generates a separate candidate and only accepts it after the reviewed checks pass. Applying
+        changes to your project is a separate review.
       </p>
       <Show when={error()}>
         <p role="alert" class="settings-status warning">
@@ -264,47 +293,37 @@ export default function PolyglotPlanImplementation(props: {
           </details>
         )}
       </Show>
-      <button
-        type="button"
-        class="link-button"
-        disabled={unavailable() || run()?.status === 'running'}
-        onClick={() => void readPlan()}
-      >
-        Reload saved plan
-      </button>
-      <details>
-        <summary>Provider rates and supported API</summary>
-        <p class="settings-hint">
-          Uses the selected configured provider through the host's credential flow. Enter rates in
-          microunits per million tokens, including zero explicitly for a free local model.
-        </p>
-        <For
-          each={[
-            { name: 'Input rate', value: inputRate, set: setInputRate },
-            { name: 'Cached input rate', value: cachedRate, set: setCachedRate },
-            { name: 'Output rate', value: outputRate, set: setOutputRate },
-          ]}
+      <Show when={!props.runId}>
+        <button
+          type="button"
+          class="link-button"
+          disabled={unavailable() || run()?.status === 'running'}
+          onClick={() => void readPlan()}
         >
-          {(field) => (
-            <label class="setting-row">
-              {field.name}
-              <input
-                class="settings-input"
-                aria-label={field.name}
-                type="number"
-                min="0"
-                step="1"
-                value={field.value()}
-                onInput={(event) => field.set(event.currentTarget.value)}
-              />
-            </label>
-          )}
-        </For>
-      </details>
+          Reload saved plan
+        </button>
+      </Show>
+      <PolyglotProviderRates
+        values={
+          run()?.providerBinding
+            ? {
+                input: String(rates()!.input),
+                cachedInput: String(rates()!.cachedInput),
+                output: String(rates()!.output),
+              }
+            : { input: inputRate(), cachedInput: cachedRate(), output: outputRate() }
+        }
+        disabled={!!run()?.providerBinding}
+        onChange={(field, value) => {
+          if (field === 'input') setInputRate(value);
+          else if (field === 'cachedInput') setCachedRate(value);
+          else setOutputRate(value);
+        }}
+      />
       <Show when={!rates()}>
         <p class="settings-hint">Enter all three provider rates before any model calls.</p>
       </Show>
-      <Show when={!run() && !props.contextProblem}>
+      <Show when={!run() && !props.runId && !props.contextProblem}>
         <Show when={setupRevision() + 1} keyed>
           {(_revision) => (
             <PolyglotHarnessPanel
@@ -326,7 +345,7 @@ export default function PolyglotPlanImplementation(props: {
             <details>
               <summary>Create a verification setup from this project</summary>
               <PolyglotPreparation
-                model={props.profile.model}
+                model={props.profile?.model ?? ''}
                 manifests={info().inventory.units}
                 busy={busy()}
                 onPrepare={prepare}
@@ -403,9 +422,13 @@ export default function PolyglotPlanImplementation(props: {
         {(current) => (
           <section aria-label="Verified implementation result">
             <p role="status" class="settings-status">
-              {shownStatus() === 'verified'
-                ? 'Accepted — verified candidate'
-                : `Implementation ${shownStatus()}`}
+              {shownStatus() === 'applied'
+                ? current().applicationReceipt?.deliveredLocally
+                  ? 'Applied to local checkout'
+                  : 'Applied on execution host'
+                : shownStatus() === 'verified'
+                  ? 'Accepted — verified candidate'
+                  : `Implementation ${shownStatus()}`}
             </p>
             <p class="settings-hint">
               Run {current().runId} · {current().state}
@@ -445,6 +468,56 @@ export default function PolyglotPlanImplementation(props: {
                 <summary>Bound provider identity</summary>
                 <SubjectFields value={current().providerBinding} />
               </details>
+            </Show>
+            <Show when={current().applicationReceipt}>
+              {(receipt) => (
+                <div>
+                  <p>
+                    Application target: {receipt().location} · {receipt().root}
+                  </p>
+                  <Show when={!receipt().deliveredLocally}>
+                    <p>Desktop delivery remains a separate step.</p>
+                  </Show>
+                  <Show when={!receipt().current}>
+                    <p class="settings-status warning">
+                      This receipt is historical; the current checkout no longer matches it.
+                    </p>
+                  </Show>
+                  <details>
+                    <summary>Application receipt</summary>
+                    <SubjectFields value={receipt()} />
+                  </details>
+                  <Show when={receipt().location === 'host' && !receipt().synchronizationReleased}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={releaseReviewed() === receipt().subjectDigest}
+                        onChange={(event) =>
+                          setReleaseReviewed(
+                            event.currentTarget.checked ? receipt().subjectDigest : undefined
+                          )
+                        }
+                      />{' '}
+                      I have preserved or manually integrated these host changes.
+                    </label>
+                    <button
+                      type="button"
+                      class="link-button"
+                      disabled={unavailable() || releaseReviewed() !== receipt().subjectDigest}
+                      onClick={() =>
+                        void runAction({
+                          action: 'releaseApplication',
+                          runId: current().runId,
+                          subjectDigest: receipt().subjectDigest,
+                          acknowledged: true,
+                        })
+                      }
+                    >
+                      Allow synchronization
+                    </button>
+                  </Show>
+                </div>
+              )}
             </Show>
             <For each={current().pendingApprovals}>
               {(item) => (
@@ -559,6 +632,76 @@ export default function PolyglotPlanImplementation(props: {
             >
               Export review bundle
             </button>
+            <button
+              type="button"
+              class="chat-action-button"
+              disabled={
+                unavailable() ||
+                shownStatus() !== 'verified' ||
+                !!inputProblem() ||
+                review()?.runId !== current().runId
+              }
+              onClick={() =>
+                void request<HarnessRun>(
+                  { action: 'prepareApplication', runId: current().runId },
+                  (value) => {
+                    setRun(value);
+                    setFresh(true);
+                    setApproval(undefined);
+                    props.onRunChange?.(value);
+                  }
+                )
+              }
+            >
+              Prepare application review
+            </button>
+            <Show when={current().application}>
+              {(application) => (
+                <section aria-label="Reviewed application">
+                  <SubjectFields value={application().subject} />
+                  <p>
+                    Approve the exact delivery subject above, then apply it to the named checkout.
+                  </p>
+                  <button
+                    type="button"
+                    class="chat-action-button primary"
+                    disabled={
+                      unavailable() ||
+                      !!inputProblem() ||
+                      shownStatus() !== 'verified' ||
+                      current().pendingApprovals.some((item) => item.approvalType === 'delivery')
+                    }
+                    onClick={() =>
+                      void runAction({
+                        action: 'applyApplication',
+                        runId: current().runId,
+                        subjectDigest: application().subjectDigest,
+                        savedBuffers: true,
+                      })
+                    }
+                  >
+                    Apply reviewed verified changes
+                  </button>
+                  <Show when={['blocked', 'stale'].includes(current().status)}>
+                    <button
+                      type="button"
+                      class="link-button"
+                      disabled={unavailable() || !!inputProblem()}
+                      onClick={() =>
+                        void runAction({
+                          action: 'recoverApplication',
+                          runId: current().runId,
+                          subjectDigest: application().subjectDigest,
+                          savedBuffers: true,
+                        })
+                      }
+                    >
+                      Recover interrupted application
+                    </button>
+                  </Show>
+                </section>
+              )}
+            </Show>
             <details>
               <summary>Preparation role drafts</summary>
               <p class="settings-hint">
@@ -572,7 +715,10 @@ export default function PolyglotPlanImplementation(props: {
                     type="button"
                     class="link-button"
                     disabled={
-                      busy() || current().status === 'running' || !rates() || !!providerProblem()
+                      unavailable() ||
+                      current().status === 'running' ||
+                      !rates() ||
+                      !!providerProblem()
                     }
                     onClick={() =>
                       void runAction({
@@ -596,7 +742,7 @@ export default function PolyglotPlanImplementation(props: {
                 )}
               </For>
             </details>
-            <Show when={current().status !== 'running'}>
+            <Show when={!props.runId && current().status !== 'running'}>
               <button
                 type="button"
                 class="link-button"

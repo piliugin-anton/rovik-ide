@@ -37,12 +37,14 @@ test('autopilot settings: saved with the Subagents page’s, a file without them
 test('autopilot settings: the backend gets the effort (AgentConfig.autopilot)', () => {
   assert.deepEqual(autopilotConfig({ effort: 'thorough' }), {
     effort: 'thorough',
+    requireVerifiedDelivery: false,
     budget: { maxHours: 6, maxCost: null },
     prepare: true,
     planFix: DEFAULT_PLAN_FIX,
   });
   assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), {
     effort: 'balanced',
+    requireVerifiedDelivery: false,
     budget: { maxHours: 2, maxCost: 5 },
     prepare: true,
     planFix: DEFAULT_PLAN_FIX,
@@ -110,6 +112,7 @@ test('autopilot settings: a task’s budget, its effort’s until it’s set (U0
   // Saved, garbage aside.
   const saved = normalizeAutopilotSettings({
     effort: 'balanced',
+    requireVerifiedDelivery: false,
     budget: { maxHours: 3, maxCost: -1 },
   });
   assert.deepEqual(saved.budget, { maxHours: 3, maxCost: null });
@@ -144,4 +147,34 @@ test('autopilot settings: a budget changed back to its effort’s own is left un
     maxHours: 1,
     maxCost: 5,
   });
+});
+
+test('verified delivery is opt-in and saved settings never retain per-task reviews or credentials', async () => {
+  const { requiresVerifiedTaskReview } = await import('./autopilotSettings');
+  assert.equal(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS).requireVerifiedDelivery, false);
+  for (const value of [undefined, false, 'true', 1, null]) {
+    assert.deepEqual(
+      normalizeAutopilotSettings({ requireVerifiedDelivery: value }),
+      DEFAULT_AUTOPILOT_SETTINGS
+    );
+  }
+  const saved = normalizeAutopilotSettings({
+    requireVerifiedDelivery: true,
+    verifiedDelivery: { setupId: 'old', rates: { input: 99 } },
+    apiKey: 'do-not-persist',
+  });
+  assert.deepEqual(saved, { effort: 'balanced', requireVerifiedDelivery: true });
+  assert.equal(requiresVerifiedTaskReview(saved, 'autopilot', false), true);
+  assert.equal(
+    requiresVerifiedTaskReview(saved, 'agent', true),
+    true,
+    'autonomous host is effective Autopilot'
+  );
+  assert.equal(requiresVerifiedTaskReview(saved, 'agent', false), false);
+  assert.equal(
+    requiresVerifiedTaskReview(saved, 'autopilot', true, true),
+    false,
+    'commands do not create tasks'
+  );
+  assert.equal(requiresVerifiedTaskReview(DEFAULT_AUTOPILOT_SETTINGS, 'autopilot', true), false);
 });
