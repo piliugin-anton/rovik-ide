@@ -204,18 +204,38 @@ mod tests {
         candidate.control += 1;
         assert!(candidate.upgrades(&host).is_err());
     }
+
+    #[test]
+    fn protocol_twenty_is_rejected_before_sending_new_desktop_requests() {
+        let error = super::super::compatible(super::super::Ready {
+            protocol: 20,
+            boot: "old-desktop".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            session: "old-session".into(),
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("protocol 20"));
+    }
+
     #[tokio::test]
     async fn a_compatible_busy_host_is_reused_and_an_incompatible_one_is_not_replaced() {
-        for protocol in [PROTOCOL, PROTOCOL - 1] {
+        for (protocol, version, reusable) in [
+            (PROTOCOL, "0.0.1", true),
+            (PROTOCOL - 1, "0.0.1", false),
+            // Protocol 20 predates Docker and harness desktop requests. A
+            // rebuild may retain the same application release version.
+            (20, env!("CARGO_PKG_VERSION"), false),
+        ] {
             let root = tempfile::tempdir().unwrap();
             let dir = super::super::directory(root.path());
             let lease = Lease::acquire(&dir).unwrap().unwrap();
             let listener = Listener::bind(&lease, &dir).unwrap();
-            let rpc = lease.listen("0.0.1").unwrap();
+            let rpc = lease.listen(version).unwrap();
             let server = async {
                 let mut stream = listener.accept().await.unwrap();
                 let mut hello = Hello::new(rpc.boot());
-                hello.version = "0.0.1".into();
+                hello.version = version.into();
                 hello.protocol = protocol;
                 write(&mut stream, &hello).await.unwrap();
                 let candidate: Candidate = read(&mut stream).await.unwrap();
@@ -223,7 +243,7 @@ mod tests {
                 write(&mut stream, &Reply::Busy("retained mount".into()))
                     .await
                     .unwrap();
-                if protocol == PROTOCOL {
+                if reusable {
                     rpc.accept().await.unwrap();
                 }
             };
@@ -232,17 +252,34 @@ mod tests {
                 server,
                 super::super::ensure_command(command, root.path(), root.path())
             );
-            if protocol == PROTOCOL {
+            if reusable {
                 assert!(result.is_ok());
             } else {
-                assert!(result.unwrap_err().to_string().contains("retained mount"));
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+                assert!(error.to_string().contains("retained mount"));
             }
+            assert!(
+                Lease::acquire(&dir).unwrap().is_none(),
+                "the busy host keeps ownership"
+            );
         }
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn automatic_replacement_waits_for_the_old_owners_cleanup() {
+        assert_replacement_waits_for_cleanup("0.0.1", PROTOCOL - 1).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn same_release_protocol_twenty_replacement_waits_for_the_old_owners_cleanup() {
+        assert_replacement_waits_for_cleanup(env!("CARGO_PKG_VERSION"), 20).await;
+    }
+
+    #[cfg(unix)]
+    async fn assert_replacement_waits_for_cleanup(version: &str, protocol: u32) {
         let root = tempfile::tempdir().unwrap();
         let dir = super::super::directory(root.path());
         let lease = Lease::acquire(&dir).unwrap().unwrap();
@@ -257,8 +294,8 @@ mod tests {
             tokio::spawn(async move { super::super::ensure_command(command, &data, &data).await });
         let mut stream = listener.accept().await.unwrap();
         let mut hello = Hello::new("old");
-        hello.version = "0.0.1".into();
-        hello.protocol = PROTOCOL - 1;
+        hello.version = version.into();
+        hello.protocol = protocol;
         write(&mut stream, &hello).await.unwrap();
         let candidate: Candidate = read(&mut stream).await.unwrap();
         assert!(candidate.upgrades(&hello).unwrap());

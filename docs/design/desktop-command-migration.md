@@ -989,3 +989,14 @@ remained usable, preserved the saved draft, refused retirement while connected,
 and recovered the draft after clean retirement and replacement. The WSL
 acceptance harness is compiled and its PowerShell syntax is checked in CI; its
 real WSL2 execution and mount checks remain unrun without a compatible host.
+
+## Local IPC protocol 21
+
+Docker installation and polyglot IDE actions extend the desktop request wire
+format. Local protocol 21 prevents a rebuilt app from reusing a protocol-20
+backend that cannot decode those requests, even when both binaries have the same
+application version. An idle older backend retires through the existing guarded
+upgrade flow; a busy backend keeps its work and reports that the upgrade must wait.
+Reconnecting cannot silently attach the new app to that incompatible owner.
+The polyglot harness artifact schemas remain protocol v1; their version is
+independent of this local IPC boundary.
