@@ -65,8 +65,7 @@ impl Podman {
             state.is_absolute(),
             "Podman state must be an absolute private directory",
         )?;
-        crate::artifacts::private_directory(state)?;
-        let state = state.canonicalize()?;
+        let state = crate::artifacts::private_directory(state)?.canonicalize()?;
         // A dedicated store prevents project services' mutable containers.conf
         // (which deliberately disables cgroups) from weakening verification.
         for name in ["storage", "run", "tmp", "config"] {

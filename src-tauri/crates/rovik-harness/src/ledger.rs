@@ -102,7 +102,7 @@ pub struct Ledger {
 impl Ledger {
     /// Open controller-private v1 state, initializing the complete schema atomically.
     pub fn open(root: &Path) -> Result<Self> {
-        private_directory(root)?;
+        let root = private_directory(root)?;
         let path = root.join("ledger.sqlite3");
         if let Ok(meta) = std::fs::symlink_metadata(&path) {
             require(
@@ -128,9 +128,9 @@ impl Ledger {
             tx.commit()?;
         }
         Ok(Self {
-            root: root.to_path_buf(),
             connection,
             artifacts: ArtifactStore::open(&root.join("artifacts"), 64 * 1024 * 1024)?,
+            root,
         })
     }
     /// Publish and register bytes before creating a ledger reference.

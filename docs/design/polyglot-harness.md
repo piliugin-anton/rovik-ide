@@ -82,6 +82,12 @@ foreign keys, WAL, full synchronization, one atomic initial migration and immuta
 history triggers. State updates and their events share one transaction.
 Concurrent controllers must reload after a revision conflict.
 
+Storage paths support Windows drive prefixes and macOS's root-owned `/var` and
+`/tmp` aliases. The store retains the checked target path; other directory symlinks
+remain forbidden. Fixtures can be inspected on macOS and Windows without an
+approval identity. Local approval authentication and container execution still
+require the supported Linux host.
+
 Operations reserve configured budget units before execution. A duplicate active
 operation key returns the same lease; different inputs cannot reuse it. Expired
 leases are fenced and abandoned without promoting files left by a runner. Lost

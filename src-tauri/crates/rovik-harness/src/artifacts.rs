@@ -52,8 +52,9 @@ pub struct ArtifactStore {
     limit: u64,
 }
 
-/// Create a private directory and reject symlinks in existing path components.
-pub(crate) fn private_directory(path: &Path) -> Result<()> {
+/// Create private storage, resolving only macOS's root-owned system aliases.
+/// Return the checked path so later access does not traverse an alias again.
+pub(crate) fn private_directory(path: &Path) -> Result<PathBuf> {
     require(
         path.is_absolute(),
         "controller storage needs an absolute path",
@@ -65,11 +66,45 @@ pub(crate) fn private_directory(path: &Path) -> Result<()> {
             "controller storage contains traversal",
         )?;
         current.push(part);
+        // A Windows drive/UNC prefix is not a directory until RootDir is appended.
+        // In particular, querying a verbatim drive prefix alone fails with ERROR_INVALID_FUNCTION.
+        if matches!(part, std::path::Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
-            Ok(meta) => require(
-                meta.is_dir() && !meta.file_type().is_symlink(),
-                "controller storage contains a symlink or non-directory",
-            )?,
+            Ok(meta) => {
+                #[cfg(target_os = "macos")]
+                if meta.file_type().is_symlink() {
+                    use std::os::unix::fs::MetadataExt;
+                    let target = match current.to_str() {
+                        Some("/var") => Some(Path::new("/private/var")),
+                        Some("/tmp") => Some(Path::new("/private/tmp")),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        require(
+                            meta.uid() == 0
+                                && Path::new("/").join(fs::read_link(&current)?) == target,
+                            "controller storage system alias changed",
+                        )?;
+                        // Check the resolved ancestors too; arbitrary user symlinks
+                        // remain forbidden, even when their target is private.
+                        for ancestor in target.ancestors() {
+                            let metadata = fs::symlink_metadata(ancestor)?;
+                            require(
+                                metadata.is_dir() && metadata.uid() == 0,
+                                "controller storage system alias is not root-owned",
+                            )?;
+                        }
+                        current = target.into();
+                        continue;
+                    }
+                }
+                require(
+                    meta.is_dir() && !meta.file_type().is_symlink(),
+                    "controller storage contains a symlink or non-directory",
+                )?;
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let mut builder = fs::DirBuilder::new();
                 #[cfg(unix)]
@@ -86,20 +121,20 @@ pub(crate) fn private_directory(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         require(
-            fs::metadata(path)?.permissions().mode() & 0o077 == 0,
+            fs::metadata(&current)?.permissions().mode() & 0o077 == 0,
             "controller directory must be private (mode 0700)",
         )?;
     }
-    Ok(())
+    Ok(current)
 }
 
 impl ArtifactStore {
     /// Open private storage with an explicit per-blob bound.
     pub fn open(root: &Path, maximum_bytes: u64) -> Result<Self> {
         require(maximum_bytes > 0, "artifact limit must be positive")?;
-        private_directory(root)?;
+        let root = private_directory(root)?;
         Ok(Self {
-            root: root.to_path_buf(),
+            root,
             limit: maximum_bytes,
         })
     }
@@ -215,5 +250,29 @@ mod tests {
         fs::remove_file(store.path(&r.digest)).unwrap();
         symlink(dir.path().join("outside"), store.path(&r.digest)).unwrap();
         assert!(store.read(&r).is_err());
+    }
+
+    #[test]
+    fn storage_reopens_through_native_and_canonical_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/blobs");
+        let store = ArtifactStore::open(&path, 100).unwrap();
+        let reference = store.put("source", "text/plain", b"same storage").unwrap();
+        let canonical = ArtifactStore::open(&path.canonicalize().unwrap(), 100).unwrap();
+        assert_eq!(canonical.read(&reference).unwrap(), b"same storage");
+        assert!(ArtifactStore::open(&path.join("../other"), 100).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_temp_aliases_resolve_without_admitting_user_symlinks() {
+        use std::os::unix::fs::symlink;
+        for base in ["/var/tmp", "/tmp"] {
+            let dir = tempfile::tempdir_in(base).unwrap();
+            let store = ArtifactStore::open(&dir.path().join("blobs"), 100).unwrap();
+            assert_eq!(store.root, dir.path().canonicalize().unwrap().join("blobs"));
+            symlink(&store.root, dir.path().join("user-link")).unwrap();
+            assert!(ArtifactStore::open(&dir.path().join("user-link"), 100).is_err());
+        }
     }
 }

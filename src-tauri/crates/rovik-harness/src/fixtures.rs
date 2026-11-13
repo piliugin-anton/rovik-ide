@@ -3,7 +3,7 @@
 pub use crate::runtime_fixtures::{quota_runtime, runtime_quota_source};
 
 use crate::{
-    approvals::{AuthorityPolicy, Principal},
+    approvals::AuthorityPolicy,
     contract::{DesignRecord, ExistingCode, TaskContract},
     controller::{TaskSetup, WorkerLimits},
     identity::Digest,
@@ -62,6 +62,7 @@ pub fn snapshot(ledger: &Ledger, revision: &str, files: &[(&str, &str)]) -> Resu
 
 /// Prepare the reference Rust task with caller-supplied immutable image and base identity.
 /// The returned setup deliberately has no approval; the operator must review it.
+/// Unsupported execution hosts can inspect the fixture with an empty authority policy.
 pub fn quota_rust(
     ledger: &Ledger,
     run_id: &str,
@@ -184,21 +185,33 @@ pub fn quota_rust(
         timezone: "UTC".into(),
     };
     let authority = AuthorityPolicy {
-        actors: [(
-            Principal::current()?.actor_id().into(),
-            [
-                "domain-contract".into(),
-                "baseline-plan".into(),
-                "design".into(),
-                "oracle".into(),
-                "revoke".into(),
-                "operate".into(),
-                "accounting".into(),
-                "failure-resolution".into(),
-            ]
-            .into(),
-        )]
-        .into(),
+        actors: {
+            #[cfg(target_os = "linux")]
+            {
+                [(
+                    crate::approvals::Principal::current()?.actor_id().into(),
+                    [
+                        "domain-contract".into(),
+                        "baseline-plan".into(),
+                        "design".into(),
+                        "oracle".into(),
+                        "revoke".into(),
+                        "operate".into(),
+                        "accounting".into(),
+                        "failure-resolution".into(),
+                    ]
+                    .into(),
+                )]
+                .into()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Profiles and plans can be validated on any host. Only the Linux
+                // execution host has a supported local approval adapter; never
+                // invent an authenticated operator to make a fixture loadable.
+                Default::default()
+            }
+        },
     };
     Ok(TaskSetup {
         schema_version: 1,

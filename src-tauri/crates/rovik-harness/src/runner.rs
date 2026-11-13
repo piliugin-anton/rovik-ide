@@ -444,8 +444,7 @@ impl ContainerBackend {
         )?;
         let argv = definition.render(&spec.validated_parameters)?;
         let directory = if lease.is_some() {
-            let root = ledger.root().join("jobs");
-            crate::artifacts::private_directory(&root)?;
+            let root = crate::artifacts::private_directory(&ledger.root().join("jobs"))?;
             tempfile::tempdir_in(root)?
         } else {
             tempfile::tempdir()?
@@ -1030,12 +1029,32 @@ mod recovery_tests {
     use super::*;
     use crate::{controller::Controller, fixtures, normalizer::Inventory};
 
+    /// Receipt admission has no dependency on a host container capability.
+    #[derive(Debug)]
+    struct ReceiptOnly;
+    impl engine::Engine for ReceiptOnly {
+        fn version(&self) -> &'static str {
+            BACKEND_VERSION
+        }
+        fn command(&self) -> Command {
+            panic!("receipt recovery must not execute a container command")
+        }
+        fn create_options(&self, _: &mut Command) {
+            panic!("receipt recovery must not create a container")
+        }
+        fn needs_cgroup_probe(&self) -> bool {
+            false
+        }
+    }
+
     #[test]
     fn infrastructure_recovery_requires_authentic_same_binding_results_and_keeps_failures() {
         let directory = tempfile::tempdir().unwrap();
         let mut controller = Controller {
             ledger: Ledger::open(&directory.path().join("state")).unwrap(),
-            backend: ContainerBackend::local(Path::new("/bin/true")).unwrap(),
+            backend: ContainerBackend {
+                engine: Arc::new(ReceiptOnly),
+            },
         };
         let setup =
             fixtures::quota_rust(&controller.ledger, "recovery", Digest::of(b"image"), "base")

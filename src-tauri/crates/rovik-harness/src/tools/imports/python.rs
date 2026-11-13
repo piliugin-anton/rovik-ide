@@ -21,14 +21,38 @@ struct Resolver {
     builtins: BTreeSet<String>,
 }
 impl Resolver {
+    fn new(project: &Path, roots: Vec<PathBuf>, builtins: BTreeSet<String>) -> Result<Self> {
+        let project = project.canonicalize()?;
+        require(project.is_dir(), "Python project is not a directory")?;
+        let mut existing = vec![project.clone()];
+        for root in roots {
+            if root.is_dir() {
+                existing.push(root.canonicalize()?);
+            } else {
+                require(
+                    !root.is_file(),
+                    "Python zip import roots require a separate architecture checker",
+                )?;
+            }
+        }
+        Ok(Self {
+            project,
+            roots: existing,
+            builtins,
+        })
+    }
     fn target(&self, path: &Path, name: &str) -> Result<Target> {
         let path = path.canonicalize()?;
         if let Ok(relative) = path.strip_prefix(&self.project) {
             return Ok(Target {
                 id: relative
-                    .to_str()
-                    .ok_or_else(|| Error::new("invalid Python module path".into()))?
-                    .into(),
+                    .iter()
+                    .map(|part| {
+                        part.to_str()
+                            .ok_or_else(|| Error::new("invalid Python module path".into()))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .join("/"),
                 external: false,
             });
         }
@@ -175,25 +199,9 @@ pub(super) fn resolve(
             format!("project shadows Python standard module {top}"),
         )?;
     }
-    let project = PathBuf::from(runtime::PROJECT).canonicalize()?;
-    let mut roots = vec![project.clone(), PathBuf::from("/build/site")];
+    let mut roots = vec![PathBuf::from("/build/site")];
     roots.extend(environment.paths);
-    let mut existing = Vec::new();
-    for root in roots {
-        if root.is_dir() {
-            existing.push(root.canonicalize()?);
-        } else {
-            require(
-                !root.is_file(),
-                "Python zip import roots require a separate architecture checker",
-            )?;
-        }
-    }
-    let resolver = Resolver {
-        project,
-        roots: existing,
-        builtins: environment.builtins,
-    };
+    let resolver = Resolver::new(Path::new(runtime::PROJECT), roots, environment.builtins)?;
     imports
         .iter()
         .map(|import| resolver.resolve(import))
@@ -217,11 +225,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "").unwrap();
         }
-        let resolver = Resolver {
-            project: dir.path().into(),
-            roots: vec![dir.path().into()],
-            builtins: ["sys".into()].into(),
-        };
+        let resolver = Resolver::new(dir.path(), vec![], ["sys".into()].into()).unwrap();
         let import = Import {
             source: "pkg/domain.py".into(),
             module: ".helpers".into(),
@@ -250,5 +254,34 @@ mod tests {
                 ..import
             })
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_search_roots_do_not_allow_imports_to_escape_through_symlinks() {
+        let project = tempfile::tempdir().unwrap();
+        let dependencies = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(dependencies.path().join("allowed.py"), "").unwrap();
+        std::fs::write(outside.path().join("escaped.py"), "").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("escaped.py"),
+            project.path().join("escaped.py"),
+        )
+        .unwrap();
+        let resolver = Resolver::new(
+            project.path(),
+            vec![dependencies.path().into()],
+            Default::default(),
+        )
+        .unwrap();
+        let allowed = resolver.lookup("allowed").unwrap().unwrap();
+        assert_eq!(allowed[0].id, "python:allowed");
+        assert!(allowed[0].external);
+        assert!(resolver
+            .lookup("escaped")
+            .unwrap_err()
+            .message
+            .contains("escaped"));
     }
 }
