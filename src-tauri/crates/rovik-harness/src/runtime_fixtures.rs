@@ -27,7 +27,7 @@ pub fn runtime_quota_source(language: Language) -> Result<(&'static str, &'stati
             "implementations/quota/quota.py",
             include_str!("../fixtures/runtime/python/quota.py"),
         )),
-        _ => Err(Error("not a runtime quota fixture".into())),
+        _ => Err(Error::new("not a runtime quota fixture".into())),
     }
 }
 
@@ -171,11 +171,11 @@ pub fn quota_runtime(
         protocol_version: 1,
         request_id: "quota".into(),
         operation: Operation::Test,
-        payload: serde_json::to_value(&input).map_err(|e| Error(e.to_string()))?,
+        payload: serde_json::to_value(&input).map_err(|e| Error::new(e.to_string()))?,
     };
     let request = format!(
         "{}\n",
-        String::from_utf8(wire::canonical(&request)?).map_err(|e| Error(e.to_string()))?
+        String::from_utf8(wire::canonical(&request)?).map_err(|e| Error::new(e.to_string()))?
     );
     let consumer = if python {
         include_str!("../fixtures/runtime/test_quota.py").to_string()

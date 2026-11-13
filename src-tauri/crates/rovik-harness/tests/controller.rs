@@ -12,7 +12,7 @@ use rovik_harness::{
     provider::{ModelRequest, ModelResponse, Provider, Usage, WorkerTurn},
     runner::{self, Cancellation, DockerBackend},
     state::State,
-    Result,
+    wire, Result,
 };
 use std::path::Path;
 
@@ -579,6 +579,7 @@ fn bounded_repair_requires_failure_review_and_resume_reuses_only_completed_recei
     use rovik_harness::operations::FailureResolution;
     struct RepairWorker {
         calls: u32,
+        compiler_error: bool,
     }
     impl Provider for RepairWorker {
         fn generate(
@@ -590,89 +591,135 @@ fn bounded_repair_requires_failure_review_and_resume_reuses_only_completed_recei
             let mut response = Worker { calls: 0 }.generate(request, cancel)?;
             if self.calls == 1 {
                 let mut turn: WorkerTurn = serde_json::from_str(&response.output).unwrap();
-                turn.proposal.as_mut().unwrap().changes[0].content = Some(
-                    QUOTA_RUST.replace("requested > self.remaining", "requested >= self.remaining"),
-                );
+                turn.proposal.as_mut().unwrap().changes[0].content = Some(if self.compiler_error {
+                    format!("{QUOTA_RUST}\nfn invalid( {{\n")
+                } else {
+                    QUOTA_RUST.replace("requested > self.remaining", "requested >= self.remaining")
+                });
                 response.output = serde_json::to_string(&turn).unwrap();
             }
             Ok(response)
         }
     }
     assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("state");
-    let mut c = controller(&root);
+    for compiler_error in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        let mut c = controller(&root);
+        let mut setup = setup(
+            &c,
+            Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap(),
+        );
+        setup.budgets.insert("repairs".into(), 1);
+        c.create(&setup, runner::now_ms().unwrap()).unwrap();
+        approve(&c, &setup);
+        let mut provider = RepairWorker {
+            calls: 0,
+            compiler_error,
+        };
+        let report = c
+            .execute(
+                &setup.run_id,
+                &mut provider,
+                &Repository,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(report.state, State::Blocked, "{report:?}");
+        assert_eq!(provider.calls, 2);
+        assert!(
+            report
+                .reasons
+                .iter()
+                .any(|r| r.contains("prior_failures_resolved")),
+            "{report:?}"
+        );
+        let mut previous = None;
+        let mut replacement = None;
+        for operation in c
+            .ledger
+            .operations(&setup.run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|o| o.kind == "check")
+        {
+            let result: rovik_harness::evidence::CheckResult = rovik_harness::wire::decode(
+                &c.ledger.read(&operation.output_digest.unwrap()).unwrap(),
+            )
+            .unwrap();
+            if result.status == rovik_harness::evidence::Status::Pass {
+                replacement = Some(result.result_id);
+            } else {
+                previous = Some(result.result_id);
+            }
+        }
+        let spent = c.ledger.budgets(&setup.run_id).unwrap();
+        assert_eq!(spent["checks"].spent, 3);
+        assert_eq!(spent["repairs"].spent, 1);
+        drop(c);
+        let mut c = controller(&root);
+        let operator = Principal::current().unwrap();
+        let approval=c.resolve_failure(&operator,&setup.run_id,&FailureResolution {previous_result_id:previous.unwrap(),replacement_result_id:replacement.unwrap(),reason:"Boundary comparison was repaired; the new exact candidate passed the protected cases.".into()}).unwrap();
+        c.resume(&operator, &setup.run_id).unwrap();
+        let report = c
+            .execute(
+                &setup.run_id,
+                &mut provider,
+                &Repository,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(report.state, State::Accepted, "{report:?}");
+        assert_eq!(provider.calls, 2);
+        assert_eq!(c.ledger.budgets(&setup.run_id).unwrap(), spent);
+        c.revoke_approval(
+            &operator,
+            &setup.run_id,
+            &approval,
+            "Withdraw the historical failure disposition",
+        )
+        .unwrap();
+        assert_eq!(
+            c.verify(&setup.run_id, &Repository).unwrap().verdict,
+            Verdict::Blocked
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires ROVIK_HARNESS_DOCKER=1 and a pinned image with /bin/false"]
+fn completed_infrastructure_failures_retry_once_without_calling_the_implementer() {
+    assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
+    let directory = tempfile::tempdir().unwrap();
+    let mut c = controller(&directory.path().join("state"));
     let mut setup = setup(
         &c,
         Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap(),
     );
-    setup.budgets.insert("repairs".into(), 1);
+    let command = &mut setup.registry.commands[0];
+    command.executable = "/bin/false".into();
+    command.argv_template.clear();
+    setup.environment.registry_digest = Digest::of_json(&setup.registry).unwrap();
     c.create(&setup, runner::now_ms().unwrap()).unwrap();
     approve(&c, &setup);
-    let mut provider = RepairWorker { calls: 0 };
+    let mut worker = Worker { calls: 0 };
     let report = c
         .execute(
             &setup.run_id,
-            &mut provider,
+            &mut worker,
             &Repository,
             &Cancellation::default(),
         )
         .unwrap();
     assert_eq!(report.state, State::Blocked, "{report:?}");
-    assert_eq!(provider.calls, 2);
-    assert!(
-        report
-            .reasons
-            .iter()
-            .any(|r| r.contains("prior_failures_resolved")),
-        "{report:?}"
-    );
-    let mut previous = None;
-    let mut replacement = None;
-    for operation in c
-        .ledger
-        .operations(&setup.run_id)
-        .unwrap()
-        .into_iter()
-        .filter(|o| o.kind == "check")
-    {
+    assert_eq!(worker.calls, 0);
+    assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 2);
+    let operations = c.ledger.operations(&setup.run_id).unwrap();
+    assert_eq!(operations.len(), 2);
+    for operation in operations {
         let result: rovik_harness::evidence::CheckResult =
-            rovik_harness::wire::decode(&c.ledger.read(&operation.output_digest.unwrap()).unwrap())
-                .unwrap();
-        if result.status == rovik_harness::evidence::Status::Pass {
-            replacement = Some(result.result_id);
-        } else {
-            previous = Some(result.result_id);
-        }
+            wire::decode(&c.ledger.read(&operation.output_digest.unwrap()).unwrap()).unwrap();
+        assert!(result.infrastructure_retryable());
+        assert_eq!(result.executed_test_count, 0);
     }
-    let spent = c.ledger.budgets(&setup.run_id).unwrap();
-    assert_eq!(spent["checks"].spent, 3);
-    assert_eq!(spent["repairs"].spent, 1);
-    drop(c);
-    let mut c = controller(&root);
-    let operator = Principal::current().unwrap();
-    let approval=c.resolve_failure(&operator,&setup.run_id,&FailureResolution {previous_result_id:previous.unwrap(),replacement_result_id:replacement.unwrap(),reason:"Boundary comparison was repaired; the new exact candidate passed the protected cases.".into()}).unwrap();
-    c.resume(&operator, &setup.run_id).unwrap();
-    let report = c
-        .execute(
-            &setup.run_id,
-            &mut provider,
-            &Repository,
-            &Cancellation::default(),
-        )
-        .unwrap();
-    assert_eq!(report.state, State::Accepted, "{report:?}");
-    assert_eq!(provider.calls, 2);
-    assert_eq!(c.ledger.budgets(&setup.run_id).unwrap(), spent);
-    c.revoke_approval(
-        &operator,
-        &setup.run_id,
-        &approval,
-        "Withdraw the historical failure disposition",
-    )
-    .unwrap();
-    assert_eq!(
-        c.verify(&setup.run_id, &Repository).unwrap().verdict,
-        Verdict::Blocked
-    );
 }

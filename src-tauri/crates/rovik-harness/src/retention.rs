@@ -57,7 +57,7 @@ impl Ledger {
             )?;
             let age = SystemTime::now()
                 .duration_since(meta.modified()?)
-                .map_err(|_| Error("artifact modification time is in the future".into()))?;
+                .map_err(|_| Error::new("artifact modification time is in the future".into()))?;
             if age.as_secs() >= grace_seconds {
                 orphans.push(digest);
             }

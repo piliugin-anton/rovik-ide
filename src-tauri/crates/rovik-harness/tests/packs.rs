@@ -59,7 +59,11 @@ fn configured_boundaries_reject_transitive_edges_unknown_precision_and_disappear
             kind: "normal".into(),
         },
     ];
-    assert!(graph.validate(&input).unwrap_err().0.contains("forbidden"));
+    assert!(graph
+        .validate(&input)
+        .unwrap_err()
+        .message
+        .contains("forbidden"));
     graph.edges.clear();
     graph.precision = Precision::Lexical;
     assert!(graph.validate(&input).is_err());
@@ -95,7 +99,11 @@ fn protocol_checks_correlation_closed_schemas_versions_and_required_discovery() 
         );
     }
     input.required_test_ids.insert("required-doctest".into());
-    assert!(graph.validate(&input).unwrap_err().0.contains("discovery"));
+    assert!(graph
+        .validate(&input)
+        .unwrap_err()
+        .message
+        .contains("discovery"));
 }
 #[test]
 fn supported_reference_profiles_are_exact_and_consumers_cannot_be_dropped() {
@@ -245,7 +253,7 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
             assert!(!observation.incomplete());
             let checked = pack_protocol::verify_index(&request, observation.stdout(), &config);
             if enabled {
-                assert!(checked.unwrap_err().0.contains("forbidden"));
+                assert!(checked.unwrap_err().message.contains("forbidden"));
             } else {
                 checked.unwrap();
             }
@@ -330,7 +338,7 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
             .unwrap();
             assert_eq!(
                 result.status,
-                if enabled { Status::Error } else { Status::Pass }
+                if enabled { Status::Fail } else { Status::Pass }
             );
             let artifact = ledger.store_json("result", &result, now).unwrap();
             ledger

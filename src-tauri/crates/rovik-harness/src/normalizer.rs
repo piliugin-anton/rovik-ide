@@ -13,11 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn checker_digest(parser: Parser) -> crate::identity::Digest {
     crate::identity::Digest::of(
         format!(
-            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}",
+            "rovik-normalizer-v1:{parser:?}:{}:{}:{}:{}:{}",
             include_str!("normalizer.rs"),
             include_str!("pack_protocol.rs"),
             include_str!("runtime.rs"),
-            include_str!("node_report.rs")
+            include_str!("node_report.rs"),
+            include_str!("failure.rs")
         )
         .as_bytes(),
     )
@@ -79,6 +80,8 @@ impl Inventory {
 pub struct Normalized {
     /// Native outcome, with parser errors represented explicitly.
     pub status: Status,
+    /// Recovery category assigned by the trusted normalizer.
+    pub failure_category: Option<crate::FailureCategory>,
     /// Complete native case inventory.
     pub inventory: Inventory,
     /// Explanation of missing/malformed/failed observations.
@@ -94,7 +97,7 @@ pub fn normalize(
     success_codes: &[i32],
 ) -> Normalized {
     let parsed = match parser {
-        Parser::PackProtocol | Parser::PackTests => Err(Error(
+        Parser::PackProtocol | Parser::PackTests => Err(Error::new(
             "pack response requires protected request validation".into(),
         )),
         Parser::ExitCode => Ok(Inventory {
@@ -103,10 +106,10 @@ pub fn normalize(
         }),
         Parser::RustTests => parse_rust(stdout),
         Parser::CtestJunit => report
-            .ok_or_else(|| Error("missing CTest report".into()))
+            .ok_or_else(|| Error::new("missing CTest report".into()))
             .and_then(parse_junit),
         Parser::InventoryJson => report
-            .ok_or_else(|| Error("missing protected driver report".into()))
+            .ok_or_else(|| Error::new("missing protected driver report".into()))
             .and_then(wire::decode::<Inventory>),
     };
     match parsed.and_then(|inventory| {
@@ -115,11 +118,12 @@ pub fn normalize(
     }) {
         Err(error) => Normalized {
             status: Status::Error,
+            failure_category: Some(crate::FailureCategory::Infrastructure),
             inventory: Inventory {
                 schema_version: 1,
                 ..Default::default()
             },
-            diagnostic: Some(error.to_string()),
+            diagnostic: Some(error.to_string().chars().take(16_384).collect()),
         },
         Ok(inventory) => {
             let status = if !inventory.failed.is_empty()
@@ -131,11 +135,53 @@ pub fn normalize(
             };
             Normalized {
                 status,
+                failure_category: (status != Status::Pass)
+                    .then_some(crate::FailureCategory::Implementation),
                 inventory,
                 diagnostic: None,
             }
         }
     }
+}
+
+impl Normalized {
+    /// Turn an authenticated adapter failure into a conservative native outcome.
+    pub fn from_error(error: &Error) -> Self {
+        let category = if error.category == crate::FailureCategory::InvalidInput {
+            crate::FailureCategory::Infrastructure
+        } else {
+            error.category
+        };
+        Self {
+            status: match category {
+                crate::FailureCategory::Implementation => Status::Fail,
+                crate::FailureCategory::Capability => Status::Unsupported,
+                _ => Status::Error,
+            },
+            failure_category: Some(category),
+            inventory: Inventory {
+                schema_version: 1,
+                ..Default::default()
+            },
+            diagnostic: Some(error.to_string().chars().take(16_384).collect()),
+        }
+    }
+}
+
+/// Honor only failure-stage markers owned by a registered protected driver.
+/// A compiler failure has no behavioral case inventory and cannot validate an oracle.
+pub fn normalize_command(
+    definition: &crate::registry::CommandDefinition,
+    exit: Option<i32>,
+    stdout: &[u8],
+    report: Option<&[u8]>,
+    success_codes: &[i32],
+) -> Normalized {
+    if exit.is_some_and(|code| definition.implementation_failure_exit_codes.contains(&code)) {
+        return Normalized::from_error(&Error::classified(crate::FailureCategory::Implementation,
+            "protected driver reported a candidate compilation failure; inspect the native diagnostics"));
+    }
+    normalize(definition.parser, exit, stdout, report, success_codes)
 }
 
 /// Parse a single stable libtest binary, retaining required ignored tests.
@@ -144,7 +190,8 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
         bytes.len() <= wire::MAX_JSON_BYTES,
         "Rust report exceeds limit",
     )?;
-    let text = std::str::from_utf8(bytes).map_err(|_| Error("Rust report is not UTF-8".into()))?;
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| Error::new("Rust report is not UTF-8".into()))?;
     let mut inventory = Inventory {
         schema_version: 1,
         ..Default::default()
@@ -163,7 +210,7 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
             running = Some(
                 count
                     .parse::<usize>()
-                    .map_err(|_| Error("malformed Rust discovery count".into()))?,
+                    .map_err(|_| Error::new("malformed Rust discovery count".into()))?,
             );
         } else if let Some(rest) = line
             .strip_prefix("test ")
@@ -176,7 +223,7 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
                     _ if outcome == "ignored" || outcome.starts_with("ignored,") => {
                         &mut inventory.skipped
                     }
-                    _ => return Err(Error("unknown Rust test outcome".into())),
+                    _ => return Err(Error::new("unknown Rust test outcome".into())),
                 };
                 group.push(name.into());
                 inventory.discovered.push(name.into());
@@ -186,7 +233,7 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
             require(summary.is_none(), "duplicate Rust test summary")?;
             let (status, counts) = rest
                 .split_once(". ")
-                .ok_or_else(|| Error("malformed Rust summary".into()))?;
+                .ok_or_else(|| Error::new("malformed Rust summary".into()))?;
             require(
                 ["ok", "FAILED"].contains(&status),
                 "unknown Rust suite outcome",
@@ -196,10 +243,10 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
                 let field = field.trim();
                 let (n, kind) = field
                     .split_once(' ')
-                    .ok_or_else(|| Error("malformed Rust summary count".into()))?;
+                    .ok_or_else(|| Error::new("malformed Rust summary count".into()))?;
                 let n = n
                     .parse::<usize>()
-                    .map_err(|_| Error("malformed Rust summary count".into()))?;
+                    .map_err(|_| Error::new("malformed Rust summary count".into()))?;
                 require(
                     totals.insert(kind, n).is_none(),
                     "duplicate Rust summary category",
@@ -208,9 +255,9 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
             summary = Some((status, totals));
         }
     }
-    let count = running.ok_or_else(|| Error("missing Rust test discovery".into()))?;
+    let count = running.ok_or_else(|| Error::new("missing Rust test discovery".into()))?;
     let (status, totals) =
-        summary.ok_or_else(|| Error("missing or truncated Rust test summary".into()))?;
+        summary.ok_or_else(|| Error::new("missing or truncated Rust test summary".into()))?;
     require(
         count == inventory.selected.len(),
         "Rust discovery differs from execution inventory",
@@ -240,13 +287,13 @@ pub fn parse_rust(bytes: &[u8]) -> Result<Inventory> {
 pub(crate) fn attributes(event: &BytesStart<'_>) -> Result<BTreeMap<String, String>> {
     let mut fields = BTreeMap::new();
     for attr in event.attributes() {
-        let attr = attr.map_err(|e| Error(format!("malformed JUnit attribute: {e}")))?;
+        let attr = attr.map_err(|e| Error::new(format!("malformed JUnit attribute: {e}")))?;
         let key = std::str::from_utf8(attr.key.as_ref())
-            .map_err(|_| Error("non-UTF-8 JUnit attribute".into()))?
+            .map_err(|_| Error::new("non-UTF-8 JUnit attribute".into()))?
             .to_string();
         let value = attr
             .unescape_value()
-            .map_err(|e| Error(format!("invalid JUnit entity: {e}")))?
+            .map_err(|e| Error::new(format!("invalid JUnit entity: {e}")))?
             .to_string();
         require(
             fields.insert(key, value).is_none(),
@@ -262,7 +309,8 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
         bytes.len() <= wire::MAX_JSON_BYTES,
         "JUnit report exceeds limit",
     )?;
-    let text = std::str::from_utf8(bytes).map_err(|_| Error("JUnit report is not UTF-8".into()))?;
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| Error::new("JUnit report is not UTF-8".into()))?;
     let mut reader = Reader::from_str(text);
     reader.config_mut().check_end_names = true;
     let mut inventory = Inventory {
@@ -276,9 +324,11 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
     loop {
         let event = reader
             .read_event()
-            .map_err(|e| Error(format!("malformed JUnit XML: {e}")))?;
+            .map_err(|e| Error::new(format!("malformed JUnit XML: {e}")))?;
         match event {
-            Event::DocType(_) => return Err(Error("JUnit DTDs and entities are forbidden".into())),
+            Event::DocType(_) => {
+                return Err(Error::new("JUnit DTDs and entities are forbidden".into()))
+            }
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let empty = matches!(event, Event::Empty(_));
                 let name = e.name().as_ref().to_vec();
@@ -298,9 +348,9 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
                         suites += 1;
                         let number = |key: &str| -> Result<usize> {
                             attr.get(key)
-                                .ok_or_else(|| Error(format!("missing JUnit {key}")))?
+                                .ok_or_else(|| Error::new(format!("missing JUnit {key}")))?
                                 .parse()
-                                .map_err(|_| Error(format!("invalid JUnit {key}")))
+                                .map_err(|_| Error::new(format!("invalid JUnit {key}")))
                         };
                         declared = Some((
                             number("tests")?,
@@ -308,13 +358,13 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
                             attr.get("errors")
                                 .map(|s| s.parse())
                                 .transpose()
-                                .map_err(|_| Error("invalid JUnit errors".into()))?
+                                .map_err(|_| Error::new("invalid JUnit errors".into()))?
                                 .unwrap_or(0),
                             attr.get("skipped")
                                 .or_else(|| attr.get("disabled"))
                                 .map(|s| s.parse())
                                 .transpose()
-                                .map_err(|_| Error("invalid JUnit skipped".into()))?
+                                .map_err(|_| Error::new("invalid JUnit skipped".into()))?
                                 .unwrap_or(0),
                         ));
                     }
@@ -325,14 +375,14 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
                         )?;
                         let name = attr
                             .get("name")
-                            .ok_or_else(|| Error("JUnit testcase has no name".into()))?
+                            .ok_or_else(|| Error::new("JUnit testcase has no name".into()))?
                             .clone();
                         test = Some((name, 0));
                     }
                     b"failure" | b"error" | b"skipped" => {
                         let (_, status) = test
                             .as_mut()
-                            .ok_or_else(|| Error("JUnit outcome outside a testcase".into()))?;
+                            .ok_or_else(|| Error::new("JUnit outcome outside a testcase".into()))?;
                         require(*status == 0, "competing JUnit testcase outcomes")?;
                         *status = if name == b"skipped" {
                             2
@@ -343,7 +393,7 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
                         };
                     }
                     b"system-out" | b"system-err" | b"properties" | b"property" => {}
-                    _ => return Err(Error("unsupported JUnit element".into())),
+                    _ => return Err(Error::new("unsupported JUnit element".into())),
                 }
                 if empty {
                     if name == b"testcase" {
@@ -366,10 +416,10 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
             Event::Eof => break,
             Event::Text(e) => {
                 e.xml_content()
-                    .map_err(|_| Error("invalid XML text".into()))?;
+                    .map_err(|_| Error::new("invalid XML text".into()))?;
             }
             Event::GeneralRef(e) => {
-                let reference = e.decode().map_err(|e| Error(e.to_string()))?;
+                let reference = e.decode().map_err(|e| Error::new(e.to_string()))?;
                 require(
                     !stack.is_empty()
                         && (e.is_char_ref()
@@ -377,11 +427,12 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
                     "unknown JUnit XML entity",
                 )?;
                 if e.is_char_ref() {
-                    e.resolve_char_ref().map_err(|e| Error(e.to_string()))?;
+                    e.resolve_char_ref()
+                        .map_err(|e| Error::new(e.to_string()))?;
                 }
             }
             Event::Decl(_) | Event::Comment(_) | Event::CData(_) => {}
-            _ => return Err(Error("unsupported XML instruction or entity".into())),
+            _ => return Err(Error::new("unsupported XML instruction or entity".into())),
         }
     }
     require(
@@ -389,7 +440,7 @@ pub fn parse_junit(bytes: &[u8]) -> Result<Inventory> {
         "truncated or missing JUnit suite",
     )?;
     let (count, failed, errors, skipped) =
-        declared.ok_or_else(|| Error("missing JUnit counts".into()))?;
+        declared.ok_or_else(|| Error::new("missing JUnit counts".into()))?;
     require(
         count == inventory.selected.len()
             && failed.checked_add(errors) == Some(inventory.failed.len())
@@ -406,7 +457,7 @@ pub(crate) fn finish_case(
 ) -> Result<()> {
     let (name, status) = test
         .take()
-        .ok_or_else(|| Error("JUnit testcase ended without starting".into()))?;
+        .ok_or_else(|| Error::new("JUnit testcase ended without starting".into()))?;
     inventory.discovered.push(name.clone());
     inventory.selected.push(name.clone());
     match status {

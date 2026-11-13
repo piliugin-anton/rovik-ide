@@ -5,7 +5,13 @@ fn main() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
             eprintln!("{error}");
-            std::process::exit(2);
+            std::process::exit(
+                if error.category == rovik_harness::FailureCategory::Implementation {
+                    42
+                } else {
+                    2
+                },
+            );
         }
     }
 }

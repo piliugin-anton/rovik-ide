@@ -58,7 +58,7 @@ impl Parameter {
                 )?;
                 let n = value
                     .parse::<u64>()
-                    .map_err(|_| Error("integer parameter overflow".into()))?;
+                    .map_err(|_| Error::new("integer parameter overflow".into()))?;
                 require(
                     minimum <= &n && &n <= maximum,
                     "integer parameter outside approved bounds",
@@ -82,7 +82,7 @@ impl Parameter {
                 )?;
                 let relative = value
                     .strip_prefix(&format!("{root}/"))
-                    .ok_or_else(|| Error("parameter escapes sandbox mount".into()))?;
+                    .ok_or_else(|| Error::new("parameter escapes sandbox mount".into()))?;
                 validate_path(relative)
             }
         }
@@ -147,6 +147,9 @@ pub struct CommandDefinition {
     pub parser: Parser,
     /// Exact checker implementation identity, including protected driver assets.
     pub checker_digest: Digest,
+    /// Exit codes emitted only by a protected driver's candidate compilation stage.
+    #[serde(default)]
+    pub implementation_failure_exit_codes: BTreeSet<i32>,
     /// Optional report under /outputs. Behavioral JSON/XML parsers require one.
     pub report_file: Option<String>,
     /// Bounded execution profile.
@@ -172,6 +175,12 @@ impl CommandDefinition {
             "invalid sandbox working directory",
         )?;
         self.limits.validate()?;
+        require(
+            self.implementation_failure_exit_codes
+                .iter()
+                .all(|code| (1..=125).contains(code)),
+            "invalid implementation-failure exit code",
+        )?;
         require(
             self.checker_digest == crate::normalizer::checker_digest(self.parser),
             "registered checker does not match this controller's normalizer",
@@ -282,6 +291,6 @@ impl CommandRegistry {
         self.commands
             .iter()
             .find(|c| c.id == id)
-            .ok_or_else(|| Error(format!("unregistered command: {id}")))
+            .ok_or_else(|| Error::new(format!("unregistered command: {id}")))
     }
 }

@@ -40,6 +40,12 @@ pub struct WorkerLimits {
     pub cost_reservation: u64,
     /// At most one schema-format repair per request sequence.
     pub format_repairs: u32,
+    /// Bounded retries of completed infrastructure failures for one exact check binding.
+    #[serde(default = "default_infrastructure_retries")]
+    pub infrastructure_retries_per_check: u32,
+}
+fn default_infrastructure_retries() -> u32 {
+    1
 }
 
 /// Complete trusted intake. Models receive selected context, never this capability set.
@@ -70,6 +76,9 @@ pub struct TaskSetup {
     pub environment: Environment,
     /// Restrictively resolved policy.
     pub policy: EffectivePolicy,
+    /// Configuration-scoped dispositions, bound into policy and approved independently.
+    #[serde(default)]
+    pub exceptions: Vec<crate::exceptions::PolicyException>,
     /// Trusted conditional evidence routing; its digest is included in nonempty effective policy facts.
     #[serde(default)]
     pub risk_policy: crate::risk::RiskPolicy,
@@ -120,10 +129,39 @@ impl TaskSetup {
             .iter()
             .map(|c| (c.id.clone(), (c.kind, c.checker_digest.clone())))
             .collect();
+        let mut authorized_dispositions = BTreeSet::new();
+        let mut disposition_configurations = BTreeMap::new();
+        crate::unique(
+            self.exceptions
+                .iter()
+                .map(|exception| exception.exception_id.as_str()),
+        )?;
+        for exception in &self.exceptions {
+            let digest = Digest::of_json(exception)?;
+            let dispositions = match exception.kind {
+                crate::exceptions::DispositionKind::Exception => &self.plan.approved_exceptions,
+                crate::exceptions::DispositionKind::NotApplicable => {
+                    &self.plan.non_applicable_obligations
+                }
+            };
+            require(
+                dispositions.iter().any(|disposition| {
+                    disposition.evidence_digest == digest
+                        && disposition.obligation_id == exception.obligation_id
+                        && exception
+                            .approval()
+                            .is_ok_and(|approval| approval == disposition.approval)
+                }),
+                "registered exception must match its exact plan disposition and approval",
+            )?;
+            authorized_dispositions.insert(digest.clone());
+            disposition_configurations.insert(digest, exception.configurations.clone());
+        }
         Ok(PlanRegistry {
             commands,
             configurations,
-            authorized_dispositions: BTreeSet::new(),
+            authorized_dispositions,
+            disposition_configurations,
             non_waivable: ["TRUST-001".into(), "SPEC-001".into()].into(),
         })
     }
@@ -203,6 +241,21 @@ impl TaskSetup {
                 && self.plan.oracle_digest == self.oracle.digest()?,
             "plan is bound to different task inputs",
         )?;
+        if !self.exceptions.is_empty() || self.policy.facts.contains_key("exceptions_digest") {
+            require(
+                self.policy.facts.get("exceptions_digest")
+                    == Some(&Digest::of_json(&self.exceptions)?.to_string()),
+                "exceptions must be bound into effective policy",
+            )?;
+        }
+        for exception in &self.exceptions {
+            exception.validate(
+                &self.contract.scope,
+                &self.plan.configurations.iter().cloned().collect(),
+                ledger,
+                runner::now_ms()?,
+            )?;
+        }
         self.plan.validate(&self.plan_registry()?)?;
         for profile in &self.profiles {
             for config in &profile.configurations {
@@ -224,6 +277,13 @@ impl TaskSetup {
         }
         for check in &self.plan.checks {
             let definition = self.registry.get(&check.command_id)?;
+            require(
+                check
+                    .success_exit_codes
+                    .iter()
+                    .all(|code| !definition.implementation_failure_exit_codes.contains(code)),
+                "successful exit codes overlap protected compilation failures",
+            )?;
             definition.render(&check.validated_parameters)?;
             if matches!(
                 definition.parser,
@@ -232,14 +292,14 @@ impl TaskSetup {
                 let request_id = check
                     .validated_parameters
                     .get("request_id")
-                    .ok_or_else(|| Error("pack request identity missing".into()))?;
+                    .ok_or_else(|| Error::new("pack request identity missing".into()))?;
                 crate::id(request_id)?;
                 let entry = self
                     .oracle
                     .files
                     .get(&format!("requests/{request_id}.json"))
                     .ok_or_else(|| {
-                        Error("pack request must be a protected oracle artifact".into())
+                        Error::new("pack request must be a protected oracle artifact".into())
                     })?;
                 let request: crate::pack_protocol::Request =
                     wire::decode(&ledger.read(&entry.content.digest)?)?;
@@ -322,7 +382,8 @@ impl TaskSetup {
                 && self.worker.output_tokens > 0
                 && self.worker.timeout_ms > 0
                 && self.worker.timeout_ms <= 86_400_000
-                && self.worker.format_repairs <= 1,
+                && self.worker.format_repairs <= 1
+                && self.worker.infrastructure_retries_per_check <= 3,
             "unresolved worker limits",
         )?;
         require(
@@ -432,7 +493,10 @@ impl Controller {
             ("policy", serde_json::to_value(&setup.contract.scope)),
         ] {
             self.ledger
-                .store_json(kind, &value.map_err(|e| Error(e.to_string()))?, now)?;
+                .store_json(kind, &value.map_err(|e| Error::new(e.to_string()))?, now)?;
+        }
+        for exception in &setup.exceptions {
+            self.ledger.store_json("exception", exception, now)?;
         }
         let input = self.ledger.store_json("operation", setup, now)?;
         self.ledger
@@ -524,6 +588,13 @@ impl Controller {
         let scope = Digest::of_json(&setup.contract.scope)?;
         let policy = Digest::of_json(&setup.policy)?;
         let requirements = setup.approval_requirements(candidate)?;
+        if setup
+            .exceptions
+            .iter()
+            .any(|exception| exception.expires_ms <= now)
+        {
+            return Ok(false);
+        }
         for requirement in requirements {
             if !self.ledger.approval_current(
                 &setup.run_id,
@@ -569,12 +640,22 @@ impl Controller {
                 self.ledger
                     .completed_check(&setup.run_id, &last.operation_key, &input.digest)?
             {
-                return Ok(result);
+                if !result.infrastructure_retryable()
+                    || attempts.len() > setup.worker.infrastructure_retries_per_check as usize
+                    || cancel.is_cancelled()
+                {
+                    return Ok(result);
+                }
+            } else {
+                require(
+                    last.state == "failed",
+                    "unfinished check requires recovery and actual-usage reconciliation",
+                )?;
+                require(
+                    attempts.len() <= setup.worker.infrastructure_retries_per_check as usize,
+                    "infrastructure retry budget exhausted",
+                )?;
             }
-            require(
-                last.state == "failed",
-                "unfinished check requires recovery and actual-usage reconciliation",
-            )?;
         }
         let operation_key = if attempts.is_empty() {
             base_key
@@ -624,6 +705,28 @@ impl Controller {
             )?,
             "verification budget exhausted",
         )?;
+        if result.status == Status::Pass {
+            for attempt in attempts {
+                if let Some(previous) = self.ledger.completed_check(
+                    &setup.run_id,
+                    &attempt.operation_key,
+                    &input.digest,
+                )? {
+                    if previous.infrastructure_retryable() {
+                        self.ledger.record_infrastructure_recovery(
+                            &previous,
+                            &result,
+                            runner::now_ms()?,
+                        )?;
+                    }
+                }
+            }
+        } else if result.infrastructure_retryable()
+            && attempts.len() < setup.worker.infrastructure_retries_per_check as usize
+            && !cancel.is_cancelled()
+        {
+            return self.check(setup, candidate, key, spec, kind, cancel);
+        }
         Ok(result)
     }
     fn context(&self, setup: &TaskSetup, candidate: &Snapshot) -> Result<context::ContextBundle> {
@@ -660,7 +763,7 @@ impl Controller {
         ] {
             let bytes = self.ledger.read(&digest)?;
             let text = String::from_utf8(bytes)
-                .map_err(|_| Error("mandatory context is not UTF-8".into()))?;
+                .map_err(|_| Error::new("mandatory context is not UTF-8".into()))?;
             items.push(ContextItem {
                 item_id: label.into(),
                 artifact_digest: digest,
@@ -674,7 +777,7 @@ impl Controller {
         items.push(ContextItem {
             item_id: "profiles".into(),
             text: String::from_utf8(self.ledger.read(&profiles.digest)?)
-                .map_err(|_| Error("profile context is not UTF-8".into()))?,
+                .map_err(|_| Error::new("profile context is not UTF-8".into()))?,
             artifact_digest: profiles.digest,
             trust: Trust::AuthoritativePolicy,
             source_revision: revision.clone(),
@@ -684,7 +787,7 @@ impl Controller {
         items.push(ContextItem {
             item_id: "risk-routing".into(),
             text: String::from_utf8(self.ledger.read(&risk.digest)?)
-                .map_err(|_| Error("risk policy is not UTF-8".into()))?,
+                .map_err(|_| Error::new("risk policy is not UTF-8".into()))?,
             artifact_digest: risk.digest,
             trust: Trust::AuthoritativePolicy,
             source_revision: revision.clone(),
@@ -696,7 +799,7 @@ impl Controller {
         items.push(ContextItem {
             item_id: "source-index".into(),
             text: String::from_utf8(self.ledger.read(&index.digest)?)
-                .map_err(|_| Error("source index is not UTF-8".into()))?,
+                .map_err(|_| Error::new("source index is not UTF-8".into()))?,
             artifact_digest: index.digest,
             trust: Trust::ObservedCode,
             source_revision: revision.clone(),
@@ -800,14 +903,18 @@ impl Controller {
                 self.ledger
                     .store_json("provider-response", &response, runner::now_ms()?)?;
             let usage = response.usage.as_ref().ok_or_else(|| {
-                Error("provider supplied no usage; reservation retained for reconciliation".into())
+                Error::new(
+                    "provider supplied no usage; reservation retained for reconciliation".into(),
+                )
             })?;
             let tokens = usage
                 .input_tokens
                 .checked_add(usage.output_tokens)
-                .ok_or_else(|| Error("provider token usage overflow".into()))?;
+                .ok_or_else(|| Error::new("provider token usage overflow".into()))?;
             let cost = usage.cost_microunits.ok_or_else(|| {
-                Error("provider cost unresolved; reservation retained for reconciliation".into())
+                Error::new(
+                    "provider cost unresolved; reservation retained for reconciliation".into(),
+                )
             })?;
             let actual = [
                 ("model_calls".into(), 1),
@@ -840,7 +947,7 @@ impl Controller {
                 Err(e) => return Err(e),
             };
             if !turn.questions.is_empty() {
-                return Err(Error(format!(
+                return Err(Error::new(format!(
                     "semantic decision required: {}",
                     turn.questions.join("; ")
                 )));
@@ -875,7 +982,8 @@ impl Controller {
                     let result =
                         self.check(setup, &candidate, &key, matches[0], "advisory", cancel)?;
                     diagnostics.extend(result.evidence.iter().cloned());
-                    feedback.push(serde_json::to_value(result).map_err(|e| Error(e.to_string()))?);
+                    feedback
+                        .push(serde_json::to_value(result).map_err(|e| Error::new(e.to_string()))?);
                     continue;
                 }
                 let broker = Broker::new(&self.ledger, &candidate, diagnostics.clone());
@@ -884,7 +992,7 @@ impl Controller {
                     crate::broker::ToolRequest::RequestScopeChange { .. }
                         | crate::broker::ToolRequest::RequestContractChange { .. }
                 ) {
-                    return Err(Error(format!(
+                    return Err(Error::new(format!(
                         "operator decision required: {}",
                         broker.call(&tool)?
                     )));
@@ -898,7 +1006,7 @@ impl Controller {
         let setup = self.setup(run_id)?;
         let candidate = self
             .current_candidate(run_id)?
-            .ok_or_else(|| Error("no implementation candidate selected".into()))?;
+            .ok_or_else(|| Error::new("no implementation candidate selected".into()))?;
         let key = self.key(&setup, &candidate)?;
         let required: Vec<_> = setup.plan.required_final().cloned().collect();
         let binding = Digest::of_json(&key)?;
@@ -1002,8 +1110,8 @@ impl Controller {
                 let mut current = self.ledger.run(run_id)?;
                 if !current.state.terminal() && current.state != State::Blocked {
                     let next = if runner::now_ms()? >= setup.deadline_ms
-                        || error.0.contains("budget unavailable")
-                        || error.0.contains("exhausted the budget")
+                        || error.message.contains("budget unavailable")
+                        || error.message.contains("exhausted the budget")
                     {
                         Some(State::Stopped)
                     } else if active_cancel.is_cancelled() {
@@ -1066,10 +1174,11 @@ impl Controller {
         let revision = current
             .revision
             .checked_add(1)
-            .ok_or_else(|| Error("run revision overflow".into()))?;
-        let before =
-            serde_json::to_string(&State::ReadyForApproval).map_err(|e| Error(e.to_string()))?;
-        let after = serde_json::to_string(&State::Accepted).map_err(|e| Error(e.to_string()))?;
+            .ok_or_else(|| Error::new("run revision overflow".into()))?;
+        let before = serde_json::to_string(&State::ReadyForApproval)
+            .map_err(|e| Error::new(e.to_string()))?;
+        let after =
+            serde_json::to_string(&State::Accepted).map_err(|e| Error::new(e.to_string()))?;
         let changed=tx.execute("UPDATE runs SET state=?1,revision=?2,restart_state=NULL,updated_ms=?3 WHERE run_id=?4 AND revision=?5 AND state=?6 AND binding_digest=?7",rusqlite::params![after,revision as i64,now as i64,run_id,current.revision as i64,before,current.binding_digest.as_ref().map(Digest::as_str)])?;
         require(changed == 1, "concurrent acceptance transition")?;
         tx.execute(
@@ -1186,7 +1295,7 @@ impl Controller {
                                     .all(|c| s.expected_case_ids.contains(c))
                         })
                         .ok_or_else(|| {
-                            Error("no behavioral check covers the negative control".into())
+                            Error::new("no behavioral check covers the negative control".into())
                         })?;
                     let result = self.check(
                         setup,
@@ -1212,7 +1321,7 @@ impl Controller {
                 State::FastChecks | State::RiskChecks | State::CleanCi => {
                     let candidate = self
                         .current_candidate(&setup.run_id)?
-                        .ok_or_else(|| Error("candidate missing".into()))?;
+                        .ok_or_else(|| Error::new("candidate missing".into()))?;
                     let key = self.key(setup, &candidate)?;
                     let assessment = crate::risk::assess_for_languages(
                         &self.ledger,
@@ -1254,7 +1363,7 @@ impl Controller {
                                 })
                             })
                             .ok_or_else(|| {
-                                Error("verification dependency cannot be scheduled".into())
+                                Error::new("verification dependency cannot be scheduled".into())
                             })?;
                         let spec = pending.remove(at);
                         let result = self.check(setup, &candidate, &key, spec, "check", cancel)?;
@@ -1266,7 +1375,7 @@ impl Controller {
                                 }
                                 break;
                             }
-                            if result.status == Status::Fail {
+                            if result.repairable() {
                                 if let Some(budget)=self.ledger.budgets(&setup.run_id)?.get("repairs") {
                                     if budget.spent < budget.limit && budget.reserved == 0 {
                                         self.advance(&setup.run_id,State::Repair,"repair_requested",serde_json::json!({"result":result.result_id}))?;
@@ -1312,7 +1421,7 @@ impl Controller {
                 State::Review => {
                     let candidate = self
                         .current_candidate(&setup.run_id)?
-                        .ok_or_else(|| Error("candidate missing".into()))?;
+                        .ok_or_else(|| Error::new("candidate missing".into()))?;
                     require(
                         self.approvals_current(setup, Some(&candidate), runner::now_ms()?)?,
                         "candidate review approval is missing, expired or revoked",
@@ -1345,11 +1454,11 @@ impl Controller {
                     });
                 }
                 State::Repair => {
-                    let candidate=self.current_candidate(&setup.run_id)?.ok_or_else(||Error("repair has no candidate".into()))?;
+                    let candidate=self.current_candidate(&setup.run_id)?.ok_or_else(||Error::new("repair has no candidate".into()))?;
                     let before=candidate.digest()?;
-                    let binding=self.ledger.run(&setup.run_id)?.binding_digest.ok_or_else(||Error("repair has no binding".into()))?;
+                    let binding=self.ledger.run(&setup.run_id)?.binding_digest.ok_or_else(||Error::new("repair has no binding".into()))?;
                     let results=self.ledger.completed_results(&setup.run_id,&binding)?;
-                    let feedback=results.into_iter().map(|r|serde_json::to_value(r).map_err(|e|Error(e.to_string()))).collect::<Result<Vec<_>>>()?;
+                    let feedback=results.into_iter().map(|r|serde_json::to_value(r).map_err(|e|Error::new(e.to_string()))).collect::<Result<Vec<_>>>()?;
                     let input=self.ledger.store_json("operation",&serde_json::json!({"repair_of":before}),runner::now_ms()?)?;
                     let lease=self.ledger.claim(&setup.run_id,&uuid::Uuid::new_v4().to_string(),"repair",&input.digest,&uuid::Uuid::new_v4().to_string(),runner::now_ms()?,setup.deadline_ms.saturating_sub(runner::now_ms()?).max(1),&[("repairs".into(),1)].into())?;
                     let outcome=self.implement(setup,provider,cancel,candidate,feedback);
@@ -1360,8 +1469,8 @@ impl Controller {
                     self.select_binding(setup,&candidate)?;
                     self.advance(&setup.run_id,State::FastChecks,"repair_admitted",serde_json::json!({"candidate":candidate.digest()?}))?;
                 }
-                State::Replan => return Err(Error("semantic replanning requires a newly approved intake; automatic replans are disabled".into())),
-                _ => return Err(Error("unhandled workflow state".into())),
+                State::Replan => return Err(Error::new("semantic replanning requires a newly approved intake; automatic replans are disabled".into())),
+                _ => return Err(Error::new("unhandled workflow state".into())),
             }
         }
     }

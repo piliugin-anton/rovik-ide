@@ -65,6 +65,9 @@ pub struct CheckResult {
     pub evidence_key: EvidenceKey,
     /// Deterministic native outcome.
     pub status: Status,
+    /// Trusted recovery attribution. Older observations remain conservative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<crate::FailureCategory>,
     /// None for signals or missing execution.
     pub exit_code: Option<i32>,
     /// Passed plus failed, excluding skipped cases.
@@ -86,6 +89,10 @@ impl CheckResult {
     /// Reject ambiguous inventory and unsupported versions before admission.
     pub fn validate(&self) -> Result<()> {
         require(self.schema_version == 1, "unsupported check-result version")?;
+        require(
+            self.status != Status::Pass || self.failure_category.is_none(),
+            "passing evidence cannot also carry a failure category",
+        )?;
         for value in [
             &self.run_id,
             &self.result_id,
@@ -126,6 +133,19 @@ impl CheckResult {
     /// Identity within a verification matrix.
     pub fn identity(&self) -> (&str, &Digest) {
         (&self.check_id, &self.configuration_digest)
+    }
+    /// Only implementation failures may spend the implementation-repair budget.
+    pub fn repairable(&self) -> bool {
+        self.status == Status::Fail
+            && self
+                .failure_category
+                .is_none_or(|category| category == crate::FailureCategory::Implementation)
+    }
+    /// A completed infrastructure failure without executed failed cases may be retried.
+    pub fn infrastructure_retryable(&self) -> bool {
+        self.status == Status::Error
+            && self.failure_category == Some(crate::FailureCategory::Infrastructure)
+            && self.failed_case_ids.is_empty()
     }
 }
 

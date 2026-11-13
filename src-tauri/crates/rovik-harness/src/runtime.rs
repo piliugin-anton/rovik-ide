@@ -75,7 +75,7 @@ pub(crate) fn configuration<'a>(
         .configurations
         .iter()
         .find(|c| c.id == configuration_id)
-        .ok_or_else(|| Error("unknown runtime configuration".into()))?;
+        .ok_or_else(|| Error::new("unknown runtime configuration".into()))?;
     let language = profile.language;
     require(
         matches!(
@@ -126,8 +126,9 @@ pub(crate) fn configuration<'a>(
             "TypeScript requires strict checking and no emit on error",
         )?;
         crate::scope::validate_path(
-            typescript_project
-                .ok_or_else(|| Error("TypeScript needs a protected compiler project".into()))?,
+            typescript_project.ok_or_else(|| {
+                Error::new("TypeScript needs a protected compiler project".into())
+            })?,
         )?;
     } else {
         require(
@@ -194,14 +195,7 @@ pub fn verify(
 ) -> Result<Normalized> {
     let input = input(request)?;
     let reply = pack_protocol::response(request, bytes)?;
-    require(
-        reply.ok,
-        reply
-            .error
-            .as_ref()
-            .map(|e| e.message.as_str())
-            .unwrap_or("runtime adapter failed"),
-    )?;
+    reply.require_success()?;
     let result: TestOutput = wire::decode(&wire::canonical(&reply.result)?)?;
     require(
         result.language == input.profile.language
@@ -240,6 +234,8 @@ pub fn verify(
         "runtime exit status disagrees with cases",
     )?;
     Ok(Normalized {
+        failure_category: (!inventory.failed.is_empty())
+            .then_some(crate::FailureCategory::Implementation),
         status: if inventory.failed.is_empty() {
             crate::evidence::Status::Pass
         } else {

@@ -149,7 +149,7 @@ fn deleted_cleanup_and_new_ffi_cannot_be_downgraded_by_worker_tags() {
     assert!(policy
         .validate(&concurrent, &setup.plan, &setup.registry)
         .unwrap_err()
-        .0
+        .message
         .contains("concurrency"));
 }
 

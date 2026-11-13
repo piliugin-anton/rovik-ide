@@ -13,6 +13,8 @@ pub mod contract;
 pub mod controller;
 pub mod evaluation;
 pub mod evidence;
+pub mod exceptions;
+pub mod failure;
 pub mod fixtures;
 pub mod identity;
 pub mod ledger;
@@ -28,6 +30,7 @@ pub mod profile;
 pub mod provider;
 pub mod registry;
 pub mod retention;
+pub mod review_bundle;
 pub mod risk;
 pub mod runner;
 pub mod runtime;
@@ -38,16 +41,7 @@ pub mod state;
 pub mod tools;
 pub mod wire;
 
-/// A validation or operational error, with a stable reason and useful context.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error(pub String);
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for Error {}
+pub use failure::{Error, FailureCategory};
 
 /// Result returned by the harness's domain and application services.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -56,7 +50,7 @@ pub(crate) fn require(condition: bool, message: impl Into<String>) -> Result<()>
     if condition {
         Ok(())
     } else {
-        Err(Error(message.into()))
+        Err(Error::new(message.into()))
     }
 }
 

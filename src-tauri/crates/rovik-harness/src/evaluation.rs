@@ -142,7 +142,7 @@ impl Evaluation {
         for observation in &self.observations {
             let case = cases
                 .get(observation.case_id.as_str())
-                .ok_or_else(|| crate::Error("unregistered evaluation case".into()))?;
+                .ok_or_else(|| crate::Error::new("unregistered evaluation case".into()))?;
             require(
                 observation.repetition < bank.repetitions
                     && seen.insert((
@@ -171,7 +171,7 @@ impl Evaluation {
             metrics.duration_ms = metrics
                 .duration_ms
                 .checked_add(observation.duration_ms)
-                .ok_or_else(|| crate::Error("evaluation duration overflow".into()))?;
+                .ok_or_else(|| crate::Error::new("evaluation duration overflow".into()))?;
             match (case.expected_correct, observation.outcome) {
                 (true, Outcome::Accepted) => metrics.correct_accepts += 1,
                 (false, Outcome::Accepted) => metrics.false_accepts += 1,

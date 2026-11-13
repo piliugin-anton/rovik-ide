@@ -129,6 +129,8 @@ pub struct PlanRegistry {
     pub configurations: BTreeMap<Digest, BTreeSet<String>>,
     /// Disposition artifact identities independently approved by the controller.
     pub authorized_dispositions: BTreeSet<Digest>,
+    /// Exact configurations covered by each registered disposition artifact.
+    pub disposition_configurations: BTreeMap<Digest, BTreeSet<Digest>>,
     /// Invariants which no exception or non-applicability may remove.
     pub non_waivable: BTreeSet<String>,
 }
@@ -165,7 +167,7 @@ impl CheckPlan {
             let (kind, checker) = registry
                 .commands
                 .get(&check.command_id)
-                .ok_or_else(|| Error(format!("unknown command: {}", check.command_id)))?;
+                .ok_or_else(|| Error::new(format!("unknown command: {}", check.command_id)))?;
             require(*checker == check.checker_digest, "wrong registered checker")?;
             require(
                 check.timeout_ms > 0
@@ -199,7 +201,7 @@ impl CheckPlan {
             if check.required && check.phase == Phase::Final {
                 coverage
                     .get_mut(&check.configuration_digest)
-                    .ok_or_else(|| Error("unplanned configuration".into()))?
+                    .ok_or_else(|| Error::new("unplanned configuration".into()))?
                     .extend(check.obligation_ids.iter().cloned());
             }
         }
@@ -226,10 +228,6 @@ impl CheckPlan {
                 "unauthorized obligation disposition",
             )?;
             require(
-                dispositions.insert(&disposition.obligation_id),
-                "competing obligation dispositions",
-            )?;
-            require(
                 disposition.approval.subject_digest == disposition.evidence_digest,
                 "disposition approval has wrong subject",
             )?;
@@ -237,8 +235,31 @@ impl CheckPlan {
                 self.approval_requirements.contains(&disposition.approval),
                 "disposition approval missing from final gate",
             )?;
-            for set in coverage.values_mut() {
-                set.insert(disposition.obligation_id.clone());
+            require(
+                disposition.approval.obligation_ids.is_empty(),
+                "disposition approval cannot waive configurations outside its registered scope",
+            )?;
+            let affected = registry
+                .disposition_configurations
+                .get(&disposition.evidence_digest)
+                .ok_or_else(|| Error::new("disposition has no authorized configurations".into()))?;
+            require(
+                !affected.is_empty() && affected.is_subset(&configurations),
+                "disposition has unplanned configurations",
+            )?;
+            for configuration in affected {
+                require(
+                    registry.configurations[configuration].contains(&disposition.obligation_id),
+                    "unknown disposition obligation",
+                )?;
+                require(
+                    dispositions.insert((&disposition.obligation_id, configuration)),
+                    "competing obligation dispositions",
+                )?;
+                coverage
+                    .get_mut(configuration)
+                    .ok_or_else(|| Error::new("unplanned disposition configuration".into()))?
+                    .insert(disposition.obligation_id.clone());
             }
         }
         for approval in &self.approval_requirements {
@@ -270,7 +291,7 @@ impl CheckPlan {
                 for dep in &check.dependencies {
                     let parent = checks
                         .get(&(dep.as_str(), &check.configuration_digest))
-                        .ok_or_else(|| Error(format!("missing check dependency: {dep}")))?;
+                        .ok_or_else(|| Error::new(format!("missing check dependency: {dep}")))?;
                     require(
                         !check.required || parent.required,
                         "required check depends on advisory work",

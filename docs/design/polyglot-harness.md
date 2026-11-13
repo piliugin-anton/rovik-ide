@@ -206,7 +206,18 @@ files and model output cannot invoke this management interface.
 `ROVIK_HARNESS_API_KEY` supplies the credential. Rates contain `input`,
 `cached_input` and `output` microunits per million tokens. `status`, `verify` and
 `export` expose the durable result and immutable candidate. Export requires a new
-directory. Acceptance and export do not apply a patch, commit, merge or deploy.
+absolute directory and writes `patch.json`, `candidate.json`, `setup.json`,
+`evidence.json`, referenced blobs and a hash manifest. The patch includes exact
+preimages, additions, deletions, modes and binary identities; applying it in memory
+must reproduce the complete candidate. Evidence includes failed attempts,
+infrastructure recoveries, approvals and scoped exceptions. The manifest records
+the run state and labels explicitly accepted residual risk. Acceptance and export
+do not apply a patch to the user's checkout, commit, merge or deploy.
+
+`run` exits with `0` for accepted, `2` for blocked, `3` for stopped/rejected,
+`4` for invalid input or policy, `5` for cancelled, and `1` for unexpected
+controller failure. Management commands return zero when their action completes;
+that is not an acceptance verdict. Errors include a machine-readable category.
 Existing IDE chat verification retains its current behavior; this is the opt-in
 strict workflow shared by the core and the new headless entry point.
 
@@ -512,7 +523,7 @@ threading support.
 The v1 backend records each job and its private workspace durably before container
 creation. The single `001_initial.sql` migration creates the complete v1 ledger,
 including artifact reference types, job tracking, immutable actual-usage receipts,
-operator reconciliations and append-only failure resolutions. Initialization and
+operator reconciliations, infrastructure recovery links and append-only failure resolutions. Initialization and
 the schema-version marker commit together; reopening a current ledger preserves
 its history. Unreleased development ledgers from before this consolidation need a
 new state directory; no compatibility upgrade or automatic data reset is performed.
@@ -571,8 +582,19 @@ inputs; reconciled interrupted checks need a new attempt. This is same-run
 idempotence, not cross-run final-check caching.
 
 An explicitly configured `budgets.repairs` account enables a bounded implementation
-repair after an executed behavioral failure. Each attempt consumes repair and
+repair after a compilation, behavioral or architecture-boundary failure. Each attempt consumes repair and
 model budgets. Missing repair policy blocks; exhausted repair budget stops.
+Protected compiler stages have distinct failure markers. A compiler failure
+contains no executed behavioral cases and cannot validate a negative control.
+Missing tools, wrong tool versions, broken dependency preparation and malformed
+reports remain distinct from implementation failures.
+
+Completed infrastructure failures without failed behavioral cases can retry up to
+`worker.infrastructure_retries_per_check` times (default one, at most three),
+within the existing check budget and deadline. An authenticated pass for the same
+source, check, configuration and complete evidence binding creates an immutable
+recovery link; the original observation stays unchanged. Interrupted operations
+with unknown execution or usage still require recovery and reconciliation.
 Infrastructure failures do not trigger code repair. The repaired candidate goes
 through scope, risk, review and fresh final checks again. Earlier failures remain
 visible and block acceptance until an authorized operator supplies a resolution:
@@ -590,6 +612,16 @@ configuration. Revoking this approval blocks verification again. Semantic
 replanning requires a new approved intake; automatic replans are bounded at zero.
 One output-format repair is the maximum supported provider repair policy, and
 every provider request has its own actual-usage accounting.
+
+`TaskSetup.exceptions` registers exact, expiring policy dispositions. Each record
+names its obligation, kind, owner, rationale, task scope, affected configurations,
+supporting evidence and any residual risk. The digest of the entire list must
+match `policy.facts.exceptions_digest`. A matching plan disposition and a
+`policy-exception` approval for the exact record are required. Coverage applies
+only to the listed configurations; approval cannot implicitly waive the rest of
+the matrix. Expiry and revocation are checked again at acceptance. `TRUST-001`
+and `SPEC-001` cannot be waived, and exceptions never turn a failed observation
+into a passing result.
 
 Retention initially preserves every registered blob, run, approval and historical
 result. It removes only unregistered CAS blobs older than an explicit grace period

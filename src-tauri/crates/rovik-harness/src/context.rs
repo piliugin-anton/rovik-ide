@@ -79,7 +79,7 @@ pub fn build(
         if crate::wire::canonical(&bundle)?.len() > maximum_bytes {
             bundle.items.pop();
             if mandatory {
-                return Err(Error(
+                return Err(Error::new(
                     "mandatory context exceeds budget; split the task or approve a compact view"
                         .into(),
                 ));

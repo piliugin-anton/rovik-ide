@@ -87,7 +87,7 @@ impl Snapshot {
             let destination = destination.join(path);
             let parent = destination
                 .parent()
-                .ok_or_else(|| Error("source has no parent".into()))?;
+                .ok_or_else(|| Error::new("source has no parent".into()))?;
             fs::create_dir_all(parent)?;
             fs::write(&destination, ledger.read(&file.content.digest)?)?;
             #[cfg(unix)]

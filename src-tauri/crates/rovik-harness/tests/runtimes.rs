@@ -92,7 +92,7 @@ fn runtime_evidence_requires_protected_profiles_versions_cases_and_complete_repo
         assert!(graph
             .validate(&native_input)
             .unwrap_err()
-            .0
+            .message
             .contains("precision"));
         let configuration = input.validate().unwrap().digest().unwrap();
         let versions = input
@@ -322,17 +322,27 @@ fn all_runtime_languages_reject_behavioral_mutants_then_accept_through_the_full_
 #[ignore = "requires ROVIK_HARNESS_DOCKER=1 and a pinned runtime image"]
 fn compiler_failures_wrong_versions_and_corrupt_packages_never_count_as_test_failures() {
     assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
-    for language in LANGUAGES {
+    for (language, failure) in [
+        (Language::TypeScript, "compile"),
+        (Language::JavaScript, "compile"),
+        (Language::Python, "compile"),
+        (Language::JavaScript, "version"),
+        (Language::Python, "dependencies"),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Ledger::open(&dir.path().join("state")).unwrap();
         let image = Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap();
         let mut setup =
             fixtures::quota_runtime(&ledger, "runtime-errors", image, "base", language).unwrap();
         let mut request = request(&ledger, &setup);
-        if language == Language::TypeScript {
+        if failure == "compile" {
             let (path, source) = fixtures::runtime_quota_source(language).unwrap();
-            let bad =
-                format!("{source}\nconst invalid: number = 'must fail strict compilation';\n");
+            let invalid = match language {
+                Language::TypeScript => "const invalid: number = 'must fail strict compilation';",
+                Language::JavaScript => "const invalid = ;",
+                _ => "def invalid(:",
+            };
+            let bad = format!("{source}\n{invalid}\n");
             setup.base.files.get_mut(path).unwrap().content = ledger
                 .store(
                     "source",
@@ -341,7 +351,7 @@ fn compiler_failures_wrong_versions_and_corrupt_packages_never_count_as_test_fai
                     runner::now_ms().unwrap(),
                 )
                 .unwrap();
-        } else if language == Language::JavaScript {
+        } else if failure == "version" {
             request.payload["profile"]["facts"]["node_version"] = "0.0.0".into();
             let serialized = format!("{}\n", serde_json::to_string(&request).unwrap());
             setup
@@ -396,12 +406,23 @@ fn compiler_failures_wrong_versions_and_corrupt_packages_never_count_as_test_fai
             String::from_utf8_lossy(observation.stdout()),
             String::from_utf8_lossy(observation.stderr())
         );
-        assert!(runtime::verify(
+        let error = runtime::verify(
             &request,
             observation.stdout(),
             &spec.configuration_digest,
-            observation.exit_code()
+            observation.exit_code(),
         )
-        .is_err());
+        .unwrap_err();
+        let normalized = rovik_harness::normalizer::Normalized::from_error(&error);
+        assert_eq!(
+            normalized.failure_category,
+            Some(match failure {
+                "compile" => rovik_harness::FailureCategory::Implementation,
+                "version" => rovik_harness::FailureCategory::Capability,
+                _ => rovik_harness::FailureCategory::Infrastructure,
+            })
+        );
+        assert_eq!(normalized.inventory.executed(), 0);
+        assert!(normalized.inventory.failed.is_empty());
     }
 }

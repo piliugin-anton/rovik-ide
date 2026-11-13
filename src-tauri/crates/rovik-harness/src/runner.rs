@@ -206,7 +206,7 @@ impl ContainerBackend {
         require(archive.is_file(), "image archive is not a regular file")?;
         let path = archive
             .to_str()
-            .ok_or_else(|| Error("image archive path is not UTF-8".into()))?;
+            .ok_or_else(|| Error::new("image archive path is not UTF-8".into()))?;
         self.checked(&["load", "--input", path])?;
         Ok(())
     }
@@ -284,7 +284,7 @@ impl ContainerBackend {
                 "collect-report",
                 path,
             ],
-            usize::try_from(limit).map_err(|_| Error("report limit overflow".into()))?,
+            usize::try_from(limit).map_err(|_| Error::new("report limit overflow".into()))?,
         )?;
         require(
             !out.timed_out && !out.exceeded,
@@ -402,7 +402,7 @@ impl ContainerBackend {
         if result.code == Some(0) {
             return Ok(true);
         }
-        Err(Error(format!("cannot remove registered job: {error}")))
+        Err(Error::new(format!("cannot remove registered job: {error}")))
     }
     #[allow(clippy::too_many_arguments)]
     fn execute_inner(
@@ -504,7 +504,7 @@ impl ContainerBackend {
         ] {
             let path = path
                 .to_str()
-                .ok_or_else(|| Error("snapshot mount is not UTF-8".into()))?;
+                .ok_or_else(|| Error::new("snapshot mount is not UTF-8".into()))?;
             require(!path.contains(','), "unsupported mount path")?;
             create.args([
                 "--mount",
@@ -659,10 +659,10 @@ fn validate_executable(executable: &Path) -> Result<()> {
 pub fn now_ms() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error("controller clock precedes Unix epoch".into()))?
+        .map_err(|_| Error::new("controller clock precedes Unix epoch".into()))?
         .as_millis()
         .try_into()
-        .map_err(|_| Error("controller timestamp overflow".into()))
+        .map_err(|_| Error::new("controller timestamp overflow".into()))
 }
 
 /// Exact operation input persisted before scheduling trusted verification.
@@ -727,8 +727,8 @@ pub fn admit_observation(
     }
     evidence.sort();
     evidence.dedup();
-    let mut normalized = normalizer::normalize(
-        definition.parser,
+    let mut normalized = normalizer::normalize_command(
+        definition,
         observation.exit_code,
         &observation.stdout,
         observation.report.as_deref(),
@@ -743,12 +743,12 @@ pub fn admit_observation(
             let request_id = spec
                 .validated_parameters
                 .get("request_id")
-                .ok_or_else(|| Error("pack check has no request identity".into()))?;
+                .ok_or_else(|| Error::new("pack check has no request identity".into()))?;
             crate::id(request_id)?;
             let file = oracle
                 .files
                 .get(&format!("requests/{request_id}.json"))
-                .ok_or_else(|| Error("pack request is not a protected oracle asset".into()))?;
+                .ok_or_else(|| Error::new("pack request is not a protected oracle asset".into()))?;
             let request: crate::pack_protocol::Request =
                 wire::decode(&ledger.read(&file.content.digest)?)?;
             require(
@@ -773,16 +773,21 @@ pub fn admit_observation(
                     "configured graph process failed",
                 )?;
                 normalized.status = Status::Pass;
+                normalized.failure_category = None;
                 normalized.diagnostic = None;
             }
             Ok(())
         })();
         if let Err(error) = checked {
-            normalized.status = Status::Error;
-            normalized.diagnostic = Some(error.to_string());
+            normalized = normalizer::Normalized::from_error(&error);
         }
     }
     if observation.incomplete() {
+        normalized.failure_category = Some(if observation.cancelled {
+            crate::FailureCategory::Cancelled
+        } else {
+            crate::FailureCategory::Infrastructure
+        });
         normalized.status = if observation.timed_out {
             Status::Timeout
         } else {
@@ -815,6 +820,7 @@ pub fn admit_observation(
         checker_digest: spec.checker_digest.clone(),
         evidence_key: key.clone(),
         status: normalized.status,
+        failure_category: normalized.failure_category,
         exit_code: observation.exit_code,
         executed_test_count: normalized.inventory.executed(),
         passed_case_ids: normalized.inventory.passed,
@@ -899,7 +905,7 @@ impl Ledger {
                 now as i64
             ],
         )?;
-        let status = serde_json::to_value(record.status).map_err(|e| Error(e.to_string()))?;
+        let status = serde_json::to_value(record.status).map_err(|e| Error::new(e.to_string()))?;
         tx.execute(
             "INSERT INTO check_results VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             rusqlite::params![
@@ -979,5 +985,162 @@ impl Ledger {
             results.push(result);
         }
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::{controller::Controller, fixtures, normalizer::Inventory};
+
+    #[test]
+    fn infrastructure_recovery_requires_authentic_same_binding_results_and_keeps_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut controller = Controller {
+            ledger: Ledger::open(&directory.path().join("state")).unwrap(),
+            backend: ContainerBackend::local(Path::new("/bin/true")).unwrap(),
+        };
+        let setup =
+            fixtures::quota_rust(&controller.ledger, "recovery", Digest::of(b"image"), "base")
+                .unwrap();
+        let now = now_ms().unwrap();
+        let run = controller.create(&setup, now).unwrap();
+        let key = EvidenceKey {
+            candidate_digest: setup.base.digest().unwrap(),
+            contract_digest: Digest::of_json(&setup.contract).unwrap(),
+            design_digest: Digest::of_json(&setup.design).unwrap(),
+            policy_digest: Digest::of_json(&setup.policy).unwrap(),
+            oracle_digest: setup.oracle.digest().unwrap(),
+            plan_digest: Digest::of_json(&setup.plan).unwrap(),
+            environment_digest: Digest::of_json(&setup.environment).unwrap(),
+        };
+        let binding = controller
+            .ledger
+            .store_json("operation", &key, now)
+            .unwrap();
+        controller.ledger.bind(&run, &binding.digest, now).unwrap();
+        let spec = &setup.plan.checks[0];
+        let definition = setup.registry.get(&spec.command_id).unwrap();
+        let input = controller
+            .ledger
+            .store_json(
+                "operation",
+                &ExecutionInput {
+                    evidence_key: key.clone(),
+                    check: spec.clone(),
+                },
+                now,
+            )
+            .unwrap();
+        let passed = Inventory {
+            schema_version: 1,
+            discovered: spec.expected_case_ids.clone(),
+            selected: spec.expected_case_ids.clone(),
+            passed: spec.expected_case_ids.clone(),
+            failed: vec![],
+            skipped: vec![],
+        };
+        let mut failed = passed.clone();
+        failed.failed.push(failed.passed.pop().unwrap());
+        let mut results = Vec::new();
+        for (index, report) in [
+            b"truncated".to_vec(),
+            wire::canonical(&passed).unwrap(),
+            wire::canonical(&failed).unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let lease = controller
+                .ledger
+                .claim(
+                    &setup.run_id,
+                    &format!("attempt-{index}"),
+                    "check",
+                    &input.digest,
+                    "test-controller",
+                    now,
+                    60_000,
+                    &[("checks".into(), 1)].into(),
+                )
+                .unwrap();
+            let observation = Observation {
+                job_id: format!("test-job-{index}"),
+                candidate_digest: key.candidate_digest.clone(),
+                oracle_digest: key.oracle_digest.clone(),
+                environment_digest: key.environment_digest.clone(),
+                configuration_digest: spec.configuration_digest.clone(),
+                command_digest: Digest::of_json(definition).unwrap(),
+                parameters: spec.validated_parameters.clone(),
+                exit_code: Some(if index == 2 { 1 } else { 0 }),
+                stdout: vec![],
+                stderr: vec![],
+                report: Some(report),
+                timed_out: false,
+                cancelled: false,
+                output_exceeded: false,
+                oom_killed: false,
+                duration_ms: 1,
+            };
+            let result = admit_observation(
+                &mut controller.ledger,
+                &lease,
+                &key,
+                spec,
+                definition,
+                observation,
+                now,
+            )
+            .unwrap();
+            let artifact = controller
+                .ledger
+                .store_json("result", &result, now)
+                .unwrap();
+            controller
+                .ledger
+                .complete(
+                    &lease,
+                    &artifact.digest,
+                    &[("checks".into(), 1)].into(),
+                    now,
+                )
+                .unwrap();
+            results.push(result);
+        }
+        controller
+            .ledger
+            .record_infrastructure_recovery(&results[0], &results[1], now)
+            .unwrap();
+        assert!(
+            controller
+                .ledger
+                .record_infrastructure_recovery(&results[2], &results[1], now)
+                .is_err(),
+            "behavioral failures never recover implicitly"
+        );
+        let mut forged = results[1].clone();
+        forged.evidence_key.candidate_digest = Digest::of(b"other");
+        assert!(controller
+            .ledger
+            .record_infrastructure_recovery(&results[0], &forged, now)
+            .is_err());
+        let resolved = controller.resolved_failures(&setup, &results).unwrap();
+        assert_eq!(resolved, [results[0].result_id.clone()].into());
+        assert_eq!(
+            controller
+                .ledger
+                .result(&setup.run_id, &results[0].result_id)
+                .unwrap()
+                .status,
+            Status::Error
+        );
+        assert_eq!(
+            controller
+                .ledger
+                .result(&setup.run_id, &results[2].result_id)
+                .unwrap()
+                .status,
+            Status::Fail
+        );
     }
 }

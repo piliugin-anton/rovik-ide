@@ -63,6 +63,7 @@ pub fn rust_reference_command(profile: &Profile) -> Result<CommandDefinition> {
         kind: CheckKind::Behavioral,
         parser: Parser::InventoryJson,
         checker_digest: normalizer::checker_digest(Parser::InventoryJson),
+        implementation_failure_exit_codes: [42].into(),
         report_file: Some("/outputs/cases.json".into()),
         limits: Limits {
             timeout_ms: 60_000,
@@ -129,6 +130,7 @@ fn native_command(id: &str, parser: Parser) -> CommandDefinition {
         kind: CheckKind::Behavioral,
         parser,
         checker_digest: normalizer::checker_digest(parser),
+        implementation_failure_exit_codes: [42].into(),
         report_file: Some("/outputs/cases.json".into()),
         limits: Limits {
             timeout_ms: 180_000,

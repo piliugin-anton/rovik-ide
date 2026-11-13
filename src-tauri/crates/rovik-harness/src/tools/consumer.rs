@@ -1,4 +1,4 @@
-use super::{args, checked, read, run, write_json};
+use super::{args, checked, checked_source, read, run, write_json};
 use crate::{
     normalizer::Inventory,
     packs,
@@ -35,7 +35,7 @@ pub(super) fn quota() -> Result<i32> {
         "-o",
         "/build/consumer.o",
     ]));
-    checked(&command, cwd)?;
+    checked_source(&command, cwd)?;
     let mut objects = vec!["/build/consumer.o".into()];
     if !cpp {
         let mut command = vec![compiler.to_string()];
@@ -47,14 +47,14 @@ pub(super) fn quota() -> Result<i32> {
             "-o",
             "/build/quota.o",
         ]));
-        checked(&command, cwd)?;
+        checked_source(&command, cwd)?;
         objects.push("/build/quota.o".into());
     }
     let mut command = vec![compiler.to_string()];
     command.extend(config.flags.clone());
     command.extend(objects);
     command.extend(args(&["-o", "/build/consumer"]));
-    checked(&command, cwd)?;
+    checked_source(&command, cwd)?;
     let cases: Vec<String> = read("/oracle/cases.json")?;
     crate::unique(cases.iter().map(String::as_str))?;
     let mut report = Inventory {

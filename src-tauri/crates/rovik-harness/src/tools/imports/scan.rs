@@ -17,7 +17,7 @@ pub(super) struct Import {
 fn text<'a>(node: Node<'_>, source: &'a str) -> Result<&'a str> {
     source
         .get(node.byte_range())
-        .ok_or_else(|| Error("invalid import syntax range".into()))
+        .ok_or_else(|| Error::new("invalid import syntax range".into()))
 }
 fn string(node: Node<'_>, source: &str) -> Result<String> {
     require(
@@ -44,7 +44,7 @@ fn named(node: Node<'_>) -> Vec<Node<'_>> {
 }
 fn field<'a>(node: Node<'a>, name: &str) -> Result<Node<'a>> {
     node.child_by_field_name(name)
-        .ok_or_else(|| Error(format!("import syntax lacks {name}")))
+        .ok_or_else(|| Error::new(format!("import syntax lacks {name}")))
 }
 fn imported_name<'a>(node: Node<'_>, source: &'a str) -> Result<&'a str> {
     text(
@@ -73,10 +73,10 @@ pub(super) fn parse(path: &str, source: &str, python: bool) -> Result<Vec<Import
     let mut parser = Parser::new();
     parser
         .set_language(&grammar)
-        .map_err(|e| Error(e.to_string()))?;
+        .map_err(|e| Error::new(e.to_string()))?;
     let tree = parser
         .parse(source, None)
-        .ok_or_else(|| Error("import parser did not complete".into()))?;
+        .ok_or_else(|| Error::new("import parser did not complete".into()))?;
     require(
         !tree.root_node().has_error(),
         format!("invalid or unsupported syntax in {path}"),
@@ -140,7 +140,7 @@ pub(super) fn parse(path: &str, source: &str, python: bool) -> Result<Vec<Import
                     }
                 }
                 "wildcard_import" => {
-                    return Err(Error(format!(
+                    return Err(Error::new(format!(
                         "Python wildcard imports need an explicit module list: {path}"
                     )))
                 }
@@ -159,7 +159,7 @@ pub(super) fn parse(path: &str, source: &str, python: bool) -> Result<Vec<Import
                         if !declaration {
                             let parent = node
                                 .parent()
-                                .ok_or_else(|| Error("invalid sys reference".into()))?;
+                                .ok_or_else(|| Error::new("invalid sys reference".into()))?;
                             require(
                                 parent.kind() == "attribute"
                                     && parent.child_by_field_name("object") == Some(node),

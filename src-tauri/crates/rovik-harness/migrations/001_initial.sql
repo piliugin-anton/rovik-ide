@@ -77,6 +77,11 @@ CREATE TABLE failure_resolutions(
  approval_id TEXT NOT NULL REFERENCES approvals(approval_id), created_ms INTEGER NOT NULL,
  UNIQUE(result_id,approval_id)
 );
+CREATE TABLE infrastructure_recoveries(
+ previous_result_id TEXT PRIMARY KEY REFERENCES check_results(result_id),
+ replacement_result_id TEXT NOT NULL REFERENCES check_results(result_id),
+ created_ms INTEGER NOT NULL
+);
 CREATE INDEX results_by_run ON check_results(run_id, check_id, configuration_digest);
 CREATE INDEX operations_by_state ON operations(state, lease_expires_ms);
 CREATE TRIGGER events_no_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
@@ -95,5 +100,7 @@ CREATE TRIGGER reconciliation_no_update BEFORE UPDATE ON reconciliations BEGIN S
 CREATE TRIGGER reconciliation_no_delete BEFORE DELETE ON reconciliations BEGIN SELECT RAISE(ABORT,'reconciliations are immutable'); END;
 CREATE TRIGGER resolution_no_update BEFORE UPDATE ON failure_resolutions BEGIN SELECT RAISE(ABORT,'resolutions are immutable'); END;
 CREATE TRIGGER resolution_no_delete BEFORE DELETE ON failure_resolutions BEGIN SELECT RAISE(ABORT,'resolutions are immutable'); END;
+CREATE TRIGGER infrastructure_recovery_no_update BEFORE UPDATE ON infrastructure_recoveries BEGIN SELECT RAISE(ABORT,'recoveries are immutable'); END;
+CREATE TRIGGER infrastructure_recovery_no_delete BEFORE DELETE ON infrastructure_recoveries BEGIN SELECT RAISE(ABORT,'recoveries are immutable'); END;
 INSERT INTO schema_versions VALUES(1,0);
 PRAGMA user_version=1;

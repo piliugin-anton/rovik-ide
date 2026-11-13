@@ -20,7 +20,7 @@ fn program(language: &str, task: &str, mutant: bool) -> Result<(String, usize)> 
     let template = bank
         .get(language)
         .and_then(|b| b.get(task))
-        .ok_or_else(|| Error("unknown evaluation program".into()))?;
+        .ok_or_else(|| Error::new("unknown evaluation program".into()))?;
     let mut body = template.source.clone();
     if mutant {
         body = match (task, language) {
@@ -31,7 +31,7 @@ fn program(language: &str, task: &str, mutant: bool) -> Result<(String, usize)> 
             ("copy", "c") => body.replace("if (length>capacity) return 1;", "if (length>capacity) { if(capacity) out[0]=0; return 1; }"),
             ("copy", "cpp") => body.replace("if (source.size()>out.size()) return false;", "if (source.size()>out.size()) { if(!out.empty()) out[0]=0; return false; }"),
             ("copy", "rust") => body.replace("{return false;}", "{if !out.is_empty() {out[0]=0;} return false;}"),
-            _ => return Err(Error("unknown evaluation mutation".into())),
+            _ => return Err(Error::new("unknown evaluation mutation".into())),
         };
         require(
             body != template.source,
@@ -111,7 +111,7 @@ pub(super) fn check() -> Result<i32> {
             Language::C => "c",
             Language::Cpp => "cpp",
             _ => {
-                return Err(Error(
+                return Err(Error::new(
                     "native bank v1 does not contain runtime-language cases".into(),
                 ))
             }
@@ -119,10 +119,10 @@ pub(super) fn check() -> Result<i32> {
         let (name, variant) = case
             .case_id
             .rsplit_once('-')
-            .ok_or_else(|| Error("invalid evaluation identity".into()))?;
+            .ok_or_else(|| Error::new("invalid evaluation identity".into()))?;
         let task = name
             .strip_prefix(&format!("{language}-"))
-            .ok_or_else(|| Error("evaluation language mismatch".into()))?;
+            .ok_or_else(|| Error::new("evaluation language mismatch".into()))?;
         require(
             matches!(variant, "correct" | "mutant"),
             "unknown evaluation variant",
@@ -208,8 +208,8 @@ pub(super) fn check() -> Result<i32> {
                         } else {
                             1
                         };
-                        let output =
-                            String::from_utf8(result.stdout).map_err(|e| Error(e.to_string()))?;
+                        let output = String::from_utf8(result.stdout)
+                            .map_err(|e| Error::new(e.to_string()))?;
                         let lines = output.lines().collect::<Vec<_>>();
                         let valid = !lines.is_empty()
                             && lines.len() <= expected

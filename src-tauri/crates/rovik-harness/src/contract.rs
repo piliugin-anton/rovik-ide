@@ -129,7 +129,7 @@ impl TaskContract {
             let inventory = registry
                 .suites
                 .get(suite)
-                .ok_or_else(|| crate::Error(format!("unknown acceptance suite: {suite}")))?;
+                .ok_or_else(|| crate::Error::new(format!("unknown acceptance suite: {suite}")))?;
             for case in inventory {
                 id(case)?;
                 cases.insert(case.as_str());

@@ -60,15 +60,15 @@ pub(crate) fn process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| Error(format!("cannot start registered execution: {e}")))?;
+        .map_err(|e| Error::new(format!("cannot start registered execution: {e}")))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| Error("runner stdout pipe missing".into()))?;
+        .ok_or_else(|| Error::new("runner stdout pipe missing".into()))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| Error("runner stderr pipe missing".into()))?;
+        .ok_or_else(|| Error::new("runner stderr pipe missing".into()))?;
     let total = Arc::new(AtomicUsize::new(0));
     let exceeded = Arc::new(AtomicBool::new(false));
     let (t, e) = (total.clone(), exceeded.clone());
@@ -105,7 +105,7 @@ pub(crate) fn process(
                 );
                 if let Err(error) = result {
                     if error != nix::errno::Errno::ESRCH {
-                        termination_error = Some(Error(format!(
+                        termination_error = Some(Error::new(format!(
                             "cannot terminate native process group: {error}"
                         )));
                     }
@@ -122,10 +122,10 @@ pub(crate) fn process(
     };
     let stdout = out
         .join()
-        .map_err(|_| Error("stdout collector stopped".into()))??;
+        .map_err(|_| Error::new("stdout collector stopped".into()))??;
     let stderr = err
         .join()
-        .map_err(|_| Error("stderr collector stopped".into()))??;
+        .map_err(|_| Error::new("stderr collector stopped".into()))??;
     if let Some(e) = termination_error {
         return Err(e);
     }

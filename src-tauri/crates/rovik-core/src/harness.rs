@@ -28,24 +28,24 @@ impl Rates {
         let input = value
             .get("prompt_tokens")
             .and_then(|n| n.as_u64())
-            .ok_or_else(|| Error("provider omitted prompt token usage".into()))?;
+            .ok_or_else(|| Error::new("provider omitted prompt token usage".into()))?;
         let output = value
             .get("completion_tokens")
             .and_then(|n| n.as_u64())
-            .ok_or_else(|| Error("provider omitted completion token usage".into()))?;
+            .ok_or_else(|| Error::new("provider omitted completion token usage".into()))?;
         let cached = value
             .pointer("/prompt_tokens_details/cached_tokens")
             .and_then(|n| n.as_u64());
         let cached_count = cached.unwrap_or(0);
         let uncached = input
             .checked_sub(cached_count)
-            .ok_or_else(|| Error("provider cache count exceeds input count".into()))?;
+            .ok_or_else(|| Error::new("provider cache count exceeds input count".into()))?;
         let numerator = (u128::from(uncached) * u128::from(self.input))
             .checked_add(u128::from(cached_count) * u128::from(self.cached_input))
             .and_then(|n| n.checked_add(u128::from(output) * u128::from(self.output)))
-            .ok_or_else(|| Error("model cost overflow".into()))?;
+            .ok_or_else(|| Error::new("model cost overflow".into()))?;
         let cost = u64::try_from(numerator.div_ceil(1_000_000))
-            .map_err(|_| Error("model cost overflow".into()))?;
+            .map_err(|_| Error::new("model cost overflow".into()))?;
         Ok(Usage {
             input_tokens: input,
             output_tokens: output,
@@ -71,8 +71,8 @@ impl HarnessProvider {
         api_key: String,
         rates: Rates,
     ) -> Result<Self> {
-        let parsed =
-            reqwest::Url::parse(&url).map_err(|_| Error("invalid provider endpoint".into()))?;
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|_| Error::new("invalid provider endpoint".into()))?;
         let local = parsed.host_str().is_some_and(|h| {
             h == "localhost"
                 || h.parse::<std::net::IpAddr>()
@@ -82,7 +82,7 @@ impl HarnessProvider {
             || !parsed.username().is_empty()
             || parsed.password().is_some()
         {
-            return Err(Error(
+            return Err(Error::new(
                 "provider endpoint requires HTTPS or loopback HTTP, without URL credentials".into(),
             ));
         }
@@ -100,7 +100,7 @@ impl Provider for HarnessProvider {
         request: &ModelRequest,
         cancellation: &Cancellation,
     ) -> Result<ModelResponse> {
-        let body = serde_json::json!({"model":request.provider_model_id,"messages":[{"role":"system","content":WORKER_CONTROL},{"role":"user","content":String::from_utf8(wire::canonical(request)?).map_err(|_|Error("invalid model context encoding".into()))?}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":request.maximum_output_tokens,"response_format":{"type":"json_object"}});
+        let body = serde_json::json!({"model":request.provider_model_id,"messages":[{"role":"system","content":WORKER_CONTROL},{"role":"user","content":String::from_utf8(wire::canonical(request)?).map_err(|_|Error::new("invalid model context encoding".into()))?}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":request.maximum_output_tokens,"response_format":{"type":"json_object"}});
         self.runtime.block_on(async {
             let (stop,mut cancel)=tokio::sync::watch::channel(cancellation.is_cancelled());
             let timeout=Duration::from_millis(request.timeout_ms);
@@ -117,8 +117,8 @@ impl Provider for HarnessProvider {
             };
             let monitor=async {loop {if cancellation.is_cancelled(){let _=stop.send(true);return;}tokio::time::sleep(Duration::from_millis(20)).await;}};
             let response=tokio::select! {result=chat_request::run_once(&spec,&mut cancel,&mut emit,wire::MAX_JSON_BYTES)=>result,_=monitor=>Err(chat_request::ChatError::stopped())};
-            if let Some(reason)=violation{return Err(Error(reason.into()));}
-            response.map_err(|e|Error(format!("model attempt {:?}: {}",e.kind,e.message)))?;
+            if let Some(reason)=violation{return Err(Error::new(reason.into()));}
+            response.map_err(|e|Error::new(format!("model attempt {:?}: {}",e.kind,e.message)))?;
             Ok(ModelResponse {request_id:request.request_id.clone(),provider_response_id:None,output,finish_reason:finish_reason.unwrap_or_default(),usage:usage.map(|v|self.rates.usage(v)).transpose()?})
         })
     }
@@ -134,7 +134,7 @@ impl GitIntegration {
     pub fn new(repository_id: String, root: &std::path::Path) -> Result<Self> {
         let root = root.canonicalize()?;
         git2::Repository::open(&root)
-            .map_err(|e| Error(format!("open integration repository: {e}")))?;
+            .map_err(|e| Error::new(format!("open integration repository: {e}")))?;
         Ok(Self {
             repository_id,
             root,
@@ -146,27 +146,28 @@ impl GitIntegration {
         ledger: &rovik_harness::ledger::Ledger,
     ) -> Result<rovik_harness::snapshot::Snapshot> {
         use rovik_harness::snapshot::{FileEntry, Snapshot};
-        let repository = git2::Repository::open(&self.root).map_err(|e| Error(e.to_string()))?;
+        let repository =
+            git2::Repository::open(&self.root).map_err(|e| Error::new(e.to_string()))?;
         let commit = repository
             .head()
             .and_then(|h| h.peel_to_commit())
-            .map_err(|e| Error(e.to_string()))?;
-        let tree = commit.tree().map_err(|e| Error(e.to_string()))?;
+            .map_err(|e| Error::new(e.to_string()))?;
+        let tree = commit.tree().map_err(|e| Error::new(e.to_string()))?;
         let mut files = std::collections::BTreeMap::new();
         let mut failure = None;
         tree.walk(git2::TreeWalkMode::PreOrder,|prefix,entry|{
             if entry.kind()==Some(git2::ObjectType::Tree){return git2::TreeWalkResult::Ok;}
             let result=(||->Result<()> {
-                let name=entry.name().map_err(|_|Error("non-UTF-8 tracked path is unsupported".into()))?;
+                let name=entry.name().map_err(|_|Error::new("non-UTF-8 tracked path is unsupported".into()))?;
                 let path=format!("{prefix}{name}");rovik_harness::scope::validate_path(&path)?;
                 let mode=entry.filemode() as u32;
-                if ![0o100644,0o100755].contains(&mode){return Err(Error(format!("unsupported tracked file mode for {path}; declare a supported dependency bundle")));}
-                let blob=repository.find_blob(entry.id()).map_err(|e|Error(e.to_string()))?;
+                if ![0o100644,0o100755].contains(&mode){return Err(Error::new(format!("unsupported tracked file mode for {path}; declare a supported dependency bundle")));}
+                let blob=repository.find_blob(entry.id()).map_err(|e|Error::new(e.to_string()))?;
                 let content=ledger.store("source","application/octet-stream",blob.content(),rovik_harness::runner::now_ms()?)?;
                 files.insert(path,FileEntry {mode,content});Ok(())
             })();
             match result {Ok(())=>git2::TreeWalkResult::Ok,Err(e)=>{failure=Some(e);git2::TreeWalkResult::Abort}}
-        }).map_err(|e|Error(e.to_string()))?;
+        }).map_err(|e|Error::new(e.to_string()))?;
         if let Some(error) = failure {
             return Err(error);
         }
@@ -184,13 +185,14 @@ impl GitIntegration {
 impl rovik_harness::controller::Integration for GitIntegration {
     fn current_revision(&self, repository_id: &str) -> Result<String> {
         if repository_id != self.repository_id {
-            return Err(Error("unregistered integration repository".into()));
+            return Err(Error::new("unregistered integration repository".into()));
         }
-        let repository = git2::Repository::open(&self.root).map_err(|e| Error(e.to_string()))?;
+        let repository =
+            git2::Repository::open(&self.root).map_err(|e| Error::new(e.to_string()))?;
         let commit = repository
             .head()
             .and_then(|h| h.peel_to_commit())
-            .map_err(|e| Error(e.to_string()))?;
+            .map_err(|e| Error::new(e.to_string()))?;
         Ok(commit.id().to_string())
     }
 }

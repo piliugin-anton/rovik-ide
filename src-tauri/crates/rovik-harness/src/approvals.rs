@@ -24,7 +24,7 @@ impl Principal {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            Err(Error(
+            Err(Error::new(
                 "local harness approval authentication currently requires Linux".into(),
             ))
         }
@@ -140,12 +140,12 @@ impl Ledger {
                 approval.policy_digest.as_str(),
                 approval.scope_digest.as_str(),
                 artifact.digest.as_str(),
-                i64::try_from(now).map_err(|_| Error("timestamp overflow".into()))?,
+                i64::try_from(now).map_err(|_| Error::new("timestamp overflow".into()))?,
                 approval
                     .expires_ms
                     .map(i64::try_from)
                     .transpose()
-                    .map_err(|_| Error("expiry overflow".into()))?
+                    .map_err(|_| Error::new("expiry overflow".into()))?
             ],
         )?;
         Ok(approval)
@@ -169,7 +169,7 @@ impl Ledger {
                 approval_id,
                 principal.actor_id(),
                 artifact.digest.as_str(),
-                i64::try_from(now).map_err(|_| Error("timestamp overflow".into()))?
+                i64::try_from(now).map_err(|_| Error::new("timestamp overflow".into()))?
             ],
         )?;
         Ok(())

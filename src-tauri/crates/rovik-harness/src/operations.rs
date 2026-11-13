@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 fn integer(value: u64) -> Result<i64> {
-    i64::try_from(value).map_err(|_| Error("accounting integer overflow".into()))
+    i64::try_from(value).map_err(|_| Error::new("accounting integer overflow".into()))
 }
 /// Durable operation status, including unresolved reservations.
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +60,46 @@ pub struct FailureResolution {
     pub reason: String,
 }
 impl Ledger {
+    pub(crate) fn record_infrastructure_recovery(
+        &self,
+        previous: &CheckResult,
+        replacement: &CheckResult,
+        now: u64,
+    ) -> Result<()> {
+        require(
+            previous.infrastructure_retryable()
+                && replacement.status == Status::Pass
+                && previous.result_id != replacement.result_id
+                && previous.run_id == replacement.run_id
+                && previous.identity() == replacement.identity()
+                && previous.checker_digest == replacement.checker_digest
+                && previous.evidence_key == replacement.evidence_key,
+            "only an exact completed infrastructure retry can recover automatically",
+        )?;
+        let completed =
+            self.completed_results(&previous.run_id, &Digest::of_json(&previous.evidence_key)?)?;
+        require(
+            completed.contains(previous) && completed.contains(replacement),
+            "infrastructure recovery lacks authenticated receipts",
+        )?;
+        self.connection.execute(
+            "INSERT INTO infrastructure_recoveries VALUES(?1,?2,?3)",
+            params![previous.result_id, replacement.result_id, integer(now)?],
+        )?;
+        Ok(())
+    }
+
+    /// Explicit links from incomplete infrastructure observations to exact successful retries.
+    /// These records never resolve a behavioral or compilation failure.
+    pub fn infrastructure_recoveries(&self, run_id: &str) -> Result<Vec<FailureResolution>> {
+        let mut query = self.connection.prepare("SELECT i.previous_result_id,i.replacement_result_id FROM infrastructure_recoveries i JOIN check_results c ON c.result_id=i.previous_result_id WHERE c.run_id=?1 ORDER BY i.created_ms,i.previous_result_id")?;
+        let rows = query.query_map([run_id], |row| Ok(FailureResolution {
+            previous_result_id: row.get(0)?, replacement_result_id: row.get(1)?,
+            reason: "Bounded infrastructure retry completed for the same source, check and evidence binding.".into(),
+        }))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(Error::from)
+    }
     /// Private state root for trusted operators; never a worker capability.
     pub fn root(&self) -> &Path {
         &self.root
@@ -109,7 +149,7 @@ impl Ledger {
                 job,
                 workspace
                     .to_str()
-                    .ok_or_else(|| Error("job workspace is not UTF-8".into()))?
+                    .ok_or_else(|| Error::new("job workspace is not UTF-8".into()))?
             ],
         )?;
         tx.commit()?;
@@ -141,7 +181,7 @@ impl Ledger {
             return Ok(None);
         }
         let digest = Digest::parse(
-            &output.ok_or_else(|| Error("completed operation has no output".into()))?,
+            &output.ok_or_else(|| Error::new("completed operation has no output".into()))?,
         )?;
         let result: CheckResult = wire::decode(&self.read(&digest)?)?;
         let binding = Digest::of_json(&result.evidence_key)?;
@@ -192,7 +232,7 @@ impl Controller {
         )?;
         let next = current
             .restart_state
-            .ok_or_else(|| Error("blocked run has no restart stage".into()))?;
+            .ok_or_else(|| Error::new("blocked run has no restart stage".into()))?;
         let event = self.ledger.store_json(
             "event",
             &serde_json::json!({"kind":"operator_resume","actor":principal.actor_id()}),
@@ -402,7 +442,7 @@ impl Controller {
             .ledger
             .run(run_id)?
             .binding_digest
-            .ok_or_else(|| Error("run has no candidate".into()))?;
+            .ok_or_else(|| Error::new("run has no candidate".into()))?;
         require(
             Digest::of_json(&replacement.evidence_key)? == binding
                 && self
@@ -445,6 +485,22 @@ impl Controller {
     ) -> Result<BTreeSet<String>> {
         let mut statement=self.ledger.connection.prepare("SELECT f.result_id,a.subject_digest FROM failure_resolutions f JOIN approvals a ON a.approval_id=f.approval_id JOIN check_results c ON c.result_id=f.result_id WHERE c.run_id=?1")?;
         let mut resolved = BTreeSet::new();
+        for recovery in self.ledger.infrastructure_recoveries(&setup.run_id)? {
+            let previous = self
+                .ledger
+                .result(&setup.run_id, &recovery.previous_result_id)?;
+            if previous.infrastructure_retryable()
+                && results.iter().any(|replacement| {
+                    replacement.result_id == recovery.replacement_result_id
+                        && replacement.status == Status::Pass
+                        && replacement.identity() == previous.identity()
+                        && replacement.checker_digest == previous.checker_digest
+                        && replacement.evidence_key == previous.evidence_key
+                })
+            {
+                resolved.insert(previous.result_id);
+            }
+        }
         for row in statement.query_map([&setup.run_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {

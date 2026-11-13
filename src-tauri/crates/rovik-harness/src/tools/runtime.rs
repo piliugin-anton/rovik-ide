@@ -1,5 +1,5 @@
 //! Offline runtime preparation and native test execution inside the same sandbox.
-use super::{args, checked, copy_tree, read, run};
+use super::{args, checked, checked_source, copy_tree, read, run};
 use crate::{
     profile::Language,
     require,
@@ -20,7 +20,7 @@ fn version(command: &[&str], prefix: &str) -> Result<String> {
     Ok(text
         .trim()
         .strip_prefix(prefix)
-        .ok_or_else(|| Error("malformed runtime version output".into()))?
+        .ok_or_else(|| Error::new("malformed runtime version output".into()))?
         .to_string())
 }
 pub(super) fn versions(language: Language) -> Result<BTreeMap<String, String>> {
@@ -64,7 +64,7 @@ fn prepare_node(typescript_project: Option<&str>) -> Result<()> {
     let packages = lock
         .get("packages")
         .and_then(Value::as_object)
-        .ok_or_else(|| Error("npm lockfile has no package inventory".into()))?;
+        .ok_or_else(|| Error::new("npm lockfile has no package inventory".into()))?;
     require(packages.contains_key(""), "npm lockfile lacks root package")?;
     for (name, package) in packages {
         if name.is_empty() {
@@ -110,7 +110,7 @@ fn prepare_node(typescript_project: Option<&str>) -> Result<()> {
         let project = format!("/oracle/{typescript_project}");
         // These flags cannot be weakened by repository tsconfig files. The project
         // itself is an approved oracle asset, including its source selection.
-        checked(
+        checked_source(
             &args(&[
                 NODE,
                 TSC,
@@ -135,6 +135,25 @@ fn prepare_node(typescript_project: Option<&str>) -> Result<()> {
             ]),
             root,
         )?;
+    } else {
+        let mut files = BTreeMap::new();
+        super::imports::sources(
+            Path::new("/snapshot"),
+            Path::new("/snapshot"),
+            false,
+            &mut files,
+            &mut 0,
+        )?;
+        for path in files.keys().filter(|path| {
+            [".js", ".mjs", ".cjs"]
+                .iter()
+                .any(|extension| path.ends_with(extension))
+        }) {
+            checked_source(
+                &args(&[NODE, "--check", &format!("{PROJECT}/{path}")]),
+                root,
+            )?;
+        }
     }
     Ok(())
 }
@@ -148,10 +167,10 @@ fn validate_python_lock(lock: &str) -> Result<()> {
         let mut fields = line.split_whitespace();
         let requirement = fields
             .next()
-            .ok_or_else(|| Error("empty Python requirement".into()))?;
+            .ok_or_else(|| Error::new("empty Python requirement".into()))?;
         let (name, version) = requirement
             .split_once("==")
-            .ok_or_else(|| Error("Python requirements must pin exact versions".into()))?;
+            .ok_or_else(|| Error::new("Python requirements must pin exact versions".into()))?;
         let safe = |s: &str| {
             !s.is_empty()
                 && s.bytes()
@@ -202,7 +221,7 @@ fn prepare_python() -> Result<()> {
         ]),
         root,
     )?;
-    checked(
+    checked_source(
         &args(&[PYTHON, "-I", "-m", "compileall", "-q", "-f", PROJECT]),
         root,
     )?;
@@ -216,12 +235,15 @@ pub(super) fn prepare(
 ) -> Result<BTreeMap<String, String>> {
     let language = profile.language;
     let observed = versions(language)?;
-    require(
-        observed
-            .iter()
-            .all(|(key, value)| profile.facts.get(key) == Some(value)),
-        "installed runtime/tool versions differ from approved profile",
-    )?;
+    if !observed
+        .iter()
+        .all(|(key, value)| profile.facts.get(key) == Some(value))
+    {
+        return Err(Error::classified(
+            crate::FailureCategory::Capability,
+            "installed runtime/tool versions differ from approved profile",
+        ));
+    }
     require(
         !Path::new(PROJECT).exists(),
         "runtime build must start in a fresh directory",
@@ -277,7 +299,7 @@ pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
     let report = if language == Language::Python {
         std::fs::read_to_string("/outputs/pytest.xml")?
     } else {
-        String::from_utf8(output.stdout).map_err(|e| Error(e.to_string()))?
+        String::from_utf8(output.stdout).map_err(|e| Error::new(e.to_string()))?
     };
     require(
         report.len() <= crate::wire::MAX_JSON_BYTES,
@@ -289,7 +311,7 @@ pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
         versions: observed,
         exit_code: output
             .code
-            .ok_or_else(|| Error("runtime process was killed".into()))?,
+            .ok_or_else(|| Error::new("runtime process was killed".into()))?,
         report,
     })
 }

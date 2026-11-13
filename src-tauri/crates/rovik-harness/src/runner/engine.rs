@@ -143,7 +143,7 @@ impl Engine for Podman {
 
 pub(super) fn validate_podman_host(bytes: &[u8]) -> Result<()> {
     let info: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|e| crate::Error(format!("invalid Podman host report: {e}")))?;
+        .map_err(|e| crate::Error::new(format!("invalid Podman host report: {e}")))?;
     require(
         info.pointer("/host/security/rootless")
             .and_then(|v| v.as_bool())
@@ -164,9 +164,9 @@ pub(super) fn validate_cgroup_limits(
     expected: &crate::registry::Limits,
 ) -> Result<()> {
     let text = std::str::from_utf8(bytes)
-        .map_err(|_| crate::Error("invalid container resource report".into()))?;
+        .map_err(|_| crate::Error::new("invalid container resource report".into()))?;
     let numbers = text.split_whitespace().map(str::parse::<u64>).collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| crate::Error("Podman did not enforce finite resource limits; delegate cgroup v2 memory, CPU and pids controllers to the controller service".into()))?;
+        .map_err(|_| crate::Error::new("Podman did not enforce finite resource limits; delegate cgroup v2 memory, CPU and pids controllers to the controller service".into()))?;
     require(numbers.len() == 5
         && numbers[0] == expected.memory_bytes
         && numbers[1] == 0
@@ -183,7 +183,11 @@ mod tests {
     #[test]
     fn podman_is_local_and_cannot_inherit_disabled_cgroups_or_another_store() {
         let directory = tempfile::tempdir().unwrap();
-        let engine = Podman::new(Path::new("/usr/bin/podman"), directory.path()).unwrap();
+        let engine = Podman::new(
+            Path::new("/usr/bin/podman"),
+            &directory.path().join("podman"),
+        )
+        .unwrap();
         let mut command = engine.command();
         command.arg("create");
         engine.create_options(&mut command);

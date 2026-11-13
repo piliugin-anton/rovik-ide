@@ -17,16 +17,19 @@ use std::{collections::BTreeMap, path::Path, time::Duration};
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
-        Self(format!("ledger operation failed: {e}"))
+        Self::classified(
+            crate::FailureCategory::Internal,
+            format!("ledger operation failed: {e}"),
+        )
     }
 }
 
 fn encoded<T: Serialize>(value: &T) -> Result<String> {
     String::from_utf8(wire::canonical(value)?)
-        .map_err(|e| Error(format!("invalid metadata encoding: {e}")))
+        .map_err(|e| Error::new(format!("invalid metadata encoding: {e}")))
 }
 fn integer(value: u64) -> Result<i64> {
-    i64::try_from(value).map_err(|_| Error("ledger integer overflow".into()))
+    i64::try_from(value).map_err(|_| Error::new("ledger integer overflow".into()))
 }
 
 fn number(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
@@ -266,7 +269,7 @@ impl Ledger {
         let revision = expected
             .revision
             .checked_add(1)
-            .ok_or_else(|| Error("run revision exhausted".into()))?;
+            .ok_or_else(|| Error::new("run revision exhausted".into()))?;
         let count = tx.execute("UPDATE runs SET state=?1,revision=?2,restart_state=?3,updated_ms=?4 WHERE run_id=?5 AND revision=?6 AND state=?7", params![encoded(&next)?, integer(revision)?, if next == State::Blocked { restart.map(|s| encoded(&s)).transpose()? } else { None }, integer(now)?, expected.run_id, integer(expected.revision)?, encoded(&expected.state)?])?;
         require(count == 1, "concurrent transition: reload the run revision")?;
         tx.execute(
@@ -301,7 +304,7 @@ impl Ledger {
         let revision = expected
             .revision
             .checked_add(1)
-            .ok_or_else(|| Error("run revision exhausted".into()))?;
+            .ok_or_else(|| Error::new("run revision exhausted".into()))?;
         let count = tx.execute("UPDATE runs SET binding_digest=?1,revision=?2,updated_ms=?3 WHERE run_id=?4 AND revision=?5", params![binding.as_str(), integer(revision)?, integer(now)?, expected.run_id, integer(expected.revision)?])?;
         require(count == 1, "concurrent binding change")?;
         tx.execute(
@@ -355,7 +358,7 @@ impl Ledger {
         self.read(input)?;
         let expires = now
             .checked_add(duration_ms)
-            .ok_or_else(|| Error("lease expiry overflow".into()))?;
+            .ok_or_else(|| Error::new("lease expiry overflow".into()))?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

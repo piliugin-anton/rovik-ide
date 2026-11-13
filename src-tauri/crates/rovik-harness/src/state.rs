@@ -45,6 +45,15 @@ pub enum State {
     Rejected,
 }
 impl State {
+    /// Exit outcome for run execution; management commands report command success separately.
+    pub fn execution_exit_code(self) -> i32 {
+        match self {
+            Self::Accepted => 0,
+            Self::Stopped | Self::Rejected => 3,
+            Self::Cancelled => 5,
+            _ => 2,
+        }
+    }
     /// Terminal runs never resume; a new run preserves their history.
     pub fn terminal(self) -> bool {
         matches!(

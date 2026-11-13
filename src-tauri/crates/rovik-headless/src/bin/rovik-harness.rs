@@ -15,18 +15,18 @@ use std::path::Path;
 fn print(value: &impl serde::Serialize) -> Result<()> {
     println!(
         "{}",
-        serde_json::to_string_pretty(value).map_err(|e| Error(e.to_string()))?
+        serde_json::to_string_pretty(value).map_err(|e| Error::new(e.to_string()))?
     );
     Ok(())
 }
 fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
     wire::decode(&std::fs::read(path)?)
 }
-fn run() -> Result<()> {
+fn run() -> Result<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage="usage: rovik-harness <absolute-state-dir> import <repository-id> <repository-path> | load-image <archive.tar> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. ROVIK_HARNESS_ENGINE selects docker (default) or podman; ROVIK_HARNESS_DOCKER_BIN and ROVIK_HARNESS_PODMAN_BIN select absolute client paths. The state directory must be outside the repository.";
     if args.len() < 2 {
-        return Err(Error(usage.into()));
+        return Err(Error::new(usage.into()));
     }
     let state = Path::new(&args[0]);
     let ledger = Ledger::open(state)?;
@@ -45,12 +45,13 @@ fn run() -> Result<()> {
             ContainerBackend::podman(Path::new(&path), &state.join("podman"))?
         }
         _ => {
-            return Err(Error(
+            return Err(Error::new(
                 "ROVIK_HARNESS_ENGINE must be docker or podman".into(),
             ))
         }
     };
     let mut controller = Controller { ledger, backend };
+    let mut exit_code = 0;
     match args[1].as_str() {
         "load-image" if args.len() == 3 => {
             controller.backend.import_image(Path::new(&args[2]))?;
@@ -59,7 +60,7 @@ fn run() -> Result<()> {
         "import" if args.len() == 4 => {
             let repository = Path::new(&args[3]).canonicalize()?;
             if state.canonicalize()?.starts_with(&repository) {
-                return Err(Error(
+                return Err(Error::new(
                     "controller state must be outside the candidate repository".into(),
                 ));
             }
@@ -90,7 +91,7 @@ fn run() -> Result<()> {
             let setup = controller.setup(&args[2])?;
             let request: ApprovalRequest = read(&args[3])?;
             if request.run_id.as_deref() != Some(&args[2]) {
-                return Err(Error("CLI approval must name this exact run".into()));
+                return Err(Error::new("CLI approval must name this exact run".into()));
             }
             print(&controller.ledger.grant(
                 &Principal::current()?,
@@ -103,14 +104,14 @@ fn run() -> Result<()> {
             let setup = controller.setup(&args[2])?;
             let repository = Path::new(&args[3]).canonicalize()?;
             if state.canonicalize()?.starts_with(&repository) {
-                return Err(Error(
+                return Err(Error::new(
                     "controller state must be outside the repository".into(),
                 ));
             }
             let integration = GitIntegration::new(setup.repository_id, &repository)?;
-            let runtime = tokio::runtime::Runtime::new().map_err(|e| Error(e.to_string()))?;
+            let runtime = tokio::runtime::Runtime::new().map_err(|e| Error::new(e.to_string()))?;
             let key = std::env::var("ROVIK_HARNESS_API_KEY").map_err(|_| {
-                Error("set ROVIK_HARNESS_API_KEY in the trusted controller environment".into())
+                Error::new("set ROVIK_HARNESS_API_KEY in the trusted controller environment".into())
             })?;
             let mut provider = HarnessProvider::new(
                 runtime.handle().clone(),
@@ -128,7 +129,9 @@ fn run() -> Result<()> {
             });
             let result = controller.execute(&args[2], &mut provider, &integration, &cancel);
             signal.abort();
-            print(&result?)
+            let report = result?;
+            exit_code = report.state.execution_exit_code();
+            print(&report)
         }
         "status" if args.len() == 3 => {
             let run = controller.ledger.run(&args[2])?;
@@ -176,7 +179,7 @@ fn run() -> Result<()> {
         "retention" if args.len() == 3 || (args.len() == 4 && args[3] == "--apply") => {
             let grace = args[2]
                 .parse::<u64>()
-                .map_err(|_| Error("retention grace must be seconds".into()))?;
+                .map_err(|_| Error::new("retention grace must be seconds".into()))?;
             print(&controller.ledger.retention(grace, args.len() == 4)?)
         }
         "verify" if args.len() == 4 => {
@@ -185,18 +188,21 @@ fn run() -> Result<()> {
             print(&controller.verify(&args[2], &integration)?)
         }
         "export" if args.len() == 4 => {
-            let snapshot = controller
-                .current_candidate(&args[2])?
-                .ok_or_else(|| Error("run has no candidate".into()))?;
-            snapshot.materialize(&controller.ledger, Path::new(&args[3]))?;
-            print(&snapshot.digest()?)
+            print(&controller.export_bundle(&args[2], Path::new(&args[3]))?)
         }
-        _ => Err(Error(usage.into())),
-    }
+        _ => Err(Error::new(usage.into())),
+    }?;
+    Ok(exit_code)
 }
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("{error}");
-        std::process::exit(2);
+    match run() {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!(
+                "{}",
+                serde_json::json!({"error":error.message,"category":error.category,"exit_code":error.exit_code()})
+            );
+            std::process::exit(error.exit_code());
+        }
     }
 }

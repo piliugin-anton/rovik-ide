@@ -1,5 +1,5 @@
 //! Configured Cargo/CMake adapter; protocol types are shared with the controller.
-use super::{args, checked, copy_tree, read, LIMIT};
+use super::{args, checked, checked_source, copy_tree, read, LIMIT};
 use crate::{
     pack_protocol::{
         CompilerCommand, Edge, Graph, NativeInput, Node, Operation, PackError, Precision, Request,
@@ -23,13 +23,13 @@ fn text(value: &Value, key: &str) -> Result<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(String::from)
-        .ok_or_else(|| Error(format!("native report lacks string {key}")))
+        .ok_or_else(|| Error::new(format!("native report lacks string {key}")))
 }
 fn list<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>> {
     value
         .get(key)
         .and_then(Value::as_array)
-        .ok_or_else(|| Error(format!("native report lacks array {key}")))
+        .ok_or_else(|| Error::new(format!("native report lacks array {key}")))
 }
 fn execute(values: &[&str]) -> Result<String> {
     checked(&args(values), Path::new(ROOT))
@@ -55,7 +55,9 @@ fn relative(value: &str) -> Result<String> {
             ));
         }
     }
-    Err(Error("graph references an undeclared source root".into()))
+    Err(Error::new(
+        "graph references an undeclared source root".into(),
+    ))
 }
 fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
     let profile = &input.profile;
@@ -64,7 +66,7 @@ fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
         .configurations
         .iter()
         .find(|c| c.id == input.configuration_id)
-        .ok_or_else(|| Error("unknown configuration".into()))?;
+        .ok_or_else(|| Error::new("unknown configuration".into()))?;
     require(
         config.runtime == "linux-native",
         "unsupported native runtime",
@@ -124,7 +126,7 @@ fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
                 .into()
         }
         _ => {
-            return Err(Error(
+            return Err(Error::new(
                 "runtime packs support protected tests, not configured native graphs".into(),
             ))
         }
@@ -173,16 +175,16 @@ fn rust_graph(config: &Configuration) -> Result<Graph> {
     )?;
     let resolve = metadata
         .get("resolve")
-        .ok_or_else(|| Error("missing Cargo resolve graph".into()))?;
+        .ok_or_else(|| Error::new("missing Cargo resolve graph".into()))?;
     let mut edges = Vec::new();
     for node in list(resolve, "nodes")? {
         let source = labels
             .get(&text(node, "id")?)
-            .ok_or_else(|| Error("unresolved Cargo source".into()))?;
+            .ok_or_else(|| Error::new("unresolved Cargo source".into()))?;
         for dep in list(node, "deps")? {
             let target = labels
                 .get(&text(dep, "pkg")?)
-                .ok_or_else(|| Error("unresolved Cargo dependency".into()))?;
+                .ok_or_else(|| Error::new("unresolved Cargo dependency".into()))?;
             for kind in list(dep, "dep_kinds")? {
                 edges.push(Edge {
                     source: source.clone(),
@@ -228,11 +230,11 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
     std::fs::create_dir_all(
         query
             .parent()
-            .ok_or_else(|| Error("invalid query path".into()))?,
+            .ok_or_else(|| Error::new("invalid query path".into()))?,
     )?;
     std::fs::write(query, b"")?;
     let flags = shlex::try_join(config.flags.iter().map(String::as_str))
-        .map_err(|e| Error(e.to_string()))?;
+        .map_err(|e| Error::new(e.to_string()))?;
     let mut command = args(&[
         "/usr/bin/cmake",
         "-S",
@@ -273,7 +275,7 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
         "--target",
     ]);
     command.extend(config.build_targets.clone());
-    checked(&command, Path::new(ROOT))?;
+    checked_source(&command, Path::new(ROOT))?;
     let database: Vec<Value> = read(build.join("compile_commands.json"))?;
     require(!database.is_empty(), "empty compilation database")?;
     let mut nodes = BTreeMap::new();
@@ -284,7 +286,7 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
             wire::decode::<Vec<String>>(&wire::canonical(arguments)?)?
         } else {
             shlex::split(&text(&unit, "command")?)
-                .ok_or_else(|| Error("malformed compiler arguments".into()))?
+                .ok_or_else(|| Error::new("malformed compiler arguments".into()))?
         };
         require(
             argv.first().is_some_and(|v| {
@@ -327,12 +329,12 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
             }
         }
         preprocess.extend(args(&["-MM", "-MT", "__harness"]));
-        let output = checked(&preprocess, &directory)?;
+        let output = checked_source(&preprocess, &directory)?;
         let deps = output
             .strip_prefix("__harness:")
-            .ok_or_else(|| Error("malformed compiler dependencies".into()))?;
+            .ok_or_else(|| Error::new("malformed compiler dependencies".into()))?;
         for included in shlex::split(&deps.replace("\\\n", " "))
-            .ok_or_else(|| Error("malformed include paths".into()))?
+            .ok_or_else(|| Error::new("malformed include paths".into()))?
         {
             let target = relative(&included)?;
             nodes.entry(target.clone()).or_insert(Node {
@@ -364,7 +366,7 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
     let model_name = index
         .pointer("/reply/codemodel-v2/jsonFile")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error("missing CMake codemodel".into()))?;
+        .ok_or_else(|| Error::new("missing CMake codemodel".into()))?;
     crate::scope::validate_path(model_name)?;
     let model: Value = read(replies.join(model_name))?;
     let configs = list(&model, "configurations")?;
@@ -386,7 +388,7 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
     for target in targets {
         let name = labels
             .get(&text(target, "id")?)
-            .ok_or_else(|| Error("unknown target".into()))?;
+            .ok_or_else(|| Error::new("unknown target".into()))?;
         let file = text(target, "jsonFile")?;
         crate::scope::validate_path(&file)?;
         let detail: Value = read(replies.join(file))?;
@@ -407,11 +409,11 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
         if let Some(dependencies) = detail.get("dependencies") {
             for dependency in dependencies
                 .as_array()
-                .ok_or_else(|| Error("malformed CMake dependencies".into()))?
+                .ok_or_else(|| Error::new("malformed CMake dependencies".into()))?
             {
                 let to = labels
                     .get(&text(dependency, "id")?)
-                    .ok_or_else(|| Error("unresolved CMake target".into()))?;
+                    .ok_or_else(|| Error::new("unresolved CMake target".into()))?;
                 edges.push(Edge {
                     source: name.clone(),
                     target: to.clone(),
@@ -457,7 +459,8 @@ fn dispatch(request: &Request) -> Result<Value> {
     match request.operation {
         Operation::Test => {
             let input = crate::runtime::input(request)?;
-            serde_json::to_value(super::runtime::check(&input)?).map_err(|e| Error(e.to_string()))
+            serde_json::to_value(super::runtime::check(&input)?)
+                .map_err(|e| Error::new(e.to_string()))
         }
         Operation::Explain => {
             let input: Explanation = wire::decode(&wire::canonical(&request.payload)?)?;
@@ -542,9 +545,15 @@ pub(super) fn protocol(request_id: &str) -> Result<i32> {
         ok: result.is_ok(),
         result: result.as_ref().ok().cloned(),
         error: result.as_ref().err().map(|e| PackError {
-            code: "INVALID_NATIVE_REPORT".into(),
+            code: if e.category == crate::FailureCategory::Implementation {
+                "CANDIDATE_FAILURE"
+            } else {
+                "NATIVE_OPERATION_FAILED"
+            }
+            .into(),
             message: e.to_string(),
-            retryable: false,
+            retryable: e.category == crate::FailureCategory::Infrastructure,
+            category: e.category,
         }),
     };
     let mut output = wire::canonical(&response)?;

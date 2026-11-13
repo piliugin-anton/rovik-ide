@@ -11,7 +11,8 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
         bytes.len() <= wire::MAX_JSON_BYTES,
         "Node report exceeds limit",
     )?;
-    let text = std::str::from_utf8(bytes).map_err(|_| Error("Node report is not UTF-8".into()))?;
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| Error::new("Node report is not UTF-8".into()))?;
     let mut reader = Reader::from_str(text);
     reader.config_mut().check_end_names = true;
     let mut stack: Vec<Vec<u8>> = Vec::new();
@@ -27,7 +28,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
     loop {
         let event = reader
             .read_event()
-            .map_err(|e| Error(format!("malformed Node JUnit: {e}")))?;
+            .map_err(|e| Error::new(format!("malformed Node JUnit: {e}")))?;
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let empty = matches!(event, Event::Empty(_));
@@ -55,7 +56,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
                         )?;
                         let id = attr
                             .get("name")
-                            .ok_or_else(|| Error("Node test has no name".into()))?;
+                            .ok_or_else(|| Error::new("Node test has no name".into()))?;
                         crate::id(id)?;
                         if name == b"testsuite" {
                             suites += 1;
@@ -70,11 +71,11 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
                         )?;
                         let (_, status) = test
                             .as_mut()
-                            .ok_or_else(|| Error("Node outcome outside test".into()))?;
+                            .ok_or_else(|| Error::new("Node outcome outside test".into()))?;
                         require(*status == 0, "conflicting Node outcomes")?;
                         *status = if name == b"skipped" { 2 } else { 1 };
                     }
-                    _ => return Err(Error("unsupported Node JUnit element".into())),
+                    _ => return Err(Error::new("unsupported Node JUnit element".into())),
                 }
                 if empty {
                     if name == b"testcase" {
@@ -93,15 +94,15 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
             }
             Event::Comment(e) => {
                 require(stack == [b"testsuites".to_vec()], "misplaced Node summary")?;
-                let line = e.decode().map_err(|e| Error(e.to_string()))?;
+                let line = e.decode().map_err(|e| Error::new(e.to_string()))?;
                 let (key, value) = line
                     .trim()
                     .split_once(' ')
-                    .ok_or_else(|| Error("malformed Node total".into()))?;
+                    .ok_or_else(|| Error::new("malformed Node total".into()))?;
                 if key == "duration_ms" {
                     let millis: f64 = value
                         .parse()
-                        .map_err(|_| Error("invalid Node duration".into()))?;
+                        .map_err(|_| Error::new("invalid Node duration".into()))?;
                     require(
                         !duration && millis.is_finite() && millis >= 0.0,
                         "invalid Node duration",
@@ -123,7 +124,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
                     )?;
                     let n: usize = value
                         .parse()
-                        .map_err(|_| Error("invalid Node count".into()))?;
+                        .map_err(|_| Error::new("invalid Node count".into()))?;
                     require(
                         totals.insert(key.to_string(), n).is_none(),
                         "duplicate Node count",
@@ -131,14 +132,14 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
                 }
             }
             Event::Text(e) => {
-                let text = e.xml_content().map_err(|e| Error(e.to_string()))?;
+                let text = e.xml_content().map_err(|e| Error::new(e.to_string()))?;
                 require(
                     test.is_some() || text.trim().is_empty(),
                     "text outside Node test",
                 )?;
             }
             Event::GeneralRef(e) => {
-                let reference = e.decode().map_err(|e| Error(e.to_string()))?;
+                let reference = e.decode().map_err(|e| Error::new(e.to_string()))?;
                 require(
                     test.is_some()
                         && (e.is_char_ref()
@@ -146,14 +147,15 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Inventory> {
                     "unknown Node XML entity",
                 )?;
                 if e.is_char_ref() {
-                    e.resolve_char_ref().map_err(|e| Error(e.to_string()))?;
+                    e.resolve_char_ref()
+                        .map_err(|e| Error::new(e.to_string()))?;
                 }
             }
             Event::Decl(_) if roots == 0 => {}
             Event::CData(_) if test.is_some() => {}
             Event::Eof => break,
             _ => {
-                return Err(Error(
+                return Err(Error::new(
                     "unsupported Node XML declaration or instruction".into(),
                 ))
             }

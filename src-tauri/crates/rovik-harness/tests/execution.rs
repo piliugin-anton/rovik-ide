@@ -42,6 +42,7 @@ fn command() -> CommandDefinition {
         kind: CheckKind::Static,
         parser: Parser::ExitCode,
         checker_digest: normalizer::checker_digest(Parser::ExitCode),
+        implementation_failure_exit_codes: Default::default(),
         report_file: None,
         limits: Limits {
             timeout_ms: 1000,

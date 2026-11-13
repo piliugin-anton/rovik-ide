@@ -55,7 +55,10 @@ impl<'de> Deserialize<'de> for Digest {
 }
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
-        Self(format!("filesystem operation failed: {e}"))
+        Self::classified(
+            crate::FailureCategory::Infrastructure,
+            format!("filesystem operation failed: {e}"),
+        )
     }
 }
 

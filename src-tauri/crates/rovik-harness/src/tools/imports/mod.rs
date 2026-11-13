@@ -2,7 +2,7 @@
 mod python;
 mod scan;
 
-use super::{args, checked, runtime, write_json};
+use super::{args, checked_source, runtime, write_json};
 use crate::{
     pack_protocol::{Edge, Graph, NativeInput, Node, Operation, Precision},
     profile::Language,
@@ -22,7 +22,7 @@ struct Target {
     external: bool,
 }
 
-fn sources(
+pub(super) fn sources(
     root: &Path,
     directory: &Path,
     python: bool,
@@ -32,7 +32,7 @@ fn sources(
     require(
         directory
             .strip_prefix(root)
-            .map_err(|e| Error(e.to_string()))?
+            .map_err(|e| Error::new(e.to_string()))?
             .components()
             .count()
             <= 64,
@@ -56,9 +56,9 @@ fn sources(
         let path = entry.path();
         let relative = path
             .strip_prefix(root)
-            .map_err(|e| Error(e.to_string()))?
+            .map_err(|e| Error::new(e.to_string()))?
             .to_str()
-            .ok_or_else(|| Error("non-UTF-8 import path".into()))?
+            .ok_or_else(|| Error::new("non-UTF-8 import path".into()))?
             .to_string();
         crate::scope::validate_path(&relative)?;
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -147,8 +147,12 @@ pub(super) fn index(input: &NativeInput, operation: Operation) -> Result<Value> 
     require(!files.is_empty(), "no project modules found")?;
     let mut imports = Vec::new();
     for (path, source) in &files {
-        imports
-            .extend(scan::parse(path, source, python).map_err(|e| Error(format!("{path}: {e}")))?);
+        imports.extend(scan::parse(path, source, python).map_err(|e| {
+            Error::classified(
+                crate::FailureCategory::Implementation,
+                format!("{path}: {e}"),
+            )
+        })?);
         require(imports.len() <= 65536, "too many project imports")?;
     }
     let versions = runtime::prepare(&input.profile, input.typescript_project.as_deref())?;
@@ -173,7 +177,7 @@ pub(super) fn index(input: &NativeInput, operation: Operation) -> Result<Value> 
             "/build/imports.json",
             &json!({"imports":imports,"emitted":emitted,"typescript_project":input.typescript_project}),
         )?;
-        let bytes = checked(
+        let bytes = checked_source(
             &args(&[
                 runtime::NODE,
                 "--experimental-import-meta-resolve",

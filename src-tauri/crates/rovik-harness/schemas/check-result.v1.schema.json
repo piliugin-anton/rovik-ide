@@ -191,6 +191,21 @@
         }
       },
       "minItems": 0
+    },
+    "failure_category": {
+      "enum": [
+        "implementation",
+        "design",
+        "contract",
+        "policy",
+        "capability",
+        "infrastructure",
+        "budget",
+        "cancelled",
+        "invalid_input",
+        "internal",
+        null
+      ]
     }
   }
 }

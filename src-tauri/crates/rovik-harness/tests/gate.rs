@@ -41,6 +41,7 @@ fn fixture() -> (EvidenceKey, CheckSpec, CheckResult, TrustedPreconditions) {
         checker_digest: d.clone(),
         evidence_key: key.clone(),
         status: Status::Pass,
+        failure_category: None,
         exit_code: Some(0),
         executed_test_count: 2,
         passed_case_ids: spec.expected_case_ids.clone(),

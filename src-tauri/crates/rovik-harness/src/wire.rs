@@ -83,16 +83,16 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
         "JSON exceeds the control-plane limit",
     )?;
     let Strict(value) =
-        serde_json::from_slice(bytes).map_err(|e| Error(format!("invalid JSON: {e}")))?;
-    serde_json::from_value(value).map_err(|e| Error(format!("invalid schema: {e}")))
+        serde_json::from_slice(bytes).map_err(|e| Error::new(format!("invalid JSON: {e}")))?;
+    serde_json::from_value(value).map_err(|e| Error::new(format!("invalid schema: {e}")))
 }
 
 /// Sorted UTF-8 keys, no whitespace or floats. This is not RFC 8785.
 pub fn canonical<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    let bytes =
-        serde_json::to_vec(value).map_err(|e| Error(format!("cannot encode artifact: {e}")))?;
+    let bytes = serde_json::to_vec(value)
+        .map_err(|e| Error::new(format!("cannot encode artifact: {e}")))?;
     let value: Value = decode(&bytes)?;
-    serde_json::to_vec(&value).map_err(|e| Error(format!("cannot canonicalize artifact: {e}")))
+    serde_json::to_vec(&value).map_err(|e| Error::new(format!("cannot canonicalize artifact: {e}")))
 }
 
 #[cfg(test)]

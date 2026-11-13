@@ -123,7 +123,7 @@ impl<'a> Broker<'a> {
                     maximum_results: 20,
                 })
             }
-            ToolRequest::RunFastCheck { .. } => Err(Error(
+            ToolRequest::RunFastCheck { .. } => Err(Error::new(
                 "advisory execution requires the controller's budget and registered plan".into(),
             )),
             ToolRequest::ReadFile {
@@ -140,9 +140,9 @@ impl<'a> Broker<'a> {
                     .snapshot
                     .files
                     .get(path)
-                    .ok_or_else(|| Error("file is not in the admitted snapshot".into()))?;
+                    .ok_or_else(|| Error::new("file is not in the admitted snapshot".into()))?;
                 let text = String::from_utf8(self.ledger.read(&file.content.digest)?)
-                    .map_err(|_| Error("file is not UTF-8 text".into()))?;
+                    .map_err(|_| Error::new("file is not UTF-8 text".into()))?;
                 let lines: Vec<_> = text
                     .lines()
                     .skip(start_line - 1)

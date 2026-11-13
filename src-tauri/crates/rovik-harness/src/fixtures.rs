@@ -219,6 +219,7 @@ pub fn quota_rust(
         registry,
         environment,
         policy,
+        exceptions: vec![],
         risk_policy: Default::default(),
         admission: AdmissionRules::default(),
         plan,
@@ -231,6 +232,7 @@ pub fn quota_rust(
         ]
         .into(),
         worker: WorkerLimits {
+            infrastructure_retries_per_check: 1,
             model_id: "fixture-scripted".into(),
             context_bytes: 64 * 1024,
             output_tokens: 8192,
@@ -349,9 +351,9 @@ pub fn quota_c_family(
         cases.push("null-preserves-output".into());
     }
     let serialized_profile =
-        serde_json::to_string(&profile).map_err(|e| crate::Error(e.to_string()))?;
+        serde_json::to_string(&profile).map_err(|e| crate::Error::new(e.to_string()))?;
     let serialized_cases =
-        serde_json::to_string(&cases).map_err(|e| crate::Error(e.to_string()))?;
+        serde_json::to_string(&cases).map_err(|e| crate::Error::new(e.to_string()))?;
     setup.oracle = snapshot(
         ledger,
         "protected-native-oracle-v1",

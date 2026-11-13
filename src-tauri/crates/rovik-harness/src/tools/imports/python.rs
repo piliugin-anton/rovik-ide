@@ -27,7 +27,7 @@ impl Resolver {
             return Ok(Target {
                 id: relative
                     .to_str()
-                    .ok_or_else(|| Error("invalid Python module path".into()))?
+                    .ok_or_else(|| Error::new("invalid Python module path".into()))?
                     .into(),
                 external: false,
             });
@@ -122,7 +122,7 @@ impl Resolver {
         } else {
             let parent = Path::new(&import.source)
                 .parent()
-                .ok_or_else(|| Error("relative import lacks a package".into()))?;
+                .ok_or_else(|| Error::new("relative import lacks a package".into()))?;
             let mut parts: Vec<_> = parent
                 .iter()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -139,7 +139,7 @@ impl Resolver {
             parts.join(".")
         };
         let mut targets = self.lookup(&module)?.ok_or_else(|| {
-            Error(format!(
+            Error::new(format!(
                 "unresolved Python import {module} in {}",
                 import.source
             ))

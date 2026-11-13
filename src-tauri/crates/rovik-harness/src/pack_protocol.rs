@@ -75,8 +75,9 @@ impl Request {
             matches!(self.operation, Operation::Probe | Operation::Index),
             "operation cannot produce configured evidence",
         )?;
-        let input: NativeInput =
-            wire::decode(&serde_json::to_vec(&self.payload).map_err(|e| Error(e.to_string()))?)?;
+        let input: NativeInput = wire::decode(
+            &serde_json::to_vec(&self.payload).map_err(|e| Error::new(e.to_string()))?,
+        )?;
         require(
             input.snapshot_handle == "snapshot:active",
             "unknown snapshot capability",
@@ -130,6 +131,30 @@ pub struct PackError {
     pub message: String,
     /// Advisory hint; retries still require controller budget.
     pub retryable: bool,
+    /// Trusted pack-stage attribution; old reports default to infrastructure failures.
+    #[serde(default)]
+    pub category: crate::FailureCategory,
+}
+impl Response {
+    /// Preserve the adapter's typed failure after correlation and envelope validation.
+    pub fn require_success(&self) -> Result<()> {
+        if self.ok {
+            return Ok(());
+        }
+        let error = self
+            .error
+            .as_ref()
+            .ok_or_else(|| Error::new("missing native failure".into()))?;
+        crate::id(&error.code)?;
+        require(
+            !error.message.is_empty() && error.message.len() <= 65_536,
+            "invalid native failure diagnostic",
+        )?;
+        Err(Error::classified(
+            error.category,
+            format!("{}: {}", error.code, error.message),
+        ))
+    }
 }
 /// Precision of graph evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,16 +256,9 @@ pub fn verify_index(request: &Request, bytes: &[u8], configuration: &Digest) -> 
         "advisory operation cannot authorize a check",
     )?;
     let reply = response(request, bytes)?;
-    require(
-        reply.ok,
-        reply
-            .error
-            .as_ref()
-            .map(|e| format!("{}: {}", e.code, e.message))
-            .unwrap_or_else(|| "native-pack failed".into()),
-    )?;
+    reply.require_success()?;
     let result: IndexResult =
-        wire::decode(&serde_json::to_vec(&reply.result).map_err(|e| Error(e.to_string()))?)?;
+        wire::decode(&serde_json::to_vec(&reply.result).map_err(|e| Error::new(e.to_string()))?)?;
     require(
         result.language == input.profile.language,
         "pack language mismatch",
@@ -258,7 +276,7 @@ pub fn verify_index(request: &Request, bytes: &[u8], configuration: &Digest) -> 
         .configurations
         .iter()
         .find(|c| c.id == input.configuration_id)
-        .ok_or_else(|| Error("unknown configuration".into()))?;
+        .ok_or_else(|| Error::new("unknown configuration".into()))?;
     require(
         &config.digest()? == configuration && &result.graph.configuration_digest == configuration,
         "graph configuration mismatch",
@@ -320,13 +338,15 @@ impl Graph {
                     continue;
                 }
                 for target in outgoing.get(node).into_iter().flatten() {
-                    require(
-                        !crate::scope::matches(&rule.target, target),
-                        format!(
-                            "forbidden dependency: {} -> {} (observed {} -> {})",
-                            rule.source, rule.target, node, target
-                        ),
-                    )?;
+                    if crate::scope::matches(&rule.target, target) {
+                        return Err(Error::classified(
+                            crate::FailureCategory::Implementation,
+                            format!(
+                                "forbidden dependency: {} -> {} (observed {} -> {})",
+                                rule.source, rule.target, node, target
+                            ),
+                        ));
+                    }
                     pending.push(target);
                 }
             }
@@ -345,7 +365,7 @@ impl Graph {
                 .configurations
                 .iter()
                 .find(|c| c.id == input.configuration_id)
-                .ok_or_else(|| Error("unknown configuration".into()))?;
+                .ok_or_else(|| Error::new("unknown configuration".into()))?;
             require(
                 !self.compiler_commands.is_empty(),
                 "configured graph lacks compiler invocations",

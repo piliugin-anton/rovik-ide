@@ -41,6 +41,12 @@ fn run(argv: &[String], cwd: &Path, environment: &[(&str, &str)]) -> Result<Proc
     Ok(output)
 }
 fn checked(argv: &[String], cwd: &Path) -> Result<String> {
+    checked_as(argv, cwd, crate::FailureCategory::Infrastructure)
+}
+fn checked_source(argv: &[String], cwd: &Path) -> Result<String> {
+    checked_as(argv, cwd, crate::FailureCategory::Implementation)
+}
+fn checked_as(argv: &[String], cwd: &Path, category: crate::FailureCategory) -> Result<String> {
     let output = run(argv, cwd, &[])?;
     if output.code != Some(0) {
         use std::io::Write;
@@ -48,11 +54,17 @@ fn checked(argv: &[String], cwd: &Path) -> Result<String> {
         // clean while preserving those diagnostics in the runner's bounded log.
         std::io::stderr().write_all(&output.stdout)?;
     }
-    require(
-        output.code == Some(0),
-        format!("native command failed: {}", argv.join(" ")),
-    )?;
-    String::from_utf8(output.stdout).map_err(|e| Error(e.to_string()))
+    if output.code != Some(0) {
+        return Err(Error::classified(
+            if output.code.is_none() {
+                crate::FailureCategory::Infrastructure
+            } else {
+                category
+            },
+            format!("native command failed: {}", argv.join(" ")),
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|e| Error::new(e.to_string()))
 }
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|s| s.to_string()).collect()
@@ -84,7 +96,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
         } else if kind.is_file() {
             std::fs::copy(entry.path(), target)?;
         } else {
-            return Err(Error("unsupported dependency/source file mode".into()));
+            return Err(Error::new("unsupported dependency/source file mode".into()));
         }
     }
     Ok(())
@@ -96,7 +108,7 @@ pub fn execute(arguments: &[String]) -> Result<i32> {
         Some("quota") if arguments.len() == 1 => consumer::quota(),
         Some("interop") if arguments.len() == 1 => interop::check(),
         Some("evaluate") if arguments.len() == 1 => evaluation::check(),
-        _ => Err(Error(
+        _ => Err(Error::new(
             "usage: rovik-harness-tool pack <request-id|-> | quota | interop | evaluate".into(),
         )),
     }

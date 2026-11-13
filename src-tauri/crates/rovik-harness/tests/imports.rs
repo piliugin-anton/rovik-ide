@@ -65,7 +65,7 @@ fn runtime_boundaries_cover_every_module_and_reject_transitive_edges_and_incompl
         assert!(graph
             .validate(&input)
             .unwrap_err()
-            .0
+            .message
             .contains("forbidden dependency"));
         graph.edges[0].source = "domain-other/outside".into();
         graph.validate(&input).unwrap(); // A directory boundary cannot match a sibling prefix.
@@ -104,14 +104,14 @@ fn runtime_boundaries_cover_every_module_and_reject_transitive_edges_and_incompl
         assert!(
             pack_protocol::verify_index(&request, &encode(&bad), &graph.configuration_digest)
                 .unwrap_err()
-                .0
+                .message
                 .contains("versions")
         );
         graph.nodes.retain(|n| !n.id.starts_with("domain/"));
         assert!(graph
             .validate(&input)
             .unwrap_err()
-            .0
+            .message
             .contains("source disappeared"));
     }
 }
@@ -307,7 +307,7 @@ fn real_runtime_imports_enforce_layers_reexports_initializers_aliases_and_resolu
                 let error = result.unwrap_err();
                 if !matches!(variant, "unresolved" | "dynamic") {
                     assert!(
-                        error.0.contains("forbidden dependency"),
+                        error.message.contains("forbidden dependency"),
                         "{language:?} {variant}: {error}\n{}",
                         String::from_utf8_lossy(output.stderr())
                     );
