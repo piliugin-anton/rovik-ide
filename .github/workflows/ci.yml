@@ -149,6 +149,15 @@ jobs:
           cargo nextest run --workspace --profile ci
           --test-threads ${{ matrix.threads }} ${{ matrix.args }}
           -E "${{ matrix.filter || 'all()' }}"
+      - name: Git LFS staging and push acceptance
+        if: ${{ !matrix.confine }}
+        working-directory: src-tauri
+        env:
+          ROVIK_REAL_GIT_LFS: '1'
+        run: >-
+          cargo nextest run --workspace --profile ci
+          --test-threads 2 ${{ matrix.args }} --run-ignored only
+          -E 'package(rovik-client) & test(git::lfs::tests::)'
       - name: Parse the strict WSL acceptance script
         if: runner.os == 'Windows'
         shell: pwsh

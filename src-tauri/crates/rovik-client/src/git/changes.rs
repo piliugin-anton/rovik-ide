@@ -51,7 +51,7 @@ pub fn git_commit_blocking_with(
     if index.has_conflicts() {
         return Err("Resolve the conflicts first.".to_string());
     }
-    stage_all(&mut index, &project_scope(&repo, &path))?;
+    stage_all(&repo, &mut index, &project_scope(&repo, &path))?;
     let hooks = Hooks::of(&repo).no_verify(no_verify);
     if hooks.has("pre-commit") {
         hooks.run("pre-commit", &[], None).map_err(not_committed)?;
@@ -64,6 +64,8 @@ pub fn git_commit_blocking_with(
     let message = hooks
         .commit_message(&repo, &message, "message")
         .map_err(not_committed)?;
+    index.read(true).err_text()?;
+    super::lfs::check_index(&repo, &index)?;
     let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
     let signature = signature(&repo)?;
     let parent = head_commit(&repo).ok();

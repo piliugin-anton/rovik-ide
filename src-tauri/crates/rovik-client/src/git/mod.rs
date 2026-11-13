@@ -1,9 +1,9 @@
 // git/mod.rs
 //
 // Cross-platform Git backend for the IDE's GitPanel, built on `git2`
-// (Rust bindings for libgit2) rather than shelling out to a `git` binary.
-// This means it works even on machines without git installed, and behaves
-// identically on Windows/macOS/Linux.
+// (Rust bindings for libgit2). LFS staging/status additionally use native
+// Git's filters, and pushes run Git LFS before publishing references.
+// Repositories without LFS still work without a git binary installed.
 //
 // What the panel does with a repository is a module each: the status is
 // here, with what the others share; `remote` fetches and pushes, `branches`
@@ -18,6 +18,7 @@ mod changes;
 mod history;
 mod hook_files;
 pub(crate) mod hooks;
+pub(crate) mod lfs;
 mod remote;
 mod stash;
 
@@ -136,7 +137,15 @@ fn scope_pathspec(scope: &str) -> String {
 /// Every change in `scope` ([`project_scope`]) into the index, as
 /// `git add -A` does: new and modified files staged, deleted ones dropped;
 /// .gitignore respected by both.
-pub(crate) fn stage_all(index: &mut git2::Index, scope: &str) -> Result<(), String> {
+pub(crate) fn stage_all(
+    repo: &Repository,
+    index: &mut git2::Index,
+    scope: &str,
+) -> Result<(), String> {
+    if lfs::uses_lfs(repo)? {
+        lfs::stage(repo, scope)?;
+        return index.read(true).err_text();
+    }
     let spec = [scope_pathspec(scope)];
     index
         .add_all(spec.iter(), git2::IndexAddOption::DEFAULT, None)
@@ -311,7 +320,7 @@ fn workdir_line_stats(repo: &Repository) -> HashMap<String, (usize, usize)> {
 /// How many lines the text file at `abs` has: none for a binary or a big
 /// file, an empty one, or anything that isn't a file.
 fn text_lines(abs: &Path) -> Option<usize> {
-    if !abs.is_file() {
+    if !abs.is_file() || abs.metadata().ok()?.len() > 1024 * 1024 {
         return None;
     }
     let bytes = std::fs::read(abs).ok()?;
@@ -386,41 +395,45 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     let (ahead, behind) = compute_ahead_behind(&repo).unwrap_or((0, 0));
     let (upstream, push_remote) = branch_remotes(&repo);
     let scope = project_scope(&repo, &path);
-    let statuses = repo
-        .statuses(Some(&mut status_options_in(&scope)))
-        .err_text()?;
-    let stats = workdir_line_stats(&repo);
+    let files = if lfs::uses_lfs(&repo)? {
+        lfs::status_files(&repo, &scope)?
+    } else {
+        let statuses = repo
+            .statuses(Some(&mut status_options_in(&scope)))
+            .err_text()?;
+        let stats = workdir_line_stats(&repo);
 
-    let files = statuses
-        .iter()
-        .filter(|entry| !entry.status().is_ignored())
-        .map(|entry| {
-            let s = entry.status();
-            // Not UTF-8: shown as near as it gets, not as an empty row.
-            let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
-            let (additions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
-            GitFile {
-                path,
-                status: classify_status(s).to_string(),
-                staged: s.intersects(
-                    Status::INDEX_NEW
-                        | Status::INDEX_MODIFIED
-                        | Status::INDEX_DELETED
-                        | Status::INDEX_RENAMED
-                        | Status::INDEX_TYPECHANGE,
-                ),
-                unstaged: s.intersects(
-                    Status::WT_NEW
-                        | Status::WT_MODIFIED
-                        | Status::WT_DELETED
-                        | Status::WT_RENAMED
-                        | Status::WT_TYPECHANGE,
-                ),
-                additions,
-                deletions,
-            }
-        })
-        .collect();
+        statuses
+            .iter()
+            .filter(|entry| !entry.status().is_ignored())
+            .map(|entry| {
+                let s = entry.status();
+                // Not UTF-8: shown as near as it gets, not as an empty row.
+                let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
+                let (additions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
+                GitFile {
+                    path,
+                    status: classify_status(s).to_string(),
+                    staged: s.intersects(
+                        Status::INDEX_NEW
+                            | Status::INDEX_MODIFIED
+                            | Status::INDEX_DELETED
+                            | Status::INDEX_RENAMED
+                            | Status::INDEX_TYPECHANGE,
+                    ),
+                    unstaged: s.intersects(
+                        Status::WT_NEW
+                            | Status::WT_MODIFIED
+                            | Status::WT_DELETED
+                            | Status::WT_RENAMED
+                            | Status::WT_TYPECHANGE,
+                    ),
+                    additions,
+                    deletions,
+                }
+            })
+            .collect()
+    };
 
     Ok(GitStatus {
         branch,

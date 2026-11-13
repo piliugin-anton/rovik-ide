@@ -1210,7 +1210,7 @@ What one process must not do to another's work is guarded the same way:
 
 ### Git hooks
 
-The Git panel works through libgit2, which runs no hooks, so the panel
+The Git panel uses libgit2 and native Git for LFS filters. libgit2 runs no hooks, so the panel
 runs them itself (`src-tauri/crates/rovik-client/src/git/hooks.rs`), where git would and with
 git's arguments and input:
 
@@ -1238,6 +1238,29 @@ error has a button to try once more without it: **Commit without hooks**,
 pre-push for that one try. prepare-commit-msg and the hooks that come
 after still run, as with git, and a push after such a commit still runs
 pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
+
+For files tracked with `filter=lfs` in Git attributes, **Commit** runs
+Git's LFS clean filter before commit hooks see the index. **Push** checks
+outgoing LFS pointers and uploads their objects before publishing the
+branch, including when there is no LFS pre-push hook. Existing hooks
+(including `core.hooksPath` and Husky) are preserved and still run.
+**Push without hooks** skips repository checks but still requires valid
+LFS pointers and successful object uploads. Git and Git LFS must be
+installed on the machine running these Git operations; Rovik supplies
+the standard filters for its commands without changing global Git
+configuration. LFS uses the repository's remote, LFS endpoint, storage
+and credential-helper settings. Sign in through Git on that machine if
+credentials are missing.
+
+Hydrated LFS assets are compared through the clean filter, so unchanged
+files stay clean in the Git panel. Ordinary images and binaries keep
+their existing Git behavior unless attributes explicitly track them
+with LFS. Raw LFS-tracked files committed by older versions cause Push
+to stop with recovery guidance. Review and repair unpublished commits
+with Git LFS before retrying; Rovik never migrates or rewrites history
+automatically. This support covers Git-panel staging, conflict-resolution
+staging, status and publishing; use native Git LFS checkout/pull when
+hydration is needed after other libgit2 working-tree operations.
 
 The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
 **Git hooks…** (`src/components/GitHooksView.tsx`,
