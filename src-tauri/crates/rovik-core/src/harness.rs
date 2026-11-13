@@ -104,7 +104,7 @@ impl Provider for HarnessProvider {
         self.runtime.block_on(async {
             let (stop,mut cancel)=tokio::sync::watch::channel(cancellation.is_cancelled());
             let timeout=Duration::from_millis(request.timeout_ms);
-            let spec=RequestSpec {client:Clients::Shared,url:&self.url,api_key:&self.api_key,body:&body,streaming:true,limits:Limits {first_byte:timeout,idle:timeout,overall:timeout},api:Api::ChatCompletions,chat_id:None};
+            let spec=RequestSpec {client:Clients::Shared,url:&self.url,api_key:&self.api_key,body:&body,streaming:true,limits:Limits {first_byte:timeout,idle:timeout,overall:timeout},api:Api::ChatCompletions,chat_id:None,admission:None};
             let mut output=String::new();let mut usage=None;let mut finish_reason=None;let mut violation=None;
             let mut emit=|event|match event {
                 ChatStreamEvent::Delta {content}=>{
@@ -272,6 +272,7 @@ mod tests {
             limits: Limits::default(),
             api: Api::ChatCompletions,
             chat_id: None,
+            admission: None,
         };
         let (_sender, mut cancel) = tokio::sync::watch::channel(false);
         let mut events = Vec::new();

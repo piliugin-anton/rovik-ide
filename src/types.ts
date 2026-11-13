@@ -398,6 +398,8 @@ export type ChatErrorKind =
   | 'provider'
   /** The model's safety classifiers declined the request; `message` says why. */
   | 'refused'
+  /** Shared token admission stopped the request before dispatch. */
+  | 'budget'
   | 'cancelled'
   /** The agent's server restarted mid-reply, and settled what was stored of it. */
   | 'restarted';

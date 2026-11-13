@@ -42,6 +42,7 @@ pub enum BuiltinTool {
     Task,
     ExtendScope,
     AnswerReview,
+    SubmitReview,
     Mcp,
 }
 
@@ -208,7 +209,7 @@ const READ_PATH: Restricted = Restricted {
 };
 
 impl BuiltinTool {
-    pub const ALL: [BuiltinTool; 24] = [
+    pub const ALL: [BuiltinTool; 25] = [
         BuiltinTool::Read,
         BuiltinTool::Write,
         BuiltinTool::ListDir,
@@ -232,6 +233,7 @@ impl BuiltinTool {
         BuiltinTool::Task,
         BuiltinTool::ExtendScope,
         BuiltinTool::AnswerReview,
+        BuiltinTool::SubmitReview,
         BuiltinTool::Mcp,
     ];
 
@@ -424,6 +426,11 @@ impl BuiltinTool {
             },
             AnswerReview => ToolSpec {
                 name: "answer_review",
+                modes: Modes::AgentOnly,
+                ..BASE
+            },
+            SubmitReview => ToolSpec {
+                name: super::structured_report::NAME,
                 modes: Modes::AgentOnly,
                 ..BASE
             },

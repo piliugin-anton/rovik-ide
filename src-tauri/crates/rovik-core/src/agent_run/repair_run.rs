@@ -34,7 +34,7 @@ pub const MAX_RECHECKS: u32 = 2;
 
 /// A parallel group joined in this run: who owns what (R03), and each
 /// landed worker's chat, to resume for a fix (R04).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GroupRecord {
     pub name: String,
     pub owners: Vec<(String, usize, WriteScope)>,
@@ -521,7 +521,7 @@ impl Run {
             self.close_child_calls(&child).await?;
             // Launched first (P3.10): its chat gets the fix's brief only when
             // the fixer really starts.
-            let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
+            let mut run = self.launch_child(child.clone(), &call_id, &goal, sub).await?;
             let text = fixer_message(cause, round, results);
             self.append_follow_up(&child, Kind::Worker, &call_id, &text, true)
                 .await?;

@@ -2767,9 +2767,9 @@ async fn a_helper_past_the_budget_stops_and_its_stage_ends_over_it() {
 }
 
 /// U04, by tokens: a provider that reports what each request used and no
-/// cost, and a task that may use 300 tokens. Its plan's two replies use
-/// 220, which its record keeps; the implementation's first reply brings it
-/// to 330, so the run ends there with `budget`, and the task delivers what
+/// cost, and a task that may use 300,000 tokens. Its plan's two replies use
+/// 220,000; the implementation's first reply takes it past 330,000. The
+/// run ends there with `budget`, and the task delivers what
 /// it has, saying why.
 #[tokio::test]
 async fn a_token_limit_ends_the_task_where_the_provider_reports_no_cost() {
@@ -2778,19 +2778,27 @@ async fn a_token_limit_ends_the_task_where_the_provider_reports_no_cost() {
         eprintln!("npm isn't installed: skipped");
         return;
     }
-    // Every reply of the lead's uses 110 tokens.
+    // Requests fit admission, then reported usage exceeds the estimate.
+    // Overspend is retained even when the provider reports no cost.
     let script: Vec<Reply> = task_script()
         .into_iter()
-        .map(|reply| Reply::Usage(100, 10, Box::new(reply)))
+        .map(|reply| Reply::Usage(100_000, 10_000, Box::new(reply)))
         .collect();
     let (url, _) = model_routed(
-        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Usage(
+                0,
+                0,
+                Box::new(Reply::Text("## Findings\n\nNone.")),
+            )],
+        )],
         script,
     )
     .await;
     let mut request = task_request(&h, &url);
     request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
-        max_tokens: Some(300),
+        max_tokens: Some(300_000),
         ..Default::default()
     };
     h.start(request).await;
@@ -2807,14 +2815,65 @@ async fn a_token_limit_ends_the_task_where_the_provider_reports_no_cost() {
         ]
     );
     let plan = records[0].spent.expect("the plan's run's spend");
-    assert_eq!((plan.tokens, plan.cost), (220, 0.0), "{plan:?}");
+    assert_eq!((plan.tokens, plan.cost), (220_000, 0.0), "{plan:?}");
     let implement = &records[4];
     assert_eq!(implement.outcome.as_deref(), Some("budget"));
+    let summary = implement.summary.as_deref().unwrap();
+    assert!(
+        summary.starts_with("Over the task's budget: it used "),
+        "{summary}"
+    );
+    assert!(summary.ends_with("past its limit of 300,000"), "{summary}");
     assert_eq!(
-        implement.summary.as_deref(),
-        Some("Over the task's budget: it used 330 tokens, past its limit of 300")
+        (
+            implement.spent.unwrap().tokens,
+            implement.spent.unwrap().cost
+        ),
+        (110_000, 0.0)
+    );
+    assert!(
+        records
+            .iter()
+            .filter_map(|record| record.spent)
+            .map(|spent| spent.tokens)
+            .sum::<u64>()
+            >= 330_000
     );
     assert_eq!(records[5].outcome.as_deref(), Some("budget"));
+}
+
+/// A request that cannot fit its input and minimum output does not
+/// contact the provider or accrue a fabricated dollar cost.
+#[tokio::test]
+async fn a_tiny_token_budget_declines_the_prepared_prompt_before_dispatch() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("Must not be requested")]).await;
+    let mut request = h.request(
+        &url,
+        autopilot_send("Inspect the project"),
+        quiet_permissions(),
+    );
+    request.config.as_mut().unwrap().autopilot.budget.max_tokens = Some(1);
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_retries = 0;
+    h.start(request).await;
+    let records = stages_until(&h, "budget delivery", delivered).await;
+    assert_eq!(records[0].name, Stage::Plan);
+    assert_eq!(records[0].outcome.as_deref(), Some("budget"));
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("budget"));
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a declined request reached the provider"
+    );
+    assert!(records
+        .iter()
+        .filter_map(|record| record.spent)
+        .all(|spent| spent.tokens == 0 && spent.cost == 0.0));
 }
 
 /// A delivered stage can still be settling its spend while the driver

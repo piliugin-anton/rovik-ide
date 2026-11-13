@@ -53,7 +53,7 @@ mod steps;
 use crate::agent::{ChatParams, ChatStreamEvent, ReasoningEffort};
 use crate::chat_db::store::MessageRow;
 use crate::chat_db::DbState;
-use crate::chat_request::ChatError;
+use crate::chat_request::{ChatError, ErrorKind};
 use futures_util::future::BoxFuture;
 pub use rovik_protocol::connectors::ConnectorCommand;
 pub use rovik_protocol::connectors::{
@@ -444,6 +444,13 @@ pub trait Connector: Send + Sync {
         false
     }
 
+    /// Applies a model output limit when this harness supports one. The
+    /// default cannot enforce it: admission then remains advisory because
+    /// the harness owns its model loop and hidden session history.
+    fn limit_output(&self, _turn: &mut Turn, _tokens: u64) -> bool {
+        false
+    }
+
     /// Ends the chat's run left waiting between Rovik's turns (Rovik's
     /// tools mode, or a turn that read the user's messages), if it keeps
     /// one.
@@ -638,7 +645,7 @@ pub async fn run_chat(
         }
         _ => Default::default(),
     };
-    let turn = Turn {
+    let mut turn = Turn {
         settings,
         api_key: params.api_key.clone(),
         model: params.model.clone(),
@@ -666,11 +673,72 @@ pub async fn run_chat(
         // is one of the run's tools.
         mcp: params.mcp.filter(|_| has_history && !rovik_tools),
     };
+    if *cancel.borrow() {
+        on_event(ChatStreamEvent::Error {
+            error: ChatError::stopped(),
+        });
+        return Ok(());
+    }
+    let adapter = connector(kind);
+    let mut reservation = if let Some(admission) = params.admission.as_ref() {
+        let answers = turn.answers.as_ref().map(|a| {
+            json!({
+                "calls": a.calls, "results": a.results, "notes": a.notes,
+            })
+        });
+        // Include both the current turn and a possible session recap. A
+        // harness's hidden history and internal turns remain unknown.
+        let body = json!({
+            "system": [turn.system_prompt, turn.system_context],
+            "input": [turn.prompt, turn.recap, answers],
+            "tools": turn.tools,
+        });
+        let input = crate::agent_run::request_budget::prompt_tokens(&body, 3.0);
+        let wanted = params
+            .options
+            .as_ref()
+            .and_then(|o| o.max_tokens)
+            .map(u64::from)
+            .unwrap_or(crate::agent_run::request_budget::DEFAULT_OUTPUT_TOKENS);
+        let reservation = match admission.reserve(input, wanted) {
+            Ok(reservation) => reservation,
+            Err(message) => {
+                on_event(ChatStreamEvent::Error {
+                    error: ChatError::new(ErrorKind::Budget, message),
+                });
+                return Ok(());
+            }
+        };
+        if !adapter.limit_output(&mut turn, reservation.output_tokens()) {
+            eprintln!("token budget: connector output and hidden session usage are not capped; admission is advisory");
+        }
+        Some(reservation)
+    } else {
+        None
+    };
+    if *cancel.borrow() {
+        on_event(ChatStreamEvent::Error {
+            error: ChatError::stopped(),
+        });
+        return Ok(());
+    }
+    if let Some(reservation) = &mut reservation {
+        reservation.dispatched();
+    }
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
     let dialog_id = params.dialog_id.clone();
     let started = std::time::Instant::now();
     let mut remember = |event: ChatStreamEvent| {
+        if let (
+            Some(reservation),
+            ChatStreamEvent::Finished {
+                usage: Some(usage), ..
+            },
+        ) = (&mut reservation, &event)
+        {
+            reservation.observe(usage);
+        }
         if let (ChatStreamEvent::HarnessSession { session, .. }, Some(dialog)) =
             (&event, &dialog_id)
         {
@@ -691,7 +759,7 @@ pub async fn run_chat(
         };
         on_event(event);
     };
-    connector(kind).run(turn, cancel, &mut remember).await
+    adapter.run(turn, cancel, &mut remember).await
 }
 
 /// A run's error, with the hosts the user's allowed hosts kept from its

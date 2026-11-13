@@ -51,6 +51,29 @@ async fn docs_server() -> (RovikServer, McpServer, Arc<Mutex<Vec<String>>>) {
     (rovik, server, got)
 }
 
+/// The scripted models call immediately, so their fixture waits for the same
+/// session the run will use instead of racing its bounded startup listing.
+async fn ready_docs(h: &Harness) -> (RovikServer, McpServer, Arc<Mutex<Vec<String>>>) {
+    let (rovik, docs, got) = docs_server().await;
+    let via = h.core.mcp.via(&h.dialog_id);
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        h.core.mcp.list(
+            std::slice::from_ref(&docs),
+            Some(&h.project),
+            via.as_deref(),
+        ),
+    )
+    .await
+    .expect("docs server did not become ready");
+    assert_eq!(listed.len(), 1);
+    let tools = listed[0].tools.as_ref().expect("docs tools did not load");
+    for name in ["read", "bash"] {
+        assert!(tools.iter().any(|tool| tool.name == name), "missing {name}");
+    }
+    (rovik, docs, got)
+}
+
 /// The run's start, with the `docs` server.
 fn with_docs(mut request: StartRequest, server: &McpServer) -> StartRequest {
     request.config.as_mut().unwrap().mcp_servers = vec![server.clone()];
@@ -76,7 +99,7 @@ fn tool_names(request: &Value) -> Vec<String> {
 #[tokio::test]
 async fn an_mcp_tool_is_called_once_the_user_approves_it() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let (url, seen) = model(vec![
         Reply::Call {
             id: "m1",
@@ -162,27 +185,7 @@ async fn an_mcp_tool_is_called_once_the_user_approves_it() {
 async fn a_run_on_a_daemon_calls_mcp_tools() {
     let h = harness(&[]).await;
     h.core.agents.set_on_server();
-    let (_rovik, docs, got) = docs_server().await;
-    // The scripted model calls immediately; wait for the same daemon session
-    // the run will use rather than racing its bounded startup listing.
-    let via = h.core.mcp.via(&h.dialog_id);
-    let listed = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        h.core.mcp.list(
-            std::slice::from_ref(&docs),
-            Some(&h.project),
-            via.as_deref(),
-        ),
-    )
-    .await
-    .expect("docs server did not become ready");
-    assert_eq!(listed.len(), 1);
-    assert!(listed[0]
-        .tools
-        .as_ref()
-        .unwrap()
-        .iter()
-        .any(|tool| tool.name == "bash"));
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let (url, seen) = model(vec![
         Reply::Call {
             id: "m1",
@@ -219,7 +222,7 @@ async fn a_run_on_a_daemon_calls_mcp_tools() {
 #[tokio::test]
 async fn mcp_calls_run_without_asking_when_the_rule_says_so() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let (url, _) = model(vec![
         Reply::Call {
             id: "m1",
@@ -248,7 +251,7 @@ async fn mcp_calls_run_without_asking_when_the_rule_says_so() {
 #[tokio::test]
 async fn plan_mode_lists_and_calls_only_read_only_mcp_tools() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let (url, seen) = model(vec![
         Reply::Call {
             id: "m1",
@@ -299,7 +302,7 @@ async fn without_servers_there_is_no_mcp_tool() {
 #[tokio::test]
 async fn a_scout_calls_only_read_only_mcp_tools() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let report = "## Answer\nIn the intro.\n\n## Evidence\n- the docs' intro\n\n## Open questions\nNone\n\n## Web sources\nNone";
     let (url, seen) = model_routed(
         vec![(
@@ -366,7 +369,7 @@ fn read_of(path: &str) -> Vec<String> {
 #[tokio::test]
 async fn claude_code_with_its_own_tools_calls_mcp_tools_through_rovik() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let call = json!({ "tool": "docs.read", "arguments": { "path": "intro" } });
     let asks = json!([["mcp__rovik__mcp", call, "toolu_9"]]);
     let Some(program) = crate::connectors::fake_claude_asking(&h._dir.0, &asks) else {
@@ -442,7 +445,7 @@ async fn claude_code_with_its_own_tools_calls_mcp_tools_through_rovik() {
 #[tokio::test]
 async fn codex_with_its_own_tools_calls_mcp_tools_through_rovik() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let call = json!({ "tool": "docs.read", "arguments": { "path": "intro" } });
     let scenario = json!({ "steps": [
         { "rovik": "mcp", "id": "c1", "arguments": call },
@@ -509,7 +512,7 @@ async fn codex_with_its_own_tools_calls_mcp_tools_through_rovik() {
 #[tokio::test]
 async fn in_plan_mode_claude_code_calls_mcp_tools_as_rovik_s_agent() {
     let h = harness(&[]).await;
-    let (_rovik, docs, got) = docs_server().await;
+    let (_rovik, docs, got) = ready_docs(&h).await;
     let call = json!({ "tool": "docs.read", "arguments": { "path": "intro" } });
     let Some(program) = crate::connectors::fake_claude_with_mcp(&h._dir.0, "mcp", &call) else {
         eprintln!("no python3: skipped");

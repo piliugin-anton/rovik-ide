@@ -45,6 +45,9 @@ pub async fn after_crash(core: &Core, dialog_id: &str) -> Result<Recovery, Strin
     if !unanswered_tool_calls(&recent).is_empty() {
         return Ok(Recovery::Start(StartKind::Resume));
     }
+    if super::verify::checkpoint::after_crash(core, dialog_id, last).await? {
+        return Ok(Recovery::Paused);
+    }
     let paused = last.meta.as_ref().and_then(|m| m.pointer("/paused/kind"));
     Ok(match paused.and_then(|kind| kind.as_str()) {
         Some(DRAIN) => Recovery::Start(StartKind::ContinueRun),

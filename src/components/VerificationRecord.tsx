@@ -27,7 +27,10 @@ import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
 function headline(meta: VerificationMeta, interrupted: boolean): string {
-  if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
+  if (interrupted)
+    return meta.finalizationPending
+      ? 'Verification stopped after the checks. Run checks to resume final review.'
+      : 'Checks didn’t finish: the run ended while they were running.';
   if (meta.midRun) {
     switch (meta.status) {
       case 'running':
@@ -71,7 +74,11 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
     case 'unresolved':
       return 'The agent finished without changing anything after the failed checks.';
     case 'needs-approval':
-      return 'The changes weren’t checked yet: command approval is on.';
+      return (
+        meta.reason ??
+        meta.checkpointNotice ??
+        'The changes weren’t checked yet: command approval is on.'
+      );
     case 'superseded':
       return 'These checks didn’t run: a newer request came after them.';
     case 'unverified':
@@ -270,13 +277,24 @@ export default function VerificationRecord(props: {
   onRunChecks?: () => void;
   onOpenProjectChecks?: () => void;
 }) {
-  /** Saved as running, but nothing runs it: the app closed mid-check. */
-  const interrupted = () => props.meta.status === 'running' && !props.live;
+  /** A command or the final gates were pending when the app closed. */
+  const interrupted = () =>
+    !props.live &&
+    (props.meta.status === 'running' ||
+      (props.latest &&
+        props.meta.finalizationPending === true &&
+        ['passed', 'failed'].includes(props.meta.status)));
   return (
     <div class={`chat-verify ${interrupted() ? 'stopped' : props.meta.status}`} role="status">
       <div class="chat-verify-head">
         <span class="chat-verify-title">{headline(props.meta, interrupted())}</span>
-        <Show when={props.latest && props.onRunChecks && props.meta.status === 'needs-approval'}>
+        <Show
+          when={
+            props.latest &&
+            props.onRunChecks &&
+            (props.meta.status === 'needs-approval' || interrupted())
+          }
+        >
           <button type="button" class="chat-action-button" onClick={() => props.onRunChecks?.()}>
             Run checks
           </button>
@@ -288,6 +306,14 @@ export default function VerificationRecord(props: {
         </Show>
       </div>
 
+      <Show
+        when={
+          props.meta.checkpointNotice &&
+          props.meta.checkpointNotice !== headline(props.meta, interrupted())
+        }
+      >
+        <div class="chat-verify-progress">{props.meta.checkpointNotice}</div>
+      </Show>
       <Show when={props.meta.fromPlan}>
         <div class="chat-verify-progress">
           No checks are set up for this project: these are the commands the plan’s Validation

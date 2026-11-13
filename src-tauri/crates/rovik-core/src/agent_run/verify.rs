@@ -8,6 +8,13 @@
 //! `meta.verification`, never sent to the model, saved on every change so it
 //! reads the same after a restart.
 
+#[path = "verification_checkpoint.rs"]
+pub(crate) mod checkpoint;
+#[path = "verification_receipt.rs"]
+mod receipt;
+#[path = "targeted_repair.rs"]
+mod targeted;
+
 use super::command_output::{
     environment_failure, error_locations, failure_keys, focus_failures, split_by_changed,
     tests_ran, without_roots,
@@ -53,14 +60,18 @@ pub(super) fn check_timeout_ms(_dialog_id: &str) -> u64 {
 /// one is saved (check_output.rs) and can go to triage (triage.rs).
 pub const FAILURE_OUTPUT_CHARS: usize = 8_000;
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Clone, Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorFiles {
     pub changed: Vec<String>,
     pub other: Vec<String>,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+/// A validated gate status. The alias prevents serde from borrowing a static
+/// string from the payload; the decoder returns only known status constants.
+pub type CheckStatus = &'static str;
+
+#[derive(Serialize, Clone, Debug, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckResult {
     pub kind: String,
@@ -68,8 +79,10 @@ pub struct CheckResult {
     /// pending, running, passed, failed, skipped, slow (V06), and
     /// preexisting: it failed, but only as it does on the code before the
     /// change (before.rs).
-    pub status: &'static str,
+    #[serde(deserialize_with = "checkpoint::check_status")]
+    pub status: CheckStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "checkpoint::exit_code")]
     pub exit_code: Option<Option<i32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
@@ -139,19 +152,24 @@ impl CheckResult {
 /// A run's fix-round state while its checks wait for the user's approval:
 /// with command approval on, each round of checks starts a new run, which
 /// takes this up (R01 progress, R02 rollback, R04 the repair loop, R05
-/// integrity, R08 the review after green). Kept in memory: after a
-/// restart, the next round starts afresh, as before.
+/// integrity, R08 the review after green). The private restart checkpoint
+/// separately preserves confirmed state when this memory is lost.
 pub struct VerifyCarry {
     pub record_id: String,
     rounds: FixRounds,
-    review: super::change_review::ReviewCarry,
-    tests: super::test_writer::TestsCarry,
+    review: super::change_review::ReviewState,
+    tests: super::test_writer::TestsState,
+    integrity_unchecked: bool,
+    stalled_rounds: u32,
+    prepared_again: bool,
+    after_partial_rollback: bool,
     /// What the run last wrote or read: in a chat that isn't isolated, a
     /// rollback undoes only what's still the run's (K15).
     seen: std::sync::Arc<crate::file_guard::Seen>,
     /// What the run's subagents used of their limits (P3.10): the next
     /// rounds' fixers count on.
     ledger: super::subagent::Ledger,
+    request_spending: (u64, u64),
     /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
@@ -175,8 +193,13 @@ impl VerifyCarry {
             rounds: Default::default(),
             review: Default::default(),
             tests: Default::default(),
+            integrity_unchecked: false,
+            stalled_rounds: 0,
+            prepared_again: false,
+            after_partial_rollback: false,
             seen: crate::file_guard::Seen::new("test"),
             ledger: Default::default(),
+            request_spending: (0, 0),
             stored: std::time::Instant::now() - age,
             spilled: Spilled(
                 spilled
@@ -577,6 +600,101 @@ pub fn failure_report(
 
 impl Run {
     /// The project's checks that run: on, and with a command.
+    /// Snapshot complete local inputs off the runtime threads. A failed or
+    /// bounded-out snapshot disables reuse; it never prevents verification.
+    async fn check_stamp(&mut self, root: &str) -> Option<receipt::Stamp> {
+        if self.verification.reuse_unavailable {
+            return None;
+        }
+        let mut roots = vec![std::path::PathBuf::from(root)];
+        if let Some(project) = &self.project_root {
+            roots.push(project.into());
+        }
+        let overlay = crate::overlay::chats::get(&self.dialog_id);
+        let generation = overlay.as_ref().map(|o| o.fs.generation());
+        let permissions = self.config().permissions;
+        let configuration = serde_json::to_vec(&json!({
+            "checks": self.checks, "permissions": permissions,
+            "generation": generation,
+            "toolchainEnvironment": crate::toolchains::env_for(std::path::Path::new(root)),
+            "childEnvironment": serde_json::to_value(crate::process::child_env()).ok()?,
+        }))
+        .ok()?;
+        let restricted = self.restricted.clone();
+        let snapshot = crate::rt::spawn_blocking(move || {
+            receipt::capture(&roots, &restricted, &configuration)
+        })
+        .await
+        .ok()
+        .flatten();
+        let snapshot =
+            snapshot.filter(|_| generation == overlay.as_ref().map(|o| o.fs.generation()));
+        if snapshot.is_none() {
+            self.verification.reuse_unavailable = true;
+            self.verification.receipts.clear();
+            log::write(
+                &self.core,
+                json!({ "event": "checkReuseUnavailable", "dialogId": self.dialog_id,
+                "reason": "local inputs could not be completely and stably fingerprinted within the snapshot limits" }),
+            );
+        }
+        snapshot
+    }
+
+    /// Run opted-in static checks before the first review. A failure uses the
+    /// same repair gate as final verification; success is never full acceptance.
+    pub(super) async fn preflight_before_review(&mut self) -> Result<Option<String>, String> {
+        if self.verification.preflight_done
+            || self.sub().is_some()
+            || self.plan_mode
+            || self.stopped()
+            || self.review.total() > 0
+            || self.verification.last_failed()
+            || !self.verification.needs_checks()
+            || !self.config().permissions.verify_changes
+            || !self
+                .config()
+                .subagents
+                .may_run(super::subagent::Kind::Reviewer)
+        {
+            return Ok(None);
+        }
+        self.verification.preflight_done = true;
+        // Keep the existing approval flow at the final gate; never run early
+        // commands whose approval would interrupt or alter that flow.
+        if self.config().permissions.command_approval.required && !self.in_autopilot() {
+            return Ok(None);
+        }
+        let checks: Vec<_> = self
+            .enabled_checks()
+            .into_iter()
+            .filter(|c| c.reuse_success && matches!(c.kind.as_str(), "typecheck" | "lint"))
+            .collect();
+        let Some(root) = self.root.clone() else {
+            return Ok(None);
+        };
+        if checks.is_empty() || self.check_stamp(&root).await.is_none() {
+            return Ok(None);
+        }
+        loop {
+            let outcome = self
+                .verify_round_for(false, None, Some(checks.clone()))
+                .await?;
+            if outcome == "preflight-passed" {
+                return Ok(None);
+            }
+            if outcome != "repaired" {
+                return Ok(Some(outcome));
+            }
+            if self.read_waiting("repair").await? {
+                return Ok(Some("continue".into()));
+            }
+            if let Some(pause) = self.pause.get() {
+                return self.pause_for(pause).await.map(Some);
+            }
+        }
+    }
+
     fn enabled_checks(&self) -> Vec<ProjectCheck> {
         self.checks
             .iter()
@@ -630,10 +748,15 @@ impl Run {
         VerifyCarry {
             record_id,
             rounds: self.verification.take_carry(),
-            review: self.review.take_carry(),
-            tests: self.tests.take_carry(),
+            review: take(&mut self.review),
+            tests: take(&mut self.tests),
+            integrity_unchecked: self.verification.integrity_unchecked,
+            stalled_rounds: self.verification.stalled_rounds,
+            prepared_again: self.verification.prepared_again,
+            after_partial_rollback: self.verification.after_partial_rollback,
             seen: self.seen.clone(),
             ledger: take(&mut self.ledger),
+            request_spending: self.core.agents.request_spending(&self.dialog_id),
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
             memory: self.memory.carry(),
@@ -643,9 +766,12 @@ impl Run {
     /// The run that starts the checks takes up where the last one stopped.
     /// None found (the app restarted, the chat was discarded, it expired):
     /// the record and the agent are told the checks start afresh (P1.7).
-    pub(super) fn restore_verify_state(&mut self, record_id: &str) {
+    pub(super) async fn restore_verify_state(&mut self, record_id: &str) {
+        let approval_matches = self.verification_approval_matches(record_id).await;
         let Some(mut c) = self.core.agents.take_carry(&self.dialog_id, record_id) else {
-            self.verification.carry_lost = Some(record_id.to_string());
+            if !self.restore_durable_verification(record_id).await {
+                self.verification.carry_lost = Some(record_id.to_string());
+            }
             return;
         };
         // Spilled contents come back; one that can't is left out (its
@@ -654,14 +780,29 @@ impl Run {
         if !c.spilled.restore(&mut c.rounds.baseline) {
             self.verification.integrity_unchecked = true;
         }
+        if !approval_matches {
+            c.rounds.baseline.clear();
+            c.rounds.checkpoint = None;
+            c.rounds.groups.clear();
+            c.rounds.worker_steps.clear();
+            c.rounds.last_triage = None;
+            self.verification.integrity_unchecked = true;
+            self.verification.writes_since_verify = true;
+        }
         self.verification.restore(c.rounds);
-        self.review.restore(c.review);
-        self.tests.restore(c.tests);
-        self.seen = c.seen;
+        self.verification.integrity_unchecked |= c.integrity_unchecked;
+        self.verification.stalled_rounds = c.stalled_rounds;
+        self.verification.prepared_again = c.prepared_again;
+        self.verification.after_partial_rollback = c.after_partial_rollback;
+        self.review = c.review;
+        self.tests = c.tests;
+        if approval_matches {
+            self.seen = c.seen;
+        }
         // The memories the paused run used, and what its rounds made of
         // them (memory.rs): the checks it starts are theirs to promote,
         // invalidate and record the outcome of.
-        if let Some(memory) = c.memory.take() {
+        if let Some(memory) = c.memory.take().filter(|_| approval_matches) {
             let core = self.core.clone();
             // Carried records keep the run's sight of the files: what it may
             // not read stays unreadable across the wait for the checks.
@@ -675,6 +816,11 @@ impl Run {
             );
         }
         self.ledger = c.ledger;
+        self.core.agents.restore_request_spending(
+            &self.dialog_id,
+            c.request_spending.0,
+            c.request_spending.1,
+        );
     }
 
     /// P3.9: the carried state was lost (a restart): what each file was
@@ -752,8 +898,17 @@ impl Run {
 
     /// P3.10: a record's round limit is the run's (bonus rounds counted).
     pub(super) fn with_max_rounds(&self, mut meta: Value) -> Value {
+        if let Some(notice) = &self.verification.checkpoint_notice {
+            if let Some(v) = meta.get_mut("verification") {
+                v["checkpointNotice"] = json!(notice);
+            }
+        }
         if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
             v.insert("maxRounds".into(), json!(self.max_rounds()));
+            v.insert(
+                "approvalConfiguration".into(),
+                json!(checkpoint::configuration(self)),
+            );
             // V02: the checks are the plan's validation commands.
             if self.checks_from_plan {
                 v.insert("fromPlan".into(), json!(true));
@@ -790,6 +945,16 @@ impl Run {
         approved: bool,
         record_id: Option<String>,
     ) -> Result<String, String> {
+        self.verify_round_for(approved, record_id, None).await
+    }
+
+    async fn verify_round_for(
+        &mut self,
+        approved: bool,
+        record_id: Option<String>,
+        preflight_checks: Option<Vec<ProjectCheck>>,
+    ) -> Result<String, String> {
+        let preflight = preflight_checks.is_some();
         let p = self.config().permissions;
         let Some(root) = self.root.clone() else {
             return Ok("done".into());
@@ -856,7 +1021,7 @@ impl Run {
             .into());
         }
 
-        let checks = self.enabled_checks();
+        let checks = preflight_checks.unwrap_or_else(|| self.enabled_checks());
         if checks.is_empty() {
             self.add_record(record(
                 "unverified",
@@ -873,7 +1038,10 @@ impl Run {
         // Command approval is on: the gate's commands need the user's go
         // too. Not in Autopilot, where nobody gives it: they're the IDE's
         // commands, which the user set up, not the model's (D7).
-        if p.command_approval.required && !approved && !self.in_autopilot() {
+        if self.verification.approval_changed
+            || (p.command_approval.required && !approved && !self.in_autopilot())
+        {
+            self.verification.approval_changed = false;
             let pending: Vec<CheckResult> = checks.iter().map(CheckResult::pending).collect();
             // P3.9: what each file was, by hash, kept with the record: after
             // a restart the checks rebuild what they can from it.
@@ -899,6 +1067,12 @@ impl Run {
             // The run ends here: what its fix rounds know waits for the
             // run that starts the checks.
             if self.sub().is_none() {
+                self.checkpoint_verification(
+                    &record_id,
+                    checkpoint::Phase::AwaitingApproval,
+                    &pending,
+                )
+                .await;
                 let mut carry = self.take_verify_state(record_id);
                 carry.spilled = spill(&self.dialog_id, &mut carry.rounds.baseline);
                 self.core.agents.put_carry(&self.dialog_id, carry);
@@ -906,6 +1080,11 @@ impl Run {
             return Ok("verify-needs-approval".into());
         }
 
+        let targeted = !preflight
+            && !p.command_approval.required
+            && self.verification.carry.last_verify_failed
+            && self.verification.writes_since_verify
+            && checks.iter().filter(|c| c.kind == "test").count() == 1;
         self.verification.checks_started();
         // The checks run: the next change review isn't "in a row".
         self.review.checks_started();
@@ -932,11 +1111,46 @@ impl Run {
                 &record_id,
                 round,
                 &format!("round-{round}"),
+                targeted,
             )
             .await?;
 
         let failed = results.iter().any(|r| r.status == "failed");
         let ran = results.iter().any(has_run);
+        // A passing preflight is only part of the gate. Do not promote memory,
+        // judge integrity, or run acceptance until all configured checks return.
+        let unavailable = results.iter().any(|r| {
+            r.status == "failed"
+                && (r.environment.is_some() || r.timed_out == Some(true) || r.exit_code.is_none())
+        });
+        if preflight && (!failed || unavailable) {
+            let status = if self.stopped() {
+                "stopped"
+            } else if unavailable {
+                "unverified"
+            } else if ran {
+                "passed"
+            } else {
+                "unverified"
+            };
+            self.update_meta(
+                &record_id,
+                with(
+                    record(status, round, &results, &changed,
+                        unavailable.then_some("preflight checks unavailable; continuing with review and final verification")),
+                    json!({ "preflight": true, "preflightUnavailable": unavailable }),
+                ),
+            )
+            .await?;
+            self.verification.round_refunded();
+            self.verification.recheck(Recheck::VerificationRerun);
+            return Ok(if self.stopped() {
+                "stopped"
+            } else {
+                "preflight-passed"
+            }
+            .into());
+        }
         // The project's memory: what this round confirms, and what it points
         // a failure at (memory.rs).
         self.memory_after_checks(&results).await;
@@ -958,8 +1172,19 @@ impl Run {
         }
         // R01: how this round compares with the earlier ones.
         let mut now = round_failures(&results);
+        if self.verification.targeted.failed {
+            // A focused failure proves nothing about unselected tests. Keep
+            // their earlier failures outstanding, and never compare this
+            // selection's count with a full suite's count.
+            self.verification
+                .targeted
+                .keep_unobserved_failures(self.verification.carry.verify_history.last(), &mut now);
+        }
         now.own_tests = Some(self.own_test_count());
-        let mut judgement = repair::judge(&self.verification.carry.verify_history, &now);
+        let mut judgement = self
+            .verification
+            .targeted
+            .judge(&self.verification.carry.verify_history, &now);
         // T04: the adversarial tester's tests, run for the first time: what
         // fails is what they found, not a fix that broke something.
         if self.tests.has_breaker_round() {
@@ -1020,9 +1245,14 @@ impl Run {
             .last()
             .and_then(|r| r.tests_ran);
         let max_rounds = self.max_rounds();
+        let targeted_attempts = self.verification.targeted.attempts.clone();
+        let full_tests_deferred = self.verification.targeted.failed;
         let extra = |rolled_back: Option<&repair::Rollback>| {
             json!({
                 "maxRounds": max_rounds,
+                "preflight": preflight,
+                "targetedChecks": targeted_attempts,
+                "fullTestsDeferred": full_tests_deferred,
                 "progress": (judgement.verdict != Progress::First).then_some(&judgement),
                 "failureCount": now.keys.len(),
                 "testsRun": now.tests_ran,
@@ -1169,6 +1399,10 @@ impl Run {
         if let Some(why) = not_rolled_back {
             meta = with(meta, json!({ "notRolledBack": why }));
         }
+        if matches!(status, "passed" | "failed") {
+            meta["verification"]["finalizationPending"] = json!(true);
+            self.verification.pending_record = Some(record_id.clone());
+        }
         self.update_meta(&record_id, meta.clone()).await?;
         self.log_round(round, status, &results, &judgement, &flags);
         // T04: the round that ran the adversarial tester's tests: what they
@@ -1176,6 +1410,10 @@ impl Run {
         let breaker_note = self.breaker_round_judged(failed).await?;
 
         self.verification.round_finished(failed);
+        self.checkpoint_verification(&record_id, checkpoint::Phase::FinalizationPending, &results)
+            .await;
+        #[cfg(test)]
+        checkpoint::interrupt_at(&self.dialog_id, checkpoint::Phase::FinalizationPending)?;
         if status == "passed" && !flags.is_empty() {
             // R05: the checks pass, but maybe only because the tests or what
             // the checks run were weakened. Asked once; kept: the run isn't
@@ -1258,6 +1496,9 @@ impl Run {
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
         let mut notes: Vec<String> = Vec::new();
+        if full_tests_deferred {
+            notes.push("Focused repair tests still fail. The full configured test suite will run after they pass; failures outside this selection have not been rechecked.".into());
+        }
         if let Some(note) = breaker_note {
             notes.push(note);
         }
@@ -1383,7 +1624,12 @@ impl Run {
     /// within the run's review budget. True: findings went to the
     /// agent, and one more fix and check round is allowed.
     async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
-        if !self.config().subagents.may_run(super::subagent::Kind::Reviewer) || self.plan_mode {
+        if !self
+            .config()
+            .subagents
+            .may_run(super::subagent::Kind::Reviewer)
+            || self.plan_mode
+        {
             return Ok(false);
         }
         let cap = self.change_review_cap();
@@ -1477,7 +1723,9 @@ impl Run {
         );
         self.clean_earlier_output();
         let results = self
-            .run_checks(&root, &checks, &p, &changed, &record_id, round, &saved_as)
+            .run_checks(
+                &root, &checks, &p, &changed, &record_id, round, &saved_as, false,
+            )
             .await
             .ok()?;
         let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
@@ -1537,7 +1785,8 @@ impl Run {
                 self.dialog_id
             );
         }
-        // The checks run again when the run finishes.
+        // The full final gate still runs. Eligible unchanged command results
+        // are reused there, without skipping integrity or acceptance evaluation.
         self.verification.recheck(Recheck::VerificationRerun);
         Some(match status {
             "passed" => "The project's checks ran on the merged result and pass.".to_string(),
@@ -1617,11 +1866,15 @@ impl Run {
         record_id: &str,
         round: u32,
         saved_as: &str,
+        targeted: bool,
     ) -> Result<Vec<CheckResult>, String> {
         let mut results: Vec<CheckResult> = ordered_checks(checks)
             .iter()
             .map(CheckResult::pending)
             .collect();
+        self.verification.targeted.start_round();
+        let mut probe_considered = false;
+        let mut active_probe: Option<CheckResult> = None;
         let progress = |results: &[CheckResult]| record("running", round, results, changed, None);
         self.update_meta(record_id, progress(&results)).await?;
         // Where the checks run, as their output names it: failure keys are
@@ -1635,7 +1888,7 @@ impl Run {
         // timed out: its index.
         let mut scoped: Option<usize> = None;
         let mut i = 0;
-        while i < results.len() {
+        'checks: while i < results.len() {
             'check: {
                 if self.stopped() {
                     results[i].skip("stopped");
@@ -1667,8 +1920,75 @@ impl Run {
                     break 'check;
                 }
 
+                if targeted && !probe_considered && results[i].kind == "test" {
+                    probe_considered = true;
+                    if let Some(command) = self
+                        .verification
+                        .targeted
+                        .command(std::path::Path::new(root), &results[i].command, changed)
+                        .filter(|command| {
+                            matches!(
+                                check_command(command, permissions),
+                                Verdict::Permitted { .. }
+                            )
+                        })
+                    {
+                        active_probe = Some(results[i].clone());
+                        results[i].command = command;
+                    }
+                }
+                let output_stem = if active_probe.is_some() {
+                    format!("{saved_as}-targeted")
+                } else {
+                    saved_as.to_string()
+                };
+                let reusable = checks
+                    .iter()
+                    .find(|check| {
+                        check.reuse_success
+                            && check.kind == results[i].kind
+                            && check.command.trim() == results[i].command
+                    })
+                    .cloned();
+                let before = if reusable.is_some() {
+                    self.check_stamp(root).await
+                } else {
+                    None
+                };
+                if let (Some(check), Some(stamp)) = (&reusable, &before) {
+                    if let Some(receipt) = self
+                        .verification
+                        .receipts
+                        .iter()
+                        .find(|r| &r.check == check && &r.stamp == stamp)
+                    {
+                        results[i] = receipt.result.clone();
+                        results[i].note = Some(format!(
+                            "Reused unchanged results from verification {}",
+                            receipt.record_id
+                        ));
+                        // A reused check did not execute in this round.
+                        results[i].duration_ms = Some(0);
+                        log::write(
+                            &self.core,
+                            json!({ "event": "checkReused", "dialogId": self.dialog_id,
+                            "recordId": record_id, "sourceRecordId": receipt.record_id,
+                            "command": check.command }),
+                        );
+                        self.update_meta(record_id, progress(&results)).await?;
+                        break 'check;
+                    }
+                }
                 results[i].status = "running";
                 self.update_meta(record_id, progress(&results)).await?;
+                self.checkpoint_verification(
+                    record_id,
+                    checkpoint::Phase::CommandRunning,
+                    &results,
+                )
+                .await;
+                #[cfg(test)]
+                checkpoint::interrupt_at(&self.dialog_id, checkpoint::Phase::CommandRunning)?;
                 let stop = self.stop.clone();
                 // Checks are heavy work: they may wait for a CPU slot, and the
                 // record says what for while they do.
@@ -1731,10 +2051,9 @@ impl Run {
                             let environment = (!out.timed_out)
                                 .then(|| environment_failure(out.exit_code, &combined, &roots))
                                 .flatten();
-                            // V03: in Autopilot, whether its environment failed.
-                            if self.in_autopilot() {
-                                r.environment = environment.clone();
-                            }
+                            // Also lets preflight postpone unavailable checks
+                            // to the final gate without spending a repair turn.
+                            r.environment = environment.clone();
                             // From the whole output, not the focused part nor
                             // the start and end kept to show: every failure
                             // counts when rounds are compared (V07).
@@ -1770,7 +2089,7 @@ impl Run {
                             if whole.chars().count() > FAILURE_OUTPUT_CHARS {
                                 r.saved_output = super::check_output::save(
                                     &self.dialog_id,
-                                    saved_as,
+                                    &output_stem,
                                     &r.kind,
                                     &whole,
                                 );
@@ -1810,6 +2129,40 @@ impl Run {
                     );
                     self.update_meta(record_id, progress(&results)).await?;
                 }
+                if let Some(full) = active_probe.take() {
+                    let actionable = targeted::actionable_failure(&results[i]);
+                    self.verification.targeted.attempts.push(targeted::Attempt {
+                        suite_command: full.command.clone(),
+                        result: results[i].clone(),
+                    });
+                    if actionable && !self.stopped() {
+                        self.verification.targeted.failed = true;
+                        results[i].note = Some("Focused repair tests failed; the full suite is deferred until they pass.".into());
+                    } else {
+                        // Green, no executed test, unavailable, preexisting, or
+                        // stopped: this probe cannot replace the configured
+                        // check. Its original command runs through the same
+                        // permission and Stop checks on the next iteration.
+                        results[i] = full;
+                        self.update_meta(record_id, progress(&results)).await?;
+                        continue 'checks;
+                    }
+                } else if results[i].kind == "test" {
+                    self.verification.targeted.full_result = Some(results[i].clone());
+                }
+                if results[i].status == "passed" && !self.stopped() {
+                    if let (Some(check), Some(stamp)) = (reusable, before) {
+                        if self.check_stamp(root).await.as_ref() == Some(&stamp) {
+                            self.verification.receipts.retain(|r| r.check != check);
+                            self.verification.receipts.push(CheckReceipt {
+                                stamp,
+                                check,
+                                result: results[i].clone(),
+                                record_id: record_id.into(),
+                            });
+                        }
+                    }
+                }
                 // V06: in Autopilot, a whole test suite that timed out is
                 // recorded slow, not failed, and the tests of the changed files
                 // run in its place: theirs is the round's result.
@@ -1833,6 +2186,7 @@ impl Run {
                         r.error_files = None;
                         r.tests_ran = None;
                         let check = ProjectCheck {
+                            reuse_success: false,
                             kind: "test".into(),
                             command,
                             enabled: true,
@@ -1843,6 +2197,10 @@ impl Run {
                     }
                 }
             }
+            self.checkpoint_verification(record_id, checkpoint::Phase::CheckCompleted, &results)
+                .await;
+            #[cfg(test)]
+            checkpoint::interrupt_at(&self.dialog_id, checkpoint::Phase::CheckCompleted)?;
             i += 1;
         }
         if let Some(copy) = copy {
@@ -1964,6 +2322,7 @@ mod tests {
         let check = |kind: &str, command: &str, status| CheckResult {
             status,
             ..CheckResult::pending(&ProjectCheck {
+                reuse_success: false,
                 kind: kind.into(),
                 command: command.into(),
                 enabled: true,
@@ -2014,6 +2373,7 @@ mod tests {
         let mut failed = CheckResult {
             status: "failed",
             ..CheckResult::pending(&ProjectCheck {
+                reuse_success: false,
                 kind: "test".into(),
                 command: "npm test".into(),
                 enabled: true,
@@ -2048,6 +2408,7 @@ mod tests {
         let check = |kind: &str, command: &str, status| CheckResult {
             status,
             ..CheckResult::pending(&ProjectCheck {
+                reuse_success: false,
                 kind: kind.into(),
                 command: command.into(),
                 enabled: true,
@@ -2093,7 +2454,7 @@ mod tests {
 }
 
 /// Verification data that crosses check-approval pauses as a whole.
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct FixRounds {
     /// Each verification round's failures, oldest first (repair.rs, R01):
     /// a rolled-back round isn't among them.
@@ -2129,6 +2490,7 @@ pub(super) struct FixRounds {
     round_commands: Vec<String>,
     /// How the checks that failed went on the code before the change, by
     /// command: each runs there once a run (before.rs).
+    #[serde(skip)]
     befores: super::before::Befores,
 }
 /// Verification progress local to a run, apart from its carried fix rounds.
@@ -2157,7 +2519,28 @@ pub(super) struct VerificationState {
     carry_lost_told: bool,
     /// P4.7: earlier runs' saved check output was removed.
     cleaned_this_run: bool,
+    /// Opted-in successes, revalidated against complete inputs before reuse.
+    receipts: Vec<CheckReceipt>,
+    /// A full suite's evidence and the latest focused repair attempts.
+    targeted: targeted::State,
+    /// The first-review preflight was considered for this run.
+    preflight_done: bool,
+    /// Do not repeatedly rescan a tree whose inputs cannot be fingerprinted.
+    reuse_unavailable: bool,
+    checkpoint_notice: Option<String>,
+    approval_changed: bool,
+    /// A completed check round whose final gates have not settled yet.
+    pending_record: Option<String>,
 }
+/// Passing evidence, including where the command actually ran.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct CheckReceipt {
+    stamp: receipt::Stamp,
+    check: ProjectCheck,
+    result: CheckResult,
+    record_id: String,
+}
+
 /// Why checks must run again when no file has changed.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Recheck {
@@ -2306,9 +2689,13 @@ impl VerificationState {
     }
 
     pub(super) fn changes_made(&mut self) {
+        self.receipts.clear();
         self.writes_since_verify = true;
     }
-    pub(super) fn recheck(&mut self, _why: Recheck) {
+    pub(super) fn recheck(&mut self, why: Recheck) {
+        if !matches!(why, Recheck::VerificationRerun) {
+            self.receipts.clear();
+        }
         self.writes_since_verify = true;
     }
     pub(super) fn needs_checks(&self) -> bool {
@@ -2372,6 +2759,7 @@ mod state_tests {
             last_verify_results: vec![CheckResult {
                 status: "failed",
                 ..CheckResult::pending(&ProjectCheck {
+                    reuse_success: false,
                     kind: "test".into(),
                     command: "cargo test".into(),
                     enabled: true,
@@ -2438,8 +2826,8 @@ mod state_tests {
         let ledger = format!("{:?}", run.ledger);
         let seen = run.seen.clone();
         let mut carry = run.take_verify_state("record".into());
-        let review = carry.review.clone();
-        let tests = carry.tests.clone();
+        let review = serde_json::to_value(&carry.review).unwrap();
+        let tests = serde_json::to_value(&carry.tests).unwrap();
         carry.spilled = spill(&run.dialog_id, &mut carry.rounds.baseline);
         assert!(!carry.spilled.0.is_empty());
         host.core.agents.put_carry(&run.dialog_id, carry);
@@ -2454,16 +2842,16 @@ mod state_tests {
         fresh
             .verification
             .original_found("a.rs".into(), newer.clone());
-        fresh.restore_verify_state("record");
+        fresh.restore_verify_state("record").await;
         let mut expected = expected;
         expected.baseline.insert("new.rs".into(), original);
         expected.baseline.insert("a.rs".into(), newer);
         assert_eq!(fresh.verification.carry, expected);
         assert_eq!(fresh.verification.verify_rounds, 9);
-        assert_eq!(fresh.verification.stalled_rounds, 0);
+        assert_eq!(fresh.verification.stalled_rounds, 2);
         assert!(!fresh.verification.integrity_unchecked);
-        assert_eq!(fresh.review.take_carry(), review);
-        assert_eq!(fresh.tests.take_carry(), tests);
+        assert_eq!(serde_json::to_value(&fresh.review).unwrap(), review);
+        assert_eq!(serde_json::to_value(&fresh.tests).unwrap(), tests);
         assert!(std::sync::Arc::ptr_eq(&fresh.seen, &seen));
         assert_eq!(format!("{:?}", fresh.ledger), ledger);
         assert!(!fresh.review.has_held_findings());

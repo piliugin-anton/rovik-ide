@@ -243,8 +243,12 @@ export interface VerificationMeta {
   maxRounds: number;
   checks: CheckResult[];
   changedFiles: string[];
-  /** unverified: why. */
+  /** Why checks could not run, or need approval after recovery. */
   reason?: string;
+  /** What was restored or invalidated at a verification restart. */
+  checkpointNotice?: string;
+  /** Checks finished, but the final review and acceptance gates are pending. */
+  finalizationPending?: boolean;
   progress?: RoundProgress;
   failureCount?: number;
   testsRun?: number;

@@ -4,6 +4,36 @@
 
 use super::*;
 
+#[path = "request_budget_e2e_tests.rs"]
+mod request_budget_tests;
+
+#[path = "structured_review_e2e_tests.rs"]
+mod structured_review_tests;
+
+#[cfg(unix)]
+#[path = "preflight_e2e_tests.rs"]
+mod preflight_tests;
+
+#[cfg(unix)]
+#[path = "verification_reuse_e2e_tests.rs"]
+mod verification_reuse_tests;
+
+#[cfg(unix)]
+#[path = "targeted_repair_e2e_tests.rs"]
+mod targeted_repair_tests;
+
+/// Keep the command inputs stable while receipt tests compare executions.
+/// Other suites mutate the host toolchains and CARGO_HOME under this lock.
+#[cfg(unix)]
+fn stable_check_environment() -> std::sync::MutexGuard<'static, ()> {
+    let guard = crate::toolchains::test_lock();
+    static PATH_READY: std::sync::Once = std::sync::Once::new();
+    PATH_READY.call_once(|| {
+        crate::process::refresh_login_path();
+    });
+    guard
+}
+
 const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
 
 fn scouts_on(extra: Value) -> subagent::SubagentConfig {
@@ -2424,7 +2454,11 @@ async fn past_the_spend_limit_no_new_subagent_starts() {
         vec![
             (
                 "MARK-U1",
-                vec![Reply::Usage(600, 100, Box::new(Reply::Text(REPORT)))],
+                vec![Reply::Usage(
+                    600_000,
+                    100_000,
+                    Box::new(Reply::Text(REPORT)),
+                )],
             ),
             ("MARK-U2", vec![Reply::Text(REPORT)]),
         ],
@@ -2436,19 +2470,20 @@ async fn past_the_spend_limit_no_new_subagent_starts() {
     )
     .await;
     let mut config = scouts_on(json!({}));
-    config.max_run_tokens = Some(500);
+    config.max_run_tokens = Some(500_000);
     h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
         .await;
     assert_eq!(h.run_end().await, "done");
     let first = h.task_result("t1").await;
     assert_eq!(
         first.meta.unwrap()["subagent"]["usage"],
-        json!({ "inputTokens": 600, "outputTokens": 100 })
+        json!({ "inputTokens": 600_000, "outputTokens": 100_000 })
     );
     let second = h.task_result("t2").await.content;
     assert!(
-        second
-            .starts_with("Error: this run's subagents have used 700 tokens, past the limit of 500"),
+        second.starts_with(
+            "Error: this run's subagents have used 700000 tokens, past the limit of 500000"
+        ),
         "{second}"
     );
     assert!(requests_with(&seen, "MARK-U2").is_empty());

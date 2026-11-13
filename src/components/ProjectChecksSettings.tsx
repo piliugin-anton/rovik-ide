@@ -80,7 +80,11 @@ export default function ProjectChecksSettings(props: {
         if (i !== index) return c;
         const next = { ...c, ...patch };
         // An edited command is no longer the detected one: drop its origin.
-        if (patch.command !== undefined && patch.command !== c.command) delete next.source;
+        if (patch.command !== undefined && patch.command !== c.command) {
+          delete next.source;
+          delete next.reuseSuccess;
+        }
+        if (patch.kind !== undefined && patch.kind !== c.kind) delete next.reuseSuccess;
         return next;
       })
     );
@@ -248,6 +252,23 @@ export default function ProjectChecksSettings(props: {
                       ×
                     </button>
                   </div>
+                  <label class="settings-hint">
+                    <input
+                      type="checkbox"
+                      checked={check.reuseSuccess === true}
+                      onChange={(e) => update(index(), { reuseSuccess: e.currentTarget.checked })}
+                      aria-label={`Reuse successful result for ${check.command}`}
+                    />{' '}
+                    Reuse successful results within a run when files are unchanged
+                  </label>
+                  <Show when={check.reuseSuccess}>
+                    <p class="settings-hint">
+                      Use for checks that depend only on local files. Leave off for checks that
+                      depend on services, databases, or other external state. Editing the command
+                      turns reuse off. Type checks and lint with reuse enabled can run before AI
+                      review, so failures are fixed before review starts.
+                    </p>
+                  </Show>
                   <Show when={check.source}>
                     <p class="settings-hint project-check-source" title={check.source}>
                       Detected: {check.source}

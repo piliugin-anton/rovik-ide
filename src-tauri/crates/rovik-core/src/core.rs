@@ -85,10 +85,12 @@ impl Core {
     /// once as it is: tests build many cores in one process.
     pub fn open(paths: Paths, events: Arc<dyn EventSink>) -> Result<Core, String> {
         let db = DbState::open(&paths.data_dir).map_err(|e| format!("Chat database: {e}"))?;
+        let agents = AgentState::default();
+        agents.set_checkpoint_dir(&paths.data_dir);
         Ok(Core(Arc::new(Parts {
             paths,
             db,
-            agents: AgentState::default(),
+            agents,
             vfs: VfsState::default(),
             browser: BrowserState::default(),
             mcp: McpState::default(),

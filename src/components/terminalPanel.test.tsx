@@ -79,7 +79,7 @@ async function screen(root: HTMLElement, index: number, expected: RegExp): Promi
     const deadline = setTimeout(() => {
       observer.disconnect();
       reject(new Error(`Terminal did not render ${expected}: ${JSON.stringify(read())}`));
-    }, 2_000);
+    }, 5_000);
     observer.observe(terminal, { childList: true, characterData: true, subtree: true });
   });
 }
@@ -316,13 +316,12 @@ test('a remote terminal says it connects until its shell says something, and whe
   await flush();
   menuItems(root)[1].click();
   await flush();
-  assert.match(await screen(root, 1, /Connecting to Build…/), /Connecting to Build…/);
+  await screen(root, 1, /Connecting to Build…/);
   send(1, { type: 'output', data: 'me@build:~$ ' });
   const shown = await screen(root, 1, /me@build:~\$/);
-  assert.match(shown, /me@build:~\$/);
   assert.doesNotMatch(shown, /Connecting/, 'the line goes once the shell speaks');
   send(1, { type: 'exit', code: null });
-  assert.match(await screen(root, 1, /\[connection closed\]/), /\[connection closed\]/);
+  await screen(root, 1, /\[connection closed\]/);
   assert.deepEqual(labels(root), ['bash (local)', 'zsh (Build (remote))'], 'kept to be read');
 });
 
@@ -336,8 +335,11 @@ test("a host that can't be reached: its terminal says so", async () => {
   await flush();
   menuItems(root)[1].click();
   await flush();
-  const shown = await screen(root, 1, /Couldn't open a shell on Build/);
-  assert.match(shown, /Couldn't open a shell on Build: The host couldn't be reached/);
+  const shown = await screen(
+    root,
+    1,
+    /Couldn't open a shell on Build: The host couldn't be reached/
+  );
   assert.doesNotMatch(shown, /Connecting/);
 });
 

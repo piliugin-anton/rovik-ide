@@ -241,6 +241,34 @@ pub async fn tool_search_code(
     case_sensitive: Option<bool>,
     context_lines: Option<usize>,
 ) -> Result<crate::code_search::SearchResult, String> {
+    tool_search_code_with_control(
+        root,
+        query,
+        path_glob,
+        max_results,
+        regex,
+        case_sensitive,
+        context_lines,
+        true,
+        Arc::new(crate::agent_run::StopSignal::new()),
+    )
+    .await
+}
+
+/// The running agent's search: bounded unless it asks for exhaustive totals,
+/// with cancellation shared by path discovery and matching.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn tool_search_code_with_control(
+    root: String,
+    query: String,
+    path_glob: Option<String>,
+    max_results: Option<usize>,
+    regex: Option<bool>,
+    case_sensitive: Option<bool>,
+    context_lines: Option<usize>,
+    count_all: bool,
+    stop: Arc<crate::agent_run::StopSignal>,
+) -> Result<crate::code_search::SearchResult, String> {
     if query.trim().is_empty() {
         return Err("query must not be empty".to_string());
     }
@@ -257,7 +285,13 @@ pub async fn tool_search_code(
         context_lines: context_lines.unwrap_or(0).min(5),
     };
     crate::rt::spawn_blocking(move || {
-        crate::code_search::search(&root_canon, &opts, is_denylisted_name)
+        crate::code_search::search_with_control(
+            &root_canon,
+            &opts,
+            is_denylisted_name,
+            count_all,
+            &|| stop.is_set(),
+        )
     })
     .await
     .map_err(|e| e.to_string())?

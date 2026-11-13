@@ -76,11 +76,13 @@ pub mod repair;
 mod repair_run;
 pub mod repetition;
 pub mod report;
+pub mod request_budget;
 pub mod restricted;
 pub mod review;
 mod run;
 pub mod server;
 pub mod steer;
+mod structured_report;
 pub mod subagent;
 mod subagent_run;
 pub mod test_writer;
@@ -206,6 +208,8 @@ struct RunControl {
     started: std::time::Instant,
     spent: budget::Spent,
     spent_before: budget::Spent,
+    /// Atomic request admission shared by the lead and its descendants.
+    request_budget: Arc<request_budget::Ledger>,
     /// An Autopilot lead's (U04, R03): one of its subagents found the task
     /// past its budget and stopped the run, which ends `budget`: why.
     budget_cut: Option<String>,
@@ -277,6 +281,7 @@ struct Inner {
     /// A run's fix-round state while its checks wait for the user's
     /// approval, by chat (verify.rs `VerifyCarry`).
     carries: HashMap<String, verify::VerifyCarry>,
+    checkpoint_dir: Option<std::path::PathBuf>,
     /// The daemon is stopping (R02): its runs pause, and no new one starts.
     draining: bool,
     /// How long an Autopilot task's approval waits for an answer (U03);
@@ -434,13 +439,27 @@ impl AgentState {
         }
     }
 
-    /// A reply in the chat's run, or a subagent's of it: what it cost, for
-    /// its Autopilot task's budget (U04). Nothing for any other run.
-    pub(super) fn note_reply(&self, dialog_id: &str, usage: Option<&serde_json::Value>) {
+    /// A reply's reported cost for Autopilot, and tokens not already settled
+    /// by request admission. Unbounded turns still count if limits change.
+    pub(super) fn note_reply(
+        &self,
+        dialog_id: &str,
+        usage: Option<&serde_json::Value>,
+        admitted: bool,
+    ) {
         let mut inner = self.lock();
         let lead = Self::lead_of(&inner, dialog_id).to_string();
-        if let Some(run) = inner.runs.get_mut(&lead).filter(|r| r.autopilot.is_some()) {
-            run.spent.note_reply(usage);
+        if let Some(run) = inner.runs.get_mut(&lead) {
+            if !admitted {
+                let (input, output, _) = usage.map(log::usage_counts).unwrap_or_default();
+                run.request_budget.record_unadmitted(
+                    input.unwrap_or(0).saturating_add(output.unwrap_or(0)),
+                    lead != dialog_id,
+                );
+            }
+            if run.autopilot.is_some() {
+                run.spent.note_reply(usage);
+            }
         }
     }
 
@@ -452,8 +471,65 @@ impl AgentState {
         run.autopilot?;
         Some(budget::Spent {
             ms: run.started.elapsed().as_millis() as u64,
+            tokens: run.spent.tokens.max(run.request_budget.spending().0),
             ..run.spent
         })
+    }
+
+    /// Admission for this run's fully prepared requests. Child and task
+    /// scopes share one lock, so concurrent children cannot spend the same
+    /// remaining allowance.
+    pub(crate) fn request_admission(&self, dialog_id: &str) -> Option<request_budget::Admission> {
+        let config = self.config_for(dialog_id);
+        let inner = self.lock();
+        let lead = Self::lead_of(&inner, dialog_id);
+        let run = inner.runs.get(lead)?;
+        run.request_budget.configure(
+            run.autopilot.and(config.autopilot.budget.max_tokens),
+            config.subagents.max_run_tokens,
+            run.spent_before.tokens,
+        );
+        run.request_budget.admission(lead != dialog_id)
+    }
+
+    /// Settled tokens for a verification checkpoint: the absolute task
+    /// total (including prior stages), and this logical run's child total.
+    /// Absolute task totals avoid charging an interrupted run again after
+    /// its persisted spend has been absorbed into `spent_before`.
+    pub(super) fn request_spending(&self, dialog_id: &str) -> (u64, u64) {
+        let inner = self.lock();
+        inner
+            .runs
+            .get(Self::lead_of(&inner, dialog_id))
+            .map_or((0, 0), |run| {
+                let (tokens, children) = run.request_budget.spending();
+                (
+                    run.spent_before
+                        .tokens
+                        .saturating_add(tokens.max(run.spent.tokens)),
+                    children,
+                )
+            })
+    }
+
+    /// Restores only checkpoint usage not already covered by the task's
+    /// persisted baseline. No live reservations are restored.
+    pub(super) fn restore_request_spending(&self, dialog_id: &str, task: u64, children: u64) {
+        let inner = self.lock();
+        if let Some(run) = inner.runs.get(Self::lead_of(&inner, dialog_id)) {
+            run.request_budget
+                .restore(task.saturating_sub(run.spent_before.tokens), children);
+        }
+    }
+
+    /// Why request admission stopped this Autopilot task, if it did.
+    pub(super) fn request_budget_denied(&self, dialog_id: &str) -> Option<String> {
+        let inner = self.lock();
+        inner
+            .runs
+            .get(Self::lead_of(&inner, dialog_id))?
+            .request_budget
+            .task_denied()
     }
 
     /// Why the chat's Autopilot task is past its budget, if it is: what it
@@ -562,14 +638,33 @@ impl AgentState {
     /// Drops a chat's carry: deleted or discarded, or a newer run ended
     /// without leaving checks waiting (P1.8).
     pub fn drop_carry(&self, dialog_id: &str) {
-        self.lock().carries.remove(dialog_id);
+        let dir = {
+            let mut inner = self.lock();
+            inner.carries.remove(dialog_id);
+            inner.checkpoint_dir.clone()
+        };
+        if let Some(dir) = dir {
+            verify::checkpoint::remove(&dir, dialog_id);
+        }
+    }
+
+    /// Binds private verification state to this core's data folder.
+    pub(crate) fn set_checkpoint_dir(&self, data_dir: &std::path::Path) {
+        self.lock().checkpoint_dir = Some(verify::checkpoint::directory(data_dir));
     }
 
     /// Makes the chat's carry `by` older (its time running out).
     #[cfg(test)]
     pub(super) fn age_carry(&self, dialog_id: &str, by: std::time::Duration) {
-        if let Some(c) = self.lock().carries.get_mut(dialog_id) {
-            c.stored -= by;
+        let dir = {
+            let mut inner = self.lock();
+            if let Some(c) = inner.carries.get_mut(dialog_id) {
+                c.stored -= by;
+            }
+            inner.checkpoint_dir.clone()
+        };
+        if let Some(dir) = dir {
+            verify::checkpoint::age_for_test(&dir, dialog_id, by);
         }
     }
 
@@ -653,6 +748,7 @@ impl AgentState {
                 started: std::time::Instant::now(),
                 spent: budget::Spent::default(),
                 spent_before: budget::Spent::default(),
+                request_budget: Arc::new(request_budget::Ledger::default()),
                 budget_cut: None,
                 _hold: hold,
                 abort: None,
@@ -2231,6 +2327,110 @@ mod run_control_tests {
         assert!(state.take_carry("chat", "old").is_none());
         assert!(state.has_carry("chat"), "an older record's take leaves it");
         assert!(state.take_carry("chat", "new").is_some());
+    }
+
+    #[test]
+    fn unbounded_lead_usage_adds_to_admitted_children_without_double_counting() {
+        use super::{autopilot, budget, AgentState};
+        use serde_json::json;
+        let state = AgentState::default();
+        let mut config = super::AgentConfig::default();
+        config.autopilot.budget.max_tokens = None;
+        config.subagents.max_run_tokens = Some(2_000);
+        state.set_config(config.clone());
+        state.register("mixed-budget", "m", None).unwrap();
+        state.set_autopilot(
+            "mixed-budget",
+            autopilot::Effort::Balanced,
+            budget::Spent::default(),
+        );
+        state
+            .register_child("kid", "mixed-budget", "call", "m", None)
+            .unwrap();
+        assert!(state.request_admission("mixed-budget").is_none());
+
+        // The child's unknown spend settles before a known, unbounded lead
+        // reply. Taking max(known replies, admitted spend) loses the latter.
+        let child = state.request_admission("kid").unwrap();
+        let mut request = child.reserve(200, 300).unwrap();
+        request.dispatched();
+        drop(request);
+        state.note_reply("kid", None, true);
+        let usage = json!({"prompt_tokens":80, "completion_tokens":20});
+        state.note_reply("mixed-budget", Some(&usage), false);
+        assert_eq!(state.request_spending("mixed-budget"), (600, 500));
+
+        let mut request = child.reserve(100, 300).unwrap();
+        request.dispatched();
+        request.observe(&usage);
+        drop(request);
+        state.note_reply("kid", Some(&usage), true);
+        state.note_reply("mixed-budget", Some(&usage), false);
+        assert_eq!(state.request_spending("mixed-budget"), (800, 600));
+        assert_eq!(state.run_spent("mixed-budget").unwrap().tokens, 800);
+
+        // Enabling the task limit must retain both kinds of past requests.
+        config.autopilot.budget.max_tokens = Some(1_000);
+        state.set_config(config);
+        assert!(state
+            .request_admission("mixed-budget")
+            .unwrap()
+            .reserve(1, 300)
+            .is_err());
+    }
+
+    #[test]
+    fn verification_budget_restore_counts_persisted_and_unpersisted_spend_once() {
+        use super::{autopilot, budget, AgentState};
+        // Fully persisted is an approval resume; a missing tail is the
+        // crash case where the checkpoint is newer than task metadata.
+        for recovered_baseline in [1_000, 900] {
+            let state = AgentState::default();
+            let mut config = super::AgentConfig::default();
+            config.autopilot.budget.max_tokens = Some(1_200);
+            state.set_config(config);
+            let old = state.register("budget-resume", "m", None).unwrap();
+            state.set_autopilot(
+                "budget-resume",
+                autopilot::Effort::Balanced,
+                budget::Spent {
+                    tokens: 100,
+                    ..Default::default()
+                },
+            );
+            state.lock().runs["budget-resume"]
+                .request_budget
+                .restore(900, 400);
+            let snapshot = state.request_spending("budget-resume");
+            assert_eq!(snapshot, (1_000, 400));
+            state.unregister("budget-resume", &old.run_id);
+            state.register("budget-resume", "m", None).unwrap();
+            state.set_autopilot(
+                "budget-resume",
+                autopilot::Effort::Balanced,
+                budget::Spent {
+                    tokens: recovered_baseline,
+                    ..Default::default()
+                },
+            );
+            state.restore_request_spending("budget-resume", snapshot.0, snapshot.1);
+            state.restore_request_spending("budget-resume", snapshot.0, snapshot.1);
+            assert_eq!(state.request_spending("budget-resume"), (1_000, 400));
+            assert_eq!(
+                state.run_spent("budget-resume").unwrap().tokens,
+                1_000 - recovered_baseline
+            );
+            let admission = state.request_admission("budget-resume").unwrap();
+            let mut request = admission.reserve(100, 100).unwrap();
+            request.dispatched();
+            drop(request);
+            assert_eq!(state.request_spending("budget-resume"), (1_200, 400));
+            assert_eq!(
+                state.run_spent("budget-resume").unwrap().tokens,
+                1_200 - recovered_baseline
+            );
+            assert!(admission.reserve(1, 1).is_err());
+        }
     }
 
     /// 6.7: a hold on a chat's files is refused while its run goes, and

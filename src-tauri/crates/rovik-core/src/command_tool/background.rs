@@ -145,7 +145,19 @@ pub fn start(
     let (chat, root, command) = (chat.to_string(), root.to_path_buf(), command.to_string());
     thread::Builder::new()
         .name(format!("background command {id}"))
-        .spawn(move || run(id, chat, root, command, queued, job, told, answer))
+        .spawn(move || {
+            run(
+                id,
+                chat,
+                root,
+                command,
+                queued,
+                job,
+                told,
+                answer,
+                Some(FIRST_OUTPUT),
+            )
+        })
         .map_err(|e| format!("couldn't start a thread for the command: {e}"))?;
     heard.recv().unwrap_or_else(|_| {
         Err("the command's thread ended before it said how the command started".into())
@@ -307,6 +319,7 @@ fn run(
     job: Option<Job>,
     told: Told,
     answer: mpsc::Sender<Result<Report, String>>,
+    first_output: Option<Duration>,
 ) {
     // While the user's allowed hosts are on, held to them, or not run
     // (allowed_hosts.rs).
@@ -330,7 +343,7 @@ fn run(
             &queued,
         )?;
         all().push(background.clone());
-        background.watch(Some(Instant::now() + FIRST_OUTPUT));
+        background.watch(first_output.map(|wait| Instant::now() + wait));
         Ok(background)
     };
     let unmade = |b: &Arc<Background>| b.never_started(confine.as_ref());
@@ -678,9 +691,22 @@ mod tests {
     fn a_background_command_runs_on_after_its_start_until_it_is_stopped() {
         let (_dir, root) = folder();
         let chat = "bg-runs-on";
-        let first = started(chat, &root, &beating("started"));
+        // Force output to arrive after start returns, as it can when process
+        // startup outlasts FIRST_OUTPUT on a busy runner.
+        let command = format!(
+            "while [ ! -e go ]; do sleep 0.05; done; {}",
+            beating("started")
+        );
+        let first = started(chat, &root, &command);
         assert_eq!(first.status.end, None, "{first:?}");
-        assert_eq!(first.output.trim(), "started");
+        assert!(first.output.is_empty(), "the command waits for the test");
+        std::fs::write(Path::new(&root).join("go"), "").unwrap();
+        let mut initial = first.output;
+        assert!(until(|| {
+            initial.push_str(&output(chat, &first.status.id).unwrap().output);
+            initial.ends_with('\n')
+        }));
+        assert_eq!(initial.trim(), "started");
         // Past its start's answer, it and what it started still run.
         assert!(beats(&root));
         assert_eq!(list(chat).len(), 1);
@@ -732,7 +758,26 @@ mod tests {
     fn a_command_that_ends_at_once_says_how_in_its_start_and_is_not_kept() {
         let (_dir, root) = folder();
         let chat = "bg-ends-at-once";
-        let first = started(chat, &root, "echo 'port 3000 is taken' >&2; exit 3");
+        // Synchronize the first report with exit. Sandbox startup on a busy host
+        // can exceed the ordinary output window even for this immediate command.
+        let (answer, heard) = mpsc::channel();
+        thread::spawn(move || {
+            run(
+                format!("bg{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                chat.into(),
+                PathBuf::from(root),
+                "echo 'port 3000 is taken' >&2; exit 3".into(),
+                queued(chat),
+                None,
+                untold(),
+                answer,
+                None,
+            )
+        });
+        let first = heard
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
         assert_eq!(first.status.end, Some(End::Exited(Some(3))));
         assert_eq!(first.output.trim(), "port 3000 is taken");
         assert!(list(chat).is_empty());

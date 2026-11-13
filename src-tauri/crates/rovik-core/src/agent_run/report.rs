@@ -238,6 +238,7 @@ impl Run {
         sub.view_only = true;
         let child = self
             .launch_child(child_id, &call_id, "The reviewer's view of the result", sub)
+            .await
             .ok()?;
         let result = super::subagent_run::run_child(child).await?;
         self.note_models_of(&result);

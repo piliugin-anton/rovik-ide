@@ -124,7 +124,7 @@ pub fn brief(p: &BriefParts) -> String {
 }
 
 /// How the tester marked a test file it wrote.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Mark {
     /// It checks this criterion (by number).
     Criterion(usize),
@@ -230,7 +230,7 @@ fn skip_reason(skip: &subagent::Skip) -> String {
 }
 
 /// The tester's tests, while the gate's next round is due to judge them.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BreakerRound {
     /// Its record's row and the record (`meta.breaker`).
     pub row: String,

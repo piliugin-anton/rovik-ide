@@ -669,7 +669,7 @@ impl Run {
         let goal = format!("Step {}: {}", member.step.number, member.step.title);
         self.store_child(&member.child_id, &call_id, Kind::Worker, &goal, message)
             .await?;
-        let mut child = self.launch_child(member.child_id.clone(), &call_id, &goal, sub)?;
+        let mut child = self.launch_child(member.child_id.clone(), &call_id, &goal, sub).await?;
         // It works in its own copy, which is discarded if it fails.
         child.root = Some(overlay.view.to_string_lossy().into_owned());
         child.verification.checkpoint_discarded();

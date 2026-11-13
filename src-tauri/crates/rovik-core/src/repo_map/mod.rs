@@ -20,6 +20,8 @@
 //! stops at a time and file limit: a huge project gets a map of what was
 //! parsed by then, never a wait.
 
+mod cache;
+
 #[cfg(test)]
 mod tests;
 
@@ -30,7 +32,7 @@ use ignore::{WalkBuilder, WalkState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// Files larger than this aren't parsed.
 const MAX_FILE_BYTES: u64 = 1_000_000;
@@ -57,7 +59,9 @@ const MENTIONED_BOOST: f64 = 10.0;
 /// point, against a specific name (`execute_tool_calls`).
 const PLAIN_WORD: f64 = 0.05;
 /// Projects tracked in the cache at once.
-const CACHED_ROOTS: usize = 2;
+const CACHED_ROOTS: usize = 8;
+/// Estimated retained bytes in each of the parsed-file and graph caches.
+const CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Outlined languages left out of the map: data and markup.
 const NOT_CODE: &[&str] = &[
     "JSON", "YAML", "TOML", "XML", "HTML", "CSS", "Markdown", "KDL",
@@ -98,16 +102,17 @@ impl Default for Options {
 /// One file's tags, as cached.
 #[derive(Debug)]
 struct FileTags {
+    stamp: cache::FileStamp,
     symbols: Vec<Symbol>,
     identifiers: HashMap<String, u32>,
 }
 
-/// Parsed files by absolute path: modified time and size, and their tags.
-type Cache = HashMap<PathBuf, (SystemTime, u64, Arc<FileTags>)>;
+/// Parsed files by absolute path, with the version that produced their tags.
+type Cache = HashMap<PathBuf, Arc<FileTags>>;
 
 /// A file the walk parsed (or found cached): project-relative and absolute
-/// path, modified time, size, tags.
-type Found = (String, PathBuf, SystemTime, u64, Arc<FileTags>);
+/// path, tags.
+type Found = (String, PathBuf, Arc<FileTags>);
 
 /// Per project root, most recently used last.
 static CACHE: LazyLock<Mutex<Vec<(PathBuf, Cache)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -117,6 +122,7 @@ static CACHE: LazyLock<Mutex<Vec<(PathBuf, Cache)>>> = LazyLock::new(|| Mutex::n
 /// can otherwise keep serving the old parse, leaving the mid-run map stale.
 pub fn invalidate_path(root: &Path, abs: &Path) {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache::invalidate(root);
     for (cached_root, files) in cache.iter_mut() {
         if cached_root != root {
             continue;
@@ -133,9 +139,9 @@ pub fn invalidate_path(root: &Path, abs: &Path) {
 /// The map for `root`, or None when there's nothing to show (no source
 /// files with declarations).
 pub fn repo_map(root: &Path, focus: &Focus, options: &Options) -> Option<String> {
-    let files = collect(root, options);
+    let graph = cache::graph(root, options);
     let body = render_map(
-        &files,
+        &graph,
         focus,
         options.max_chars.saturating_sub(HEADER.len() + 1),
     )?;
@@ -197,7 +203,12 @@ pub fn update(previous: Option<&str>, current: Option<&str>) -> Option<String> {
 }
 
 /// The project's source files and their tags, by project-relative path.
-fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
+fn collect(
+    root: &Path,
+    options: &Options,
+    preparing: &cache::Workspace,
+    generation: u64,
+) -> BTreeMap<String, Arc<FileTags>> {
     let deadline = Instant::now() + options.time_limit;
     let cached: Cache = {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -255,16 +266,24 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
                 let Ok(meta) = entry.metadata() else {
                     return WalkState::Continue;
                 };
-                let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let size = meta.len();
+                let Some((stamp, content)) = cache::file_stamp(path, &meta) else {
+                    return WalkState::Continue;
+                };
                 let tags = match cached.get(path) {
-                    Some((m, s, tags)) if *m == modified && *s == size => tags.clone(),
+                    Some(tags) if tags.stamp == stamp => tags.clone(),
                     _ => {
-                        let Ok(content) = std::fs::read_to_string(path) else {
-                            return WalkState::Continue;
+                        let content = match content.or_else(|| std::fs::read_to_string(path).ok()) {
+                            Some(content) => content,
+                            None => return WalkState::Continue,
                         };
+                        // Do not associate a parse with a version that changed
+                        // while it was read. The next request can try it again.
+                        if !cache::still_current(path, &meta) {
+                            return WalkState::Continue;
+                        }
                         match outline::tags(&rel, &content) {
                             Some(t) => Arc::new(FileTags {
+                                stamp,
                                 symbols: t.symbols,
                                 identifiers: t.identifiers,
                             }),
@@ -273,7 +292,7 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
                     }
                 };
                 if let Ok(mut f) = found.lock() {
-                    f.push((rel, path.to_path_buf(), modified, size, tags));
+                    f.push((rel, path.to_path_buf(), tags));
                 }
                 WalkState::Continue
             })
@@ -282,15 +301,24 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
     let found = found.into_inner().unwrap_or_else(|e| e.into_inner());
     let mut fresh: Cache = HashMap::with_capacity(found.len());
     let mut files = BTreeMap::new();
-    for (rel, abs, modified, size, tags) in found {
-        fresh.insert(abs, (modified, size, tags.clone()));
+    for (rel, abs, tags) in found {
+        fresh.insert(abs, tags.clone());
         files.insert(rel, tags);
     }
     // The cache keeps what this walk saw: deleted files drop out.
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if preparing.generation() != generation {
+        return files;
+    }
     cache.retain(|(r, _)| r != root);
     cache.push((root.to_path_buf(), fresh));
-    while cache.len() > CACHED_ROOTS {
+    while cache.len() > CACHED_ROOTS
+        || cache
+            .iter()
+            .map(|(_, files)| cache::parsed_bytes(files))
+            .sum::<usize>()
+            > CACHE_BYTES
+    {
         cache.remove(0);
     }
     files
@@ -344,81 +372,37 @@ fn name_weight(name: &str, declared_in: usize, mentioned: &HashSet<&str>) -> f64
 
 /// Ranks the declarations and renders the best that fit in `max_chars`.
 /// None when no file declares anything.
-fn render_map(
-    files: &BTreeMap<String, Arc<FileTags>>,
-    focus: &Focus,
-    max_chars: usize,
-) -> Option<String> {
-    let paths: Vec<&String> = files.keys().collect();
+fn render_map(graph: &Graph, focus: &Focus, max_chars: usize) -> Option<String> {
+    let files = &graph.files;
+    let paths: Vec<&String> = graph.paths.iter().collect();
     let index: HashMap<&str, usize> = paths
         .iter()
         .enumerate()
         .map(|(i, p)| (p.as_str(), i))
         .collect();
     let n = paths.len();
-    if n == 0 {
+    if n == 0 || (graph.declared_by.is_empty() && files.values().all(|f| f.symbols.is_empty())) {
         return None;
     }
-
-    // Who declares what: names of every declaration, by file.
-    let scopes: Vec<Vec<Scope>> = paths.iter().map(|p| scopes(&files[*p].symbols)).collect();
-    let mut declared_by: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (i, path) in paths.iter().enumerate() {
-        let mut names: Vec<&str> = files[*path]
-            .symbols
-            .iter()
-            .zip(&scopes[i])
-            .filter(|(_, scope)| !scope.local)
-            .map(|(s, _)| s.name.as_str())
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        for name in names {
-            if name.chars().count() >= MIN_NAME_CHARS {
-                declared_by.entry(name).or_default().push(i);
-            }
-        }
-    }
-    if declared_by.is_empty() && files.values().all(|f| f.symbols.is_empty()) {
-        return None;
-    }
+    let scopes = &graph.scopes;
+    let declared_by = &graph.declared_by;
     let mentioned: HashSet<&str> = focus.words.iter().map(String::as_str).collect();
-    // How many files use each declared name.
-    let mut used_in: HashMap<&str, usize> = HashMap::new();
-    for tags in files.values() {
-        for name in tags.identifiers.keys() {
-            if let Some((&declared, _)) = declared_by.get_key_value(name.as_str()) {
-                *used_in.entry(declared).or_default() += 1;
-            }
-        }
-    }
-
-    // Links: user file → declaring file, through a name, with its weight.
-    // `uses[(from, to, name)]`, in a deterministic order.
-    let mut links: BTreeMap<(usize, usize, &str), f64> = BTreeMap::new();
-    for (from, path) in paths.iter().enumerate() {
-        let tags = &files[*path];
-        let mut used: Vec<(&String, &u32)> = tags.identifiers.iter().collect();
-        used.sort();
-        for (name, &count) in used {
-            let Some(declarers) = declared_by.get(name.as_str()) else {
-                continue;
-            };
-            // A name the file declares itself is, there, its own.
-            if tags.symbols.iter().any(|s| &s.name == name) {
-                continue;
-            }
-            let uses = count;
-            let weight = name_weight(name, declarers.len(), &mentioned)
-                * rarity(used_in.get(name.as_str()).copied().unwrap_or(1), n)
-                * f64::from(uses).sqrt();
-            for &to in declarers {
-                if to != from {
-                    links.insert((from, to, name.as_str()), weight);
-                }
-            }
-        }
-    }
+    // The graph is structural. Each request applies its own focus boost,
+    // preserving the stable cached declarations and edges for other callers.
+    let links: BTreeMap<(usize, usize, &str), f64> = graph
+        .links
+        .iter()
+        .map(|((from, to, name), w)| {
+            (
+                (*from, *to, name.as_str()),
+                if mentioned.contains(name.as_str()) {
+                    w * 10.0
+                } else {
+                    *w
+                },
+            )
+        })
+        .collect();
 
     // Where the walk starts: the focus, else everywhere alike.
     let mut start = vec![0.0; n];
@@ -599,10 +583,10 @@ fn pagerank(n: usize, links: &BTreeMap<(usize, usize, &str), f64>, start: &[f64]
  * Graph queries: the agent's `neighbours` and `callers` tools
  * ---------------------------------------------------------------------------
  *
- * The map above computes a file↔file graph and throws the edges away; these
- * queries keep them. Both collect the same tags (same cache, same limits)
- * and rebuild the same links, but with no request focus: the query itself
- * is the focus, so link weights are structural only.
+ * The map and queries share one structural graph for each visible source
+ * revision. Collection still checks current files, ignore rules and access
+ * permissions; only graph construction is reused. Map focus is applied
+ * separately, so it never changes what another query sees.
  */
 
 /// Cap on either tool's output, in characters.
@@ -621,12 +605,14 @@ const GRAPH_MAX_CANDIDATES: usize = 12;
 /// The file↔file graph behind the map, with owned names: paths in order,
 /// which files declare each name, and user-file → declaring-file links.
 struct Graph {
+    files: BTreeMap<String, Arc<FileTags>>,
+    scopes: Vec<Vec<Scope>>,
     paths: Vec<String>,
     declared_by: HashMap<String, Vec<usize>>,
     links: BTreeMap<(usize, usize, String), f64>,
 }
 
-fn build_graph(files: &BTreeMap<String, Arc<FileTags>>) -> Graph {
+fn build_graph(files: BTreeMap<String, Arc<FileTags>>) -> Graph {
     let paths: Vec<String> = files.keys().cloned().collect();
     let n = paths.len();
     let scopes: Vec<Vec<Scope>> = paths.iter().map(|p| scopes(&files[p].symbols)).collect();
@@ -680,6 +666,8 @@ fn build_graph(files: &BTreeMap<String, Arc<FileTags>>) -> Graph {
         }
     }
     Graph {
+        files,
+        scopes,
         paths,
         declared_by,
         links,
@@ -760,11 +748,11 @@ fn resolve_graph_file(paths: &[String], input: &str) -> Result<usize, String> {
 /// uses it, through shared symbol names. Names are static (tree-sitter):
 /// dynamic uses (getattr, reflection) don't appear.
 pub fn neighbours(root: &Path, path: &str, options: &Options) -> Result<String, String> {
-    let files = collect(root, options);
+    let graph = cache::graph(root, options);
+    let files = &graph.files;
     if files.is_empty() {
         return Err("Error: no source files found for the project graph.".into());
     }
-    let graph = build_graph(&files);
     let me = resolve_graph_file(&graph.paths, path)?;
     let mine = &graph.paths[me];
 
@@ -949,11 +937,11 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
     if query.is_empty() {
         return Err("Error: \"symbol\" is empty: give a declaration's name, e.g. \"parse\" or \"Parser::parse\".".into());
     }
-    let files = collect(root, options);
+    let graph = cache::graph(root, options);
+    let files = &graph.files;
     if files.is_empty() {
         return Err("Error: no source files found for the project graph.".into());
     }
-    let graph = build_graph(&files);
     let parts = split_symbol_query(query);
     let Some((bare, _)) = parts.split_last() else {
         return Err(format!("Error: \"{symbol}\" names no symbol."));
@@ -1301,4 +1289,5 @@ fn relative(root: &Path, path: &str) -> String {
 #[cfg(test)]
 fn clear_cache() {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    cache::clear();
 }
