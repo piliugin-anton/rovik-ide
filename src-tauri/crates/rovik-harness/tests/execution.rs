@@ -497,6 +497,7 @@ printf isolated
             .unwrap();
         let d = Digest::of(b"fixture-binding");
         let key = EvidenceKey {
+            verification_nonce: None,
             candidate_digest: candidate.digest().unwrap(),
             contract_digest: d.clone(),
             design_digest: d.clone(),

@@ -219,12 +219,14 @@ pub fn quota_rust(
                 check_id: plan.checks[0].check_id.clone(),
                 configuration_digest: plan.configurations[0].clone(),
                 case_ids: ["reserve-exact".into(), "reserve-maximum".into()].into(),
+                observed_signature: None,
                 rationale:
                     "The task repairs exact-capacity rejection, including the maximum amount."
                         .into(),
             }],
         },
         negative_control: base.clone(),
+        initial_candidate: None,
         base,
         oracle,
         dependencies,

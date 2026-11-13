@@ -204,6 +204,25 @@ impl Ledger {
     }
 }
 impl Controller {
+    pub(crate) fn candidate_results(
+        &self,
+        run_id: &str,
+        binding: &Digest,
+    ) -> Result<Vec<CheckResult>> {
+        let historical: BTreeSet<_> = self
+            .ledger
+            .operations(run_id)?
+            .into_iter()
+            .filter(|operation| matches!(operation.kind.as_str(), "baseline" | "negative_control"))
+            .map(|operation| operation.operation_id)
+            .collect();
+        Ok(self
+            .ledger
+            .completed_results(run_id, binding)?
+            .into_iter()
+            .filter(|result| !historical.contains(&result.operation_id))
+            .collect())
+    }
     fn management_registration(
         &self,
         run_id: &str,
@@ -508,8 +527,8 @@ impl Controller {
         setup: &crate::controller::TaskSetup,
         results: &[CheckResult],
     ) -> Result<BTreeSet<String>> {
-        let mut statement=self.ledger.connection.prepare("SELECT f.result_id,a.subject_digest FROM failure_resolutions f JOIN approvals a ON a.approval_id=f.approval_id JOIN check_results c ON c.result_id=f.result_id WHERE c.run_id=?1")?;
-        let mut resolved = BTreeSet::new();
+        let mut statement=self.ledger.connection.prepare("SELECT f.result_id,a.subject_digest FROM failure_resolutions f JOIN approvals a ON a.approval_id=f.approval_id JOIN check_results c ON c.result_id=f.result_id WHERE c.run_id=?1 AND a.approval_type='failure-resolution'")?;
+        let mut resolved = self.replanned_resolved(setup, results)?;
         for recovery in self.ledger.infrastructure_recoveries(&setup.run_id)? {
             let previous = self
                 .ledger

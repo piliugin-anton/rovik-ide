@@ -6,7 +6,7 @@ use crate::{
     identity::Digest,
     require,
     runner::Cancellation,
-    Result,
+    Error, Result,
 };
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +132,11 @@ pub struct ModelResponse {
 
 /// One sequential worker adapter. Each call is exactly one charged model attempt.
 pub trait Provider {
+    /// Whether this adapter can perform the selected model role. An offline
+    /// verifier refuses before reserving or claiming a billable operation.
+    fn supports_role(&self, _role: Role) -> bool {
+        true
+    }
     /// Generate one bounded response; controller code handles retries and formatting repair.
     fn generate(
         &mut self,
@@ -158,6 +163,10 @@ pub fn accounted_call(
     provider: &mut dyn Provider,
     cancel: &Cancellation,
 ) -> Result<ModelResponse> {
+    if !provider.supports_role(request.role) {
+        return Err(Error::classified(crate::FailureCategory::Capability, "this verification invocation has no model provider; use run for generation, repair or independent model review"));
+    }
+
     require(!cancel.is_cancelled(), "model attempt cancelled")?;
     let now = crate::runner::now_ms()?;
     let input = ledger.store_json("context", request, now)?;

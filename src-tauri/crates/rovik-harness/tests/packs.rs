@@ -310,6 +310,7 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
                 )
                 .unwrap();
             let key = EvidenceKey {
+                verification_nonce: None,
                 candidate_digest: ledger
                     .store_json("snapshot", &candidate, now)
                     .unwrap()

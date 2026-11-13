@@ -22,9 +22,38 @@ fn print(value: &impl serde::Serialize) -> Result<()> {
 fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
     wire::decode(&std::fs::read(path)?)
 }
+struct OfflineProvider;
+impl rovik_harness::provider::Provider for OfflineProvider {
+    fn supports_role(&self, _: rovik_harness::provider::Role) -> bool {
+        false
+    }
+    fn generate(
+        &mut self,
+        _: &rovik_harness::provider::ModelRequest,
+        _: &Cancellation,
+    ) -> Result<rovik_harness::provider::ModelResponse> {
+        Err(Error::classified(
+            rovik_harness::FailureCategory::Capability,
+            "offline verification cannot make model calls",
+        ))
+    }
+}
+fn integration(
+    repository_id: String,
+    root: &Path,
+    reference: Option<&String>,
+) -> Result<GitIntegration> {
+    match reference {
+        Some(reference) => GitIntegration::for_reference(repository_id, root, reference),
+        None => GitIntegration::new(repository_id, root),
+    }
+}
 fn run() -> Result<i32> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage="usage: rovik-harness <absolute-state-dir> init | import <repository-id> <repository-path> [--dirty <untracked-paths.json>] | inventory <snapshot.json> | profile resolve <inventory.json> <selections.json> | contract import <contract.json> <registry.json> | plan <planning.json> | prepare <preparation.json> | draft <run-id> <domain|architect|oracle|reviewer> <inputs.json> <url> <rates.json> | promote <setup.json> | stage-replan <setup.json> | activate-replan <run-id> <setup-digest> | load-image <archive.tar> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. ROVIK_HARNESS_ENGINE selects docker (default) or podman; ROVIK_HARNESS_DOCKER_BIN and ROVIK_HARNESS_PODMAN_BIN select absolute client paths. The state directory must be outside the repository.";
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.last().is_some_and(|arg| arg == "--json") {
+        args.pop();
+    }
+    let usage="usage: rovik-harness <absolute-state-dir> init | import <repository-id> <repository-path> [--dirty <untracked-paths.json>] | inventory <snapshot.json> | profile resolve <inventory.json> <selections.json> | contract import <contract.json> <registry.json> | plan <planning.json> | prepare <preparation.json> | draft <run-id> <domain|architect|oracle|reviewer> <inputs.json> <url> <rates.json> | promote <setup.json> | stage-replan <setup.json> | activate-replan <run-id> <setup-digest> | load-image <archive.tar> | put <kind> <file> | create <setup.json> | approve <run-id> <request.json> | run <run-id> <repository-path> <chat-completions-url> <rates.json> [reference] | status <run-id> | approvals <run-id> | revoke <run-id> <approval-id> <reason> | resume <run-id> | cancel <run-id> | recover <run-id> | reconcile <run-id> <usage.json> | resolve-failure <run-id> <resolution.json> | resolve-replan <run-id> <resolution.json> | retention <grace-seconds> [--apply] | verify <run-id> <repository-path> [reference] | gate <run-id> <repository-path> [reference] | verify-run <run-id> <repository-path> [reference] | merge-prepare <run-id> <new-run-id> <repository-path> <reference> <expected-head> | prepare-delivery <run-id> <repository-path> <reference> <message-file> | deliver <delivery.json> <bare-repository> | export <run-id> <new-directory>\nSet ROVIK_HARNESS_API_KEY for run. ROVIK_HARNESS_ENGINE selects docker (default) or podman; ROVIK_HARNESS_DOCKER_BIN and ROVIK_HARNESS_PODMAN_BIN select absolute client paths. The state directory must be outside the repository.";
     if args.len() < 2 {
         return Err(Error::new(usage.into()));
     }
@@ -158,6 +187,7 @@ fn run() -> Result<i32> {
     let management_only = matches!(
         args[1].as_str(),
         "status"
+            | "approve"
             | "approvals"
             | "revoke"
             | "resume"
@@ -165,8 +195,13 @@ fn run() -> Result<i32> {
             | "recover"
             | "reconcile"
             | "resolve-failure"
+            | "resolve-replan"
             | "retention"
             | "export"
+            | "gate"
+            | "merge-prepare"
+            | "prepare-delivery"
+            | "deliver"
     );
     let backend = match std::env::var("ROVIK_HARNESS_ENGINE")
         .as_deref()
@@ -240,7 +275,7 @@ fn run() -> Result<i32> {
                 runner::now_ms()?,
             )?)
         }
-        "run" if args.len() == 6 => {
+        "run" if args.len() == 6 || args.len() == 7 => {
             let setup = controller.setup(&args[2])?;
             let repository = Path::new(&args[3]).canonicalize()?;
             if state.canonicalize()?.starts_with(&repository) {
@@ -248,7 +283,7 @@ fn run() -> Result<i32> {
                     "controller state must be outside the repository".into(),
                 ));
             }
-            let integration = GitIntegration::new(setup.repository_id, &repository)?;
+            let integration = integration(setup.repository_id, &repository, args.get(6))?;
             let runtime = tokio::runtime::Runtime::new().map_err(|e| Error::new(e.to_string()))?;
             let key = std::env::var("ROVIK_HARNESS_API_KEY").map_err(|_| {
                 Error::new("set ROVIK_HARNESS_API_KEY in the trusted controller environment".into())
@@ -316,16 +351,104 @@ fn run() -> Result<i32> {
             &args[2],
             &read::<FailureResolution>(&args[3])?,
         )?),
+        "resolve-replan" if args.len() == 4 => print(&controller.resolve_replanned_failure(
+            &Principal::current()?,
+            &args[2],
+            &read::<rovik_harness::resolution::ReplannedFailure>(&args[3])?,
+        )?),
         "retention" if args.len() == 3 || (args.len() == 4 && args[3] == "--apply") => {
             let grace = args[2]
                 .parse::<u64>()
                 .map_err(|_| Error::new("retention grace must be seconds".into()))?;
             print(&controller.ledger.retention(grace, args.len() == 4)?)
         }
-        "verify" if args.len() == 4 => {
+        "merge-prepare" if args.len() == 7 => {
             let setup = controller.setup(&args[2])?;
-            let integration = GitIntegration::new(setup.repository_id, Path::new(&args[3]))?;
-            print(&controller.verify(&args[2], &integration)?)
+            setup
+                .authority
+                .authorize(&Principal::current()?, "operate")?;
+            let candidate = controller
+                .current_candidate(&args[2])?
+                .ok_or_else(|| Error::new("source run has no candidate".into()))?;
+            let integration = GitIntegration::for_reference(
+                setup.repository_id.clone(),
+                Path::new(&args[4]),
+                &args[5],
+            )?;
+            let merged =
+                integration.prepare_merge(&controller.ledger, &setup.base, &candidate, &args[6])?;
+            let proposed = integration.merge_setup(&setup, &merged, &args[3])?;
+            let artifact =
+                controller
+                    .ledger
+                    .store_json("merge-candidate", &merged, runner::now_ms()?)?;
+            print(
+                &serde_json::json!({"merge": merged, "artifact": artifact, "proposed_setup": proposed, "requires_new_approvals_and_full_verification": true}),
+            )
+        }
+        "prepare-delivery" if args.len() == 6 => {
+            let setup = controller.setup(&args[2])?;
+            setup
+                .authority
+                .authorize(&Principal::current()?, "operate")?;
+            let integration = GitIntegration::for_reference(
+                setup.repository_id.clone(),
+                Path::new(&args[3]),
+                &args[4],
+            )?;
+            let delivery = integration.prepare_delivery(
+                &controller,
+                &args[2],
+                &std::fs::read_to_string(&args[5])?,
+            )?;
+            print(
+                &serde_json::json!({"subject_digest": Digest::of_json(&delivery)?, "approval_type":"delivery", "delivery":delivery,
+                "scope_digest":Digest::of_json(&setup.contract.scope)?, "policy_digest":Digest::of_json(&setup.policy)?}),
+            )
+        }
+        "deliver" if args.len() == 4 => {
+            let delivery: rovik_core::harness::DeliveryCandidate = read(&args[2])?;
+            let integration = GitIntegration::for_reference(
+                delivery.repository_id.clone(),
+                Path::new(&args[3]),
+                &delivery.destination_reference,
+            )?;
+            print(&integration.deliver(&controller, &Principal::current()?, &delivery)?)
+        }
+        "verify-run" if args.len() == 4 || args.len() == 5 => {
+            let setup = controller.setup(&args[2])?;
+            setup
+                .authority
+                .authorize(&Principal::current()?, "operate")?;
+            let integration = integration(setup.repository_id, Path::new(&args[3]), args.get(4))?;
+            let report = controller.execute(
+                &args[2],
+                &mut OfflineProvider,
+                &integration,
+                &Cancellation::default(),
+            )?;
+            exit_code = report.state.execution_exit_code();
+            print(&report)
+        }
+        "verify" | "gate" if args.len() == 4 || args.len() == 5 => {
+            let setup = controller.setup(&args[2])?;
+            let integration = integration(setup.repository_id, Path::new(&args[3]), args.get(4))?;
+            let gate = if args[1] == "verify" {
+                controller.verify_fresh(
+                    &Principal::current()?,
+                    &args[2],
+                    &integration,
+                    &Cancellation::default(),
+                )?
+            } else {
+                controller.verify(&args[2], &integration)?
+            };
+            exit_code = match gate.verdict {
+                rovik_harness::evidence::Verdict::Ready => 0,
+                rovik_harness::evidence::Verdict::Blocked => 2,
+                rovik_harness::evidence::Verdict::Failed => 3,
+            };
+            print(&gate)
         }
         "export" if args.len() == 4 => {
             print(&controller.export_bundle(&args[2], Path::new(&args[3]))?)

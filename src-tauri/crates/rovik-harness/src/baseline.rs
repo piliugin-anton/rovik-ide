@@ -2,7 +2,7 @@
 
 use crate::{
     controller::{Controller, TaskSetup},
-    evidence::Status,
+    evidence::{CheckResult, Status},
     identity::Digest,
     require,
     runner::{self, Cancellation},
@@ -11,7 +11,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// An explicitly reviewed pre-existing behavioral failure, never a candidate waiver.
+/// An explicitly reviewed pre-existing failure, never a candidate waiver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExpectedFailure {
@@ -21,8 +21,40 @@ pub struct ExpectedFailure {
     pub configuration_digest: Digest,
     /// Exact expected failing case set; new or missing failures require another decision.
     pub case_ids: BTreeSet<String>,
+    /// Exact observed failure signature, required when no behavioral cases ran.
+    /// Raw diagnostic artifacts are included: changed compiler failures need new review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_signature: Option<Digest>,
     /// Why this existing defect is part of the requested change.
     pub rationale: String,
+}
+/// Hash failure content without operation IDs or timestamps. A historical compiler
+/// failure is never generalized into permission for other errors to pass.
+pub fn failure_signature(result: &CheckResult) -> Result<Digest> {
+    Digest::of_json(
+        &serde_json::json!({"status":result.status,"category":result.failure_category,
+        "exit":result.exit_code,"failed":result.failed_case_ids,"skipped":result.skipped_case_ids,
+        "diagnostics":result.diagnostics,"evidence":result.evidence}),
+    )
+}
+impl ExpectedFailure {
+    /// Match only the approved implementation failure, including its exact case inventory.
+    pub fn matches(&self, result: &CheckResult) -> Result<bool> {
+        Ok(result.check_id == self.check_id
+            && result.configuration_digest == self.configuration_digest
+            && result.repairable()
+            && result.skipped_case_ids.is_empty()
+            && result
+                .failed_case_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                == self.case_ids
+            && match &self.observed_signature {
+                Some(signature) => *signature == failure_signature(result)?,
+                None => !self.case_ids.is_empty(),
+            })
+    }
 }
 /// Separate historical expectations, authenticated against exact base and plan identities.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,8 +80,9 @@ impl BaselinePlan {
                 "duplicate baseline expectation",
             )?;
             require(
-                !expected.case_ids.is_empty() && !expected.rationale.trim().is_empty(),
-                "baseline exception needs cases and rationale",
+                (!expected.case_ids.is_empty() || expected.observed_signature.is_some())
+                    && !expected.rationale.trim().is_empty(),
+                "baseline exception needs cases or an exact failure signature, and rationale",
             )?;
             require(
                 setup.plan.required_final().any(|check| {
@@ -99,16 +132,7 @@ impl Controller {
             });
             let matches = match expected {
                 None => result.status == Status::Pass,
-                Some(expected) => {
-                    result.repairable()
-                        && result.status == Status::Fail
-                        && result
-                            .failed_case_ids
-                            .iter()
-                            .cloned()
-                            .collect::<BTreeSet<_>>()
-                            == expected.case_ids
-                }
+                Some(expected) => expected.matches(&result)?,
             };
             observations.push(serde_json::json!({"result_id":result.result_id,"status":result.status,"expectation_matches":matches}));
             self.ledger.store_json("baseline-report", &serde_json::json!({"base":setup.base.digest()?,"binding":Digest::of_json(&key)?,"observations":observations}), runner::now_ms()?)?;

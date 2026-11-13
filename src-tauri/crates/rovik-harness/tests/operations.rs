@@ -488,6 +488,7 @@ fn killed_controller_recovery_reaps_native_job_and_fences_its_unsettled_attempt(
         .store_json("operation", &"crash-rehearsal", now)
         .unwrap();
     let key = EvidenceKey {
+        verification_nonce: None,
         candidate_digest: setup.base.digest().unwrap(),
         contract_digest: request.digest.clone(),
         design_digest: request.digest.clone(),

@@ -66,6 +66,10 @@ impl From<std::io::Error> for Error {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceKey {
+    /// Controller-issued epoch for an explicitly requested fresh verification.
+    /// Absent for the original pass; older runs keep their canonical identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_nonce: Option<Digest>,
     /// Source tree and all declared inputs.
     pub candidate_digest: Digest,
     /// Approved domain meaning.

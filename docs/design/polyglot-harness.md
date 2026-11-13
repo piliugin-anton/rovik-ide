@@ -764,3 +764,41 @@ configurations block acceptance. The conformance fixture demonstrates lost-updat
 detection and worker cancellation/joining. Passing those schedules does not prove
 race freedom; tasks requiring sanitizer instrumentation or a stronger model must
 register that additional evidence explicitly.
+
+`gate` inspects existing evidence; `verify` performs fresh final verification for
+an active candidate. Each explicit verification gets a new evidence nonce and
+executes the entire required final matrix. Previous failures stay unresolved until
+an authenticated disposition names their replacement evidence. Completed passes
+from a prior attempt cannot satisfy the new attempt. Revoked plan approval,
+unreconciled operations, exhausted budgets and a moved destination prevent it.
+Terminal runs stay immutable. For CI rechecks, create a new run with an
+`initial_candidate` and use `verify-run`, which never calls a model. Scope admission,
+baseline checks, negative controls and all required final checks still apply.
+If repair or an independent model review is needed, the offline invocation blocks
+without reserving model usage; `run` can resume it with a provider.
+
+`merge-prepare` reconstructs an exact integration tree in Git's object database
+against an explicit `refs/heads/` destination and expected head. It retains unrelated
+destination changes, rejects conflicts and leaves the checkout and index untouched.
+Its proposed setup has a new run ID, base and initial candidate. It needs new
+approvals and full verification. Changed source cited by the design requires a new
+design decision before preparation can continue.
+
+After acceptance, `prepare-delivery` creates an unreferenced commit for a concrete
+`delivery` approval. `deliver` conditionally advances a bare integration repository's
+branch. The final gate and exact approval are rechecked while approval changes are
+serialized; the Git reference transaction rejects a changed head. An idempotent
+retry still checks current authority and approvals. A checkout can use the prepared
+commit or exported bundle in its usual reviewed integration workflow. Acceptance
+and delivery do not authorize deployment.
+
+Baseline expectations can also bind `observed_signature` from `failure_signature`
+for an existing compiler/static failure with no executed cases. The signature
+includes raw diagnostic artifacts; a changed failure requires new review. This
+never waives candidate failures or infrastructure errors.
+
+`resolve-replan` records an explicit disposition when an activated, reviewed replan
+has replaced a failed check identity. It requires the complete passing replacement
+matrix and a current `replan-resolution` approval. Unchanged check identities use
+`resolve-failure`. Both retain the original failed result, and revocation immediately
+blocks acceptance again.

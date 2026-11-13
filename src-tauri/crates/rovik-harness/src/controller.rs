@@ -90,6 +90,10 @@ pub struct TaskSetup {
     pub profiles: Vec<Profile>,
     /// Immutable authorized baseline.
     pub base: Snapshot,
+    /// Optional frozen proposal, including a reconstructed merge candidate.
+    /// It still undergoes scope admission, baseline/oracle checks and full verification.
+    #[serde(default)]
+    pub initial_candidate: Option<Snapshot>,
     /// Approved pre-existing failures; all other baseline checks must pass.
     #[serde(default)]
     pub baseline: crate::baseline::BaselinePlan,
@@ -258,6 +262,9 @@ impl TaskSetup {
             &self.negative_control,
         ] {
             snapshot.validate(ledger, true)?;
+        }
+        if let Some(candidate) = &self.initial_candidate {
+            crate::snapshot::admit(ledger, &self.base, candidate, &self.policy, &self.admission)?;
         }
         require(
             self.dependencies.digest()? == self.environment.dependency_digest,
@@ -548,6 +555,9 @@ impl Controller {
         for exception in &setup.exceptions {
             self.ledger.store_json("exception", exception, now)?;
         }
+        if let Some(candidate) = &setup.initial_candidate {
+            self.ledger.store_json("snapshot", candidate, now)?;
+        }
         let input = self.ledger.store_json("operation", setup, now)?;
         Ok(input.digest)
     }
@@ -597,8 +607,9 @@ impl Controller {
             reasons: vec![reason.into()],
         })
     }
-    fn key(&self, setup: &TaskSetup, candidate: &Snapshot) -> Result<EvidenceKey> {
-        Ok(EvidenceKey {
+    pub(crate) fn key(&self, setup: &TaskSetup, candidate: &Snapshot) -> Result<EvidenceKey> {
+        let mut key = EvidenceKey {
+            verification_nonce: None,
             candidate_digest: candidate.digest()?,
             contract_digest: Digest::of_json(&setup.contract)?,
             design_digest: Digest::of_json(&setup.design)?,
@@ -606,7 +617,15 @@ impl Controller {
             oracle_digest: setup.oracle.digest()?,
             plan_digest: Digest::of_json(&setup.plan)?,
             environment_digest: Digest::of_json(&setup.environment)?,
-        })
+        };
+        if let Some(binding) = self.ledger.run(&setup.run_id)?.binding_digest {
+            let mut previous: EvidenceKey = wire::decode(&self.ledger.read(&binding)?)?;
+            let nonce = previous.verification_nonce.take();
+            if previous == key {
+                key.verification_nonce = nonce;
+            }
+        }
+        Ok(key)
     }
     pub(crate) fn select_binding(
         &mut self,
@@ -938,7 +957,7 @@ impl Controller {
         if let Some(binding) = self.ledger.run(&setup.run_id)?.binding_digest {
             let evidence = self.ledger.store_json(
                 "report",
-                &self.ledger.completed_results(&setup.run_id, &binding)?,
+                &self.candidate_results(&setup.run_id, &binding)?,
                 runner::now_ms()?,
             )?;
             artifacts.insert("native-evidence".into(), evidence.digest);
@@ -1127,7 +1146,7 @@ impl Controller {
         let key = self.key(&setup, &candidate)?;
         let required: Vec<_> = setup.plan.required_final().cloned().collect();
         let binding = Digest::of_json(&key)?;
-        let all = self.ledger.completed_results(run_id, &binding)?;
+        let all = self.candidate_results(run_id, &binding)?;
         let resolved = self.resolved_failures(&setup, &all)?;
         let admitted: Vec<_> = all
             .into_iter()
@@ -1428,13 +1447,19 @@ impl Controller {
                     self.advance(&setup.run_id,State::Implement,"negative_control_verified",serde_json::json!({"result":result.result_id,"cases":setup.negative_control_cases}))?;
                 }
                 State::Implement => {
-                    let candidate = match self.implement(
-                        setup,
-                        provider,
-                        cancel,
-                        setup.base.clone(),
-                        Vec::new(),
-                    ) {
+                    let proposed = if let Some(candidate) = &setup.initial_candidate {
+                        crate::snapshot::admit(
+                            &self.ledger,
+                            &setup.base,
+                            candidate,
+                            &setup.policy,
+                            &setup.admission,
+                        )?;
+                        Ok(candidate.clone())
+                    } else {
+                        self.implement(setup, provider, cancel, setup.base.clone(), Vec::new())
+                    };
+                    let candidate = match proposed {
                         Ok(candidate) => candidate,
                         Err(error)
                             if matches!(
@@ -1640,6 +1665,11 @@ impl Controller {
                     });
                 }
                 State::Repair => {
+                    require(
+                        provider.supports_role(crate::provider::Role::Implementer),
+                        "implementation repair requires a model provider; resume with run",
+                    )
+                    .map_err(|error| error.with_category(crate::FailureCategory::Capability))?;
                     let candidate = self
                         .current_candidate(&setup.run_id)?
                         .ok_or_else(|| Error::new("repair has no candidate".into()))?;

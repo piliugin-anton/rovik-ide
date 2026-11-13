@@ -1043,6 +1043,7 @@ mod recovery_tests {
         let now = now_ms().unwrap();
         let run = controller.create(&setup, now).unwrap();
         let key = EvidenceKey {
+            verification_nonce: None,
             candidate_digest: setup.base.digest().unwrap(),
             contract_digest: Digest::of_json(&setup.contract).unwrap(),
             design_digest: Digest::of_json(&setup.design).unwrap(),

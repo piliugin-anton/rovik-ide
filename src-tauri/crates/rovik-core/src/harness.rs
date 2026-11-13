@@ -124,10 +124,14 @@ impl Provider for HarnessProvider {
     }
 }
 
-/// Read-only integration observer for one explicitly selected Git repository.
+mod git_delivery;
+pub use git_delivery::{DeliveryCandidate, DeliveryReceipt, MergeCandidate};
+
+/// Integration observer for one explicitly selected Git repository and reference.
 pub struct GitIntegration {
     repository_id: String,
     root: std::path::PathBuf,
+    reference: String,
 }
 impl GitIntegration {
     /// Bind an operator-selected repository path to its registered identity.
@@ -138,21 +142,45 @@ impl GitIntegration {
         Ok(Self {
             repository_id,
             root,
+            reference: "HEAD".into(),
         })
+    }
+    /// Observe a named local branch without changing the user's checkout.
+    pub fn for_reference(
+        repository_id: String,
+        root: &std::path::Path,
+        reference: &str,
+    ) -> Result<Self> {
+        if !reference.starts_with("refs/heads/") || !git2::Reference::is_valid_name(reference) {
+            return Err(Error::new(
+                "integration needs a valid refs/heads/ branch".into(),
+            ));
+        }
+        let mut integration = Self::new(repository_id, root)?;
+        integration.reference = reference.into();
+        Ok(integration)
     }
     /// Import tracked HEAD bytes, modes and revision without changing the working tree.
     pub fn snapshot(
         &self,
         ledger: &rovik_harness::ledger::Ledger,
     ) -> Result<rovik_harness::snapshot::Snapshot> {
-        use rovik_harness::snapshot::{FileEntry, Snapshot};
         let repository =
             git2::Repository::open(&self.root).map_err(|e| Error::new(e.to_string()))?;
         let commit = repository
-            .head()
+            .find_reference(&self.reference)
             .and_then(|h| h.peel_to_commit())
             .map_err(|e| Error::new(e.to_string()))?;
         let tree = commit.tree().map_err(|e| Error::new(e.to_string()))?;
+        Self::tree_snapshot(&repository, &tree, ledger, &commit.id().to_string())
+    }
+    fn tree_snapshot(
+        repository: &git2::Repository,
+        tree: &git2::Tree<'_>,
+        ledger: &rovik_harness::ledger::Ledger,
+        revision: &str,
+    ) -> Result<rovik_harness::snapshot::Snapshot> {
+        use rovik_harness::snapshot::{FileEntry, Snapshot};
         let mut files = std::collections::BTreeMap::new();
         let mut failure = None;
         tree.walk(git2::TreeWalkMode::PreOrder,|prefix,entry|{
@@ -173,7 +201,7 @@ impl GitIntegration {
         }
         let snapshot = Snapshot {
             schema_version: 1,
-            base_revision: commit.id().to_string(),
+            base_revision: revision.into(),
             files,
             deletions: vec![],
             dependency_assets: vec![],
@@ -291,7 +319,7 @@ impl rovik_harness::controller::Integration for GitIntegration {
         let repository =
             git2::Repository::open(&self.root).map_err(|e| Error::new(e.to_string()))?;
         let commit = repository
-            .head()
+            .find_reference(&self.reference)
             .and_then(|h| h.peel_to_commit())
             .map_err(|e| Error::new(e.to_string()))?;
         Ok(commit.id().to_string())

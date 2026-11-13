@@ -160,6 +160,7 @@ fn heldout_native_contracts_report_repeated_false_accepts_by_language_and_strate
         )
         .unwrap();
     let key = EvidenceKey {
+        verification_nonce: None,
         candidate_digest: ledger
             .store_json("snapshot", &setup.base, now)
             .unwrap()

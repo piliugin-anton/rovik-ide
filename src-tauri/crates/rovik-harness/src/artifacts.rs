@@ -40,6 +40,9 @@ pub const KINDS: &[&str] = &[
     "baseline-report",
     "preparation",
     "role-draft",
+    "merge-candidate",
+    "delivery",
+    "delivery-receipt",
 ];
 
 /// Controller-owned store. A worker must never receive this root as a mount.

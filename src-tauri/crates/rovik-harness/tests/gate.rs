@@ -7,6 +7,7 @@ use rovik_harness::{
 fn fixture() -> (EvidenceKey, CheckSpec, CheckResult, TrustedPreconditions) {
     let d = Digest::of(b"fixture");
     let key = EvidenceKey {
+        verification_nonce: None,
         candidate_digest: d.clone(),
         contract_digest: d.clone(),
         design_digest: d.clone(),

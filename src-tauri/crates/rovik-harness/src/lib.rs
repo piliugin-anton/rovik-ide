@@ -36,6 +36,7 @@ pub mod profile;
 pub mod provider;
 pub mod registry;
 pub mod replanning;
+pub mod resolution;
 pub mod retention;
 pub mod review_bundle;
 pub mod risk;
@@ -47,6 +48,7 @@ pub mod scope;
 pub mod snapshot;
 pub mod state;
 pub mod tools;
+pub mod verification;
 pub mod wire;
 
 pub use failure::{Error, FailureCategory};

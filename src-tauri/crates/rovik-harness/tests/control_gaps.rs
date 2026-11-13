@@ -235,6 +235,7 @@ fn review_exports_bind_patch_source_history_approvals_and_file_hashes() {
     .unwrap();
     c.ledger.store_json("snapshot", &candidate, now).unwrap();
     let key = EvidenceKey {
+        verification_nonce: None,
         candidate_digest: candidate.digest().unwrap(),
         contract_digest: Digest::of_json(&setup.contract).unwrap(),
         design_digest: Digest::of_json(&setup.design).unwrap(),
