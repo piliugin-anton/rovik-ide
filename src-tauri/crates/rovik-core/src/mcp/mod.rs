@@ -952,6 +952,15 @@ impl McpState {
         project: Option<&Path>,
         via: Option<&str>,
     ) -> Vec<Listed> {
+        // Daemon integration fixtures opt in on their child process only:
+        // a scripted model must await this same session's actual readiness.
+        // Production builds cannot enable this hook, even with the variable set.
+        #[cfg(feature = "testing")]
+        if std::env::var_os("ROVIK_TEST_MCP_READY_AT_START").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            return self.list(servers, project, via).await;
+        }
         self.listed(servers, project, via, Some(LISTED_AT_START))
             .await
     }

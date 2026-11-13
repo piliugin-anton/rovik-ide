@@ -670,6 +670,34 @@ mod tests {
         start(chat, root, command, &|| false, queued(chat), untold()).unwrap()
     }
 
+    /// Synchronize the first report with exit instead of depending on
+    /// sandbox startup finishing within the ordinary output window.
+    fn ended_in_first_report(chat: &str, root: &str, command: &str, told: Told) -> Report {
+        let (answer, heard) = mpsc::channel();
+        let queue = queued(chat);
+        let (chat, root, command) = (chat.to_string(), PathBuf::from(root), command.to_string());
+        let runner = thread::spawn(move || {
+            run(
+                format!("bg{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                chat,
+                root,
+                command,
+                queue,
+                None,
+                told,
+                answer,
+                None,
+            )
+        });
+        let first = heard
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        // All notifications have finished before callers inspect them.
+        runner.join().unwrap();
+        first
+    }
+
     /// Whether the loop of [`beating`] in `root` still runs.
     fn beats(root: &str) -> bool {
         crate::testing::beats(Path::new(root))
@@ -758,26 +786,12 @@ mod tests {
     fn a_command_that_ends_at_once_says_how_in_its_start_and_is_not_kept() {
         let (_dir, root) = folder();
         let chat = "bg-ends-at-once";
-        // Synchronize the first report with exit. Sandbox startup on a busy host
-        // can exceed the ordinary output window even for this immediate command.
-        let (answer, heard) = mpsc::channel();
-        thread::spawn(move || {
-            run(
-                format!("bg{}", NEXT.fetch_add(1, Ordering::Relaxed)),
-                chat.into(),
-                PathBuf::from(root),
-                "echo 'port 3000 is taken' >&2; exit 3".into(),
-                queued(chat),
-                None,
-                untold(),
-                answer,
-                None,
-            )
-        });
-        let first = heard
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
+        let first = ended_in_first_report(
+            chat,
+            &root,
+            "echo 'port 3000 is taken' >&2; exit 3",
+            untold(),
+        );
         assert_eq!(first.status.end, Some(End::Exited(Some(3))));
         assert_eq!(first.output.trim(), "port 3000 is taken");
         assert!(list(chat).is_empty());
@@ -945,9 +959,8 @@ mod tests {
         let told: Told = Arc::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
         });
-        let first = start(chat, &root, "exit 1", &|| false, queued(chat), told).unwrap();
+        let first = ended_in_first_report(chat, &root, "exit 1", told);
         assert_eq!(first.status.end, Some(End::Exited(Some(1))));
-        thread::sleep(POLL * 4);
         assert_eq!(heard.load(Ordering::SeqCst), 0);
         assert!(tasks(chat).is_empty());
     }

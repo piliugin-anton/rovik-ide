@@ -9,7 +9,7 @@ use common::app::App;
 use common::project::{ended, message, ready_to_run, start, unattended, Setup, CHAT};
 use common::{start_request, until, Daemon, Session};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
-use rovik_core::agent_run::{StartKind, UserMessage};
+use rovik_core::agent_run::{StartKind, StartRequest, UserMessage};
 use rovik_core::connectors::mcp::{McpReply, McpServer as FakeServer};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
@@ -18,6 +18,22 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::UnixStream;
+
+/// Only this daemon opts into the testing-only readiness hook. The real
+/// session finishes its handshake and listing before the model can call it;
+/// the normal bounded startup behavior remains in all other fixtures.
+async fn ready_mcp_setup() -> Setup {
+    Setup::on(Daemon::start_with(&[], &[("ROVIK_TEST_MCP_READY_AT_START", "1")]).await).await
+}
+
+async fn start_ready_mcp(app: &App, setup: &Setup, request: StartRequest) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        app.remote.start(request).await.unwrap();
+        ended(&setup.client).await;
+    })
+    .await
+    .expect("the MCP run did not finish after waiting for its catalog");
+}
 
 /// A stdio server that logs where it started, and that its input closed.
 const SERVER: &str = r#"
@@ -316,7 +332,7 @@ async fn a_server_turned_off_stops_on_the_host() {
 /// there; one that isn't among the app's own servers isn't posted to.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
-    let mut setup = Setup::new().await;
+    let mut setup = ready_mcp_setup().await;
     let app = App::new(&mut setup).await;
     app.connect(&setup).await;
     ready_to_run(&setup).await;
@@ -377,8 +393,7 @@ async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
     rovik_core::dispatch(&app.test.core, Request::AgentConfigure(Box::new(mine)))
         .await
         .unwrap();
-    app.remote.start(request).await.unwrap();
-    ended(&setup.client).await;
+    start_ready_mcp(&app, &setup, request).await;
     let asked = seen.lock().unwrap().clone();
     let listed = asked[0]["messages"].to_string();
     assert!(
@@ -397,7 +412,7 @@ async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
 /// gets no request at all.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app() {
-    let mut setup = Setup::new().await;
+    let mut setup = ready_mcp_setup().await;
     let app = App::new(&mut setup).await;
     app.connect(&setup).await;
     ready_to_run(&setup).await;
@@ -447,8 +462,7 @@ async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app()
     rovik_core::dispatch(&app.test.core, Request::AgentConfigure(Box::new(mine)))
         .await
         .unwrap();
-    app.remote.start(request).await.unwrap();
-    ended(&setup.client).await;
+    start_ready_mcp(&app, &setup, request).await;
     let asked = seen.lock().unwrap().clone();
     let listed = asked[0]["messages"].to_string();
     assert!(
@@ -478,7 +492,7 @@ async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app()
 async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
     use common::app::HOST;
     use rovik_core::mcp::oauth;
-    let mut setup = Setup::new().await;
+    let mut setup = ready_mcp_setup().await;
     let app = App::new(&mut setup).await;
     app.connect(&setup).await;
     ready_to_run(&setup).await;
@@ -552,8 +566,7 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
     rovik_core::dispatch(&app.test.core, Request::AgentConfigure(Box::new(mine)))
         .await
         .unwrap();
-    app.remote.start(run(&url, "u1")).await.unwrap();
-    ended(&setup.client).await;
+    start_ready_mcp(&app, &setup, run(&url, "u1")).await;
     let answered = seen.lock().unwrap()[1]["messages"].to_string();
     assert!(
         answered.contains(&format!("token {}", first.0)),
@@ -568,8 +581,7 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
         args: json!({ "tool": "signed.whoami", "arguments": {} }),
     };
     let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
-    app.remote.start(run(&url, "u2")).await.unwrap();
-    ended(&setup.client).await;
+    start_ready_mcp(&app, &setup, run(&url, "u2")).await;
     // Its result, the last the model was given: the history has the first.
     let messages = seen.lock().unwrap()[1]["messages"].clone();
     let results: Vec<&str> = (messages.as_array().unwrap().iter())
@@ -598,8 +610,7 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
         args: json!({ "tool": "signed.whoami", "arguments": {} }),
     };
     let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
-    app.remote.start(run(&url, "u3")).await.unwrap();
-    ended(&setup.client).await;
+    start_ready_mcp(&app, &setup, run(&url, "u3")).await;
     let messages = seen.lock().unwrap()[1]["messages"].clone();
     let answered = (messages.as_array().unwrap().iter())
         .rfind(|m| m["role"] == "tool")
@@ -620,8 +631,7 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
         args: json!({ "tool": "signed.whoami", "arguments": {} }),
     };
     let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
-    app.remote.start(run(&url, "u4")).await.unwrap();
-    ended(&setup.client).await;
+    start_ready_mcp(&app, &setup, run(&url, "u4")).await;
     let messages = seen.lock().unwrap()[1]["messages"].clone();
     let answered = (messages.as_array().unwrap().iter())
         .rfind(|m| m["role"] == "tool")

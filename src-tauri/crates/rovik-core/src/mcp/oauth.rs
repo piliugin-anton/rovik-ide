@@ -1122,6 +1122,11 @@ mod tests {
             .map_or("", |(_, v)| v.as_str())
     }
 
+    async fn discovered(server: &OAuthServer) -> Discovered {
+        let challenge = probe(&server.mcp_url, false, &[]).await.unwrap();
+        discover(&server.mcp_url, challenge.as_ref()).await.unwrap()
+    }
+
     /// RFC 6750's challenges, as servers write them: quoted or not, with
     /// another scheme's after.
     #[test]
@@ -1167,16 +1172,84 @@ mod tests {
         assert_eq!(grant.client_id, asked_for(&asked, "client_id"));
         assert!(kept.get(&server.issuer).is_some(), "kept by issuer");
 
-        // Again: the registration kept is used, on the port it named.
-        let again = signed_in(&server, None, &kept, &Arc::default())
-            .await
-            .unwrap();
-        assert_eq!(again.client_id, grant.client_id);
         let registrations = server
             .seen()
             .into_iter()
             .filter(|r| r.path == "/auth/register");
         assert_eq!(registrations.count(), 1);
+    }
+
+    /// Keeping the callback listener alive makes its port ours throughout
+    /// both sign-ins, so this tests registration reuse without racing the
+    /// other loopback servers in the suite for a released ephemeral port.
+    #[tokio::test]
+    async fn a_registration_is_reused_for_sign_ins_on_the_same_redirect() {
+        let server = OAuthServer::start(OAuthOptions::default()).await;
+        let found = discovered(&server).await;
+        let redirect = Redirect::listen(None).await.unwrap();
+        let kept = Arc::new(Kept::default());
+        let registrations: Arc<dyn Registrations> = kept.clone();
+        let browser = |url: &str| server.browse(url).map(|_| ());
+
+        let first = client(&found, None, &registrations, &redirect.uri)
+            .await
+            .unwrap();
+        let grant = sign_in(&found, &first, &redirect, &browser).await.unwrap();
+        let reused = client(&found, None, &registrations, &redirect.uri)
+            .await
+            .unwrap();
+        let again = sign_in(&found, &reused, &redirect, &browser).await.unwrap();
+
+        assert_eq!(reused.client_id, first.client_id);
+        assert_eq!(again.client_id, grant.client_id);
+        assert_ne!(again.access_token, grant.access_token);
+        assert!(again.refresh_token.is_some());
+        assert_eq!(
+            kept.get(&server.issuer).unwrap().redirect_uri.as_deref(),
+            Some(redirect.uri.as_str())
+        );
+        let seen = server.seen();
+        assert_eq!(
+            seen.iter().filter(|r| r.path == "/auth/register").count(),
+            1
+        );
+        assert_eq!(seen.iter().filter(|r| r.path == "/auth/token").count(), 2);
+    }
+
+    /// A cached callback port can belong to another listener by the next
+    /// sign-in. The new port needs its own registration before exchanging
+    /// the code; it must not reuse the old client's redirect authorization.
+    #[tokio::test]
+    async fn an_occupied_cached_redirect_port_registers_the_new_redirect() {
+        let server = OAuthServer::start(OAuthOptions::default()).await;
+        let found = discovered(&server).await;
+        let occupied = Redirect::listen(None).await.unwrap();
+        let kept = Arc::new(Kept::default());
+        let registrations: Arc<dyn Registrations> = kept.clone();
+        let original = client(&found, None, &registrations, &occupied.uri)
+            .await
+            .unwrap();
+
+        let asked = Arc::default();
+        let grant = signed_in(&server, None, &kept, &asked).await.unwrap();
+        let asked = asked.lock().unwrap().clone();
+        assert_ne!(asked_for(&asked, "redirect_uri"), occupied.uri);
+        assert_ne!(grant.client_id, original.client_id);
+        assert_eq!(grant.client_id, asked_for(&asked, "client_id"));
+        assert!(grant.access_token.0.starts_with("at-"));
+        assert!(grant.refresh_token.is_some());
+        let replacement = kept.get(&server.issuer).unwrap();
+        assert_eq!(replacement.client_id, grant.client_id);
+        assert_eq!(
+            replacement.redirect_uri.as_deref(),
+            Some(asked_for(&asked, "redirect_uri"))
+        );
+        let seen = server.seen();
+        assert_eq!(
+            seen.iter().filter(|r| r.path == "/auth/register").count(),
+            2
+        );
+        assert_eq!(seen.iter().filter(|r| r.path == "/auth/token").count(), 1);
     }
 
     /// Q14: where the authorization server takes Client ID Metadata

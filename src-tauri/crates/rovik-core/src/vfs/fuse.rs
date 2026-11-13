@@ -441,14 +441,17 @@ impl fuser::Filesystem for FuseFs {
     fn flush(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         _fh: FileHandle,
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        // Nothing to flush in memory. ENOSYS makes the kernel stop sending
-        // flushes (one round trip less per close); close() still succeeds.
-        reply.error(Errno::ENOSYS);
+        // close() waits for flush, but release can arrive after the next
+        // writer. Preserve this close's history before acknowledging it.
+        match self.vfs.flush(ino.0) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(errno(e)),
+        }
     }
 
     fn release(
@@ -473,7 +476,8 @@ impl fuser::Filesystem for FuseFs {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        // As for flush: the kernel then answers fsync() itself, with success.
+        // Writes are already in memory; there is no persistent storage to
+        // sync. ENOSYS lets the kernel answer later fsync() calls itself.
         reply.error(Errno::ENOSYS);
     }
 
