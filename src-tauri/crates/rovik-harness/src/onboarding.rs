@@ -159,7 +159,7 @@ pub fn resolve(
         )?;
         selection.profile.require_resolved()?;
         if let Some(pin) = &selection.profile.toolchain_lock {
-            ledger.read(pin)?;
+            ledger.copy_to(pin, std::io::sink())?;
         }
         if let Some(pin) = &selection.profile.dependency_bundle {
             let snapshot: Snapshot = wire::decode(&ledger.read(pin)?)?;

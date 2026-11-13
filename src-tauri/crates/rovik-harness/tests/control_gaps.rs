@@ -222,17 +222,37 @@ fn registered_exceptions_need_authentication_and_cannot_waive_another_configurat
 
 #[test]
 fn review_exports_bind_patch_source_history_approvals_and_file_hashes() {
+    use std::io::Read;
     let dir = tempfile::tempdir().unwrap();
     let mut c = controller(&dir.path().join("state"));
     let setup = fixtures::quota_rust(&c.ledger, "export", Digest::of(b"image"), "base").unwrap();
     let now = runner::now_ms().unwrap();
     let run = c.create(&setup, now).unwrap();
-    let candidate = fixtures::snapshot(
+    let mut candidate = fixtures::snapshot(
         &c.ledger,
         "base",
         &[("implementations/quota/lib.rs", fixtures::QUOTA_RUST)],
     )
     .unwrap();
+    let asset = c
+        .ledger
+        .store_source(std::io::repeat(0xfe).take(65 * 1024 * 1024), now)
+        .unwrap();
+    candidate.files.insert(
+        "image.png".into(),
+        rovik_harness::snapshot::FileEntry {
+            mode: 0o100644,
+            content: asset,
+        },
+    );
+    let context =
+        rovik_harness::context::ranked_sources(&c.ledger, &candidate, "quota", &[], None).unwrap();
+    assert!(
+        context
+            .iter()
+            .all(|item| item.item_id != "source:image.png"),
+        "binary assets belong to the snapshot, not model text"
+    );
     c.ledger.store_json("snapshot", &candidate, now).unwrap();
     let key = EvidenceKey {
         verification_nonce: None,
@@ -255,7 +275,13 @@ fn review_exports_bind_patch_source_history_approvals_and_file_hashes() {
     );
     for (path, digest) in manifest.files {
         assert_eq!(
-            Digest::of(&std::fs::read(destination.join(path)).unwrap()),
+            Digest::copy(
+                std::fs::File::open(destination.join(path)).unwrap(),
+                std::io::sink(),
+                rovik_harness::artifacts::MAX_SOURCE_BYTES
+            )
+            .unwrap()
+            .0,
             digest
         );
     }

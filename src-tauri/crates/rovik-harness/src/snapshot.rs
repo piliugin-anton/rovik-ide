@@ -70,7 +70,7 @@ impl Snapshot {
             ledger.verify_reference(&file.content)?;
         }
         for dependency in &self.dependency_assets {
-            ledger.read(dependency)?;
+            ledger.copy_to(dependency, std::io::sink())?;
         }
         Ok(())
     }
@@ -89,7 +89,7 @@ impl Snapshot {
                 .parent()
                 .ok_or_else(|| Error::new("source has no parent".into()))?;
             fs::create_dir_all(parent)?;
-            fs::write(&destination, ledger.read(&file.content.digest)?)?;
+            ledger.copy_to(&file.content.digest, fs::File::create(&destination)?)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -242,8 +242,7 @@ pub fn admit(
             )?;
         }
         if let Some(file) = after {
-            let bytes = ledger.read(&file.content.digest)?;
-            if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+            if ledger.is_binary(&file.content.digest)? {
                 require(
                     rules.binary_paths.iter().any(|p| scope::matches(p, &path)),
                     format!("binary-change-requires-approval:{path}"),

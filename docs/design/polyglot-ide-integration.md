@@ -40,6 +40,23 @@ immutable candidate without modifying HEAD, the index or the checkout. Report
 unsaved editor buffers before capture so verification never silently checks older
 disk contents. Preserve the approved baseline and protected oracle.
 
+Source capture includes images and other binary assets, whether stored directly
+in Git or hydrated by Git LFS. Capture, integrity checks, sandbox materialization
+and review-bundle export stream the exact bytes; large assets are not sent as
+model text. The per-file source limit is 4 GiB minus one byte, independent of the
+64 MiB limit for in-memory text/control reads. Size errors identify the path,
+observed size and limit. Ordinary untracked assets still need explicit selection.
+Reading packed ordinary Git blobs above 64 MiB uses the local Git CLI.
+
+Git baselines resolve LFS pointers to hash- and size-checked local objects or an
+exact matching checkout. Missing objects and unhydrated working-tree pointers
+produce instructions to fetch/restore them with Git LFS; inspection never runs
+smudge filters or downloads files. Existing LFS paths remain pointers in prepared
+Git delivery commits. Delivery writes their content to the repository's LFS store;
+custom storage outside the Git directory requires applying in the IDE and committing
+with Git LFS. Binary changes still require explicit scope approval, and any asset
+edit invalidates the verification identity.
+
 Verify changes runs the real controller with an initial candidate and no model
 provider. It must run baseline/negative-control and final checks, retain durable
 results and expose actionable Verified, Failed, Blocked and Stale states. Include

@@ -359,8 +359,7 @@ impl IdeProject {
         untracked: &BTreeSet<String>,
         publish: Option<&Ledger>,
     ) -> Result<Snapshot> {
-        use rovik_harness::{controller::Integration, identity::ArtifactRef, snapshot::FileEntry};
-        use std::io::Read;
+        use rovik_harness::{controller::Integration, snapshot::FileEntry};
 
         let integration = self.integration()?;
         let revision = integration.current_revision(&self.repository_id)?;
@@ -470,24 +469,18 @@ impl IdeProject {
                 )?;
                 parent = directory.parent();
             }
-            const LIMIT: u64 = 64 * 1024 * 1024;
-            check(
-                before.len() <= LIMIT,
-                "A source file exceeds the 64 MiB snapshot limit.",
-            )?;
-            let mut bytes = Vec::new();
-            std::fs::File::open(&file)?
-                .take(LIMIT + 1)
-                .read_to_end(&mut bytes)?;
-            check(
-                bytes.len() as u64 <= LIMIT,
-                "A source file exceeds the 64 MiB snapshot limit.",
-            )?;
+            super::source::require_hydrated(&file, &path, before.len())?;
+            let content = super::source::observe(&file, &path)?;
+            if let Some(ledger) = publish {
+                if known.get(&content.digest).copied() != Some(&content) {
+                    super::source::publish(ledger, &file, &path, &content)?;
+                }
+            }
             let after = std::fs::symlink_metadata(&file)?;
             check(
                 after.is_file()
                     && !after.file_type().is_symlink()
-                    && before.len() == bytes.len() as u64
+                    && before.len() == content.byte_count
                     && before.len() == after.len()
                     && before.modified()? == after.modified()?
                     && before.permissions() == after.permissions(),
@@ -504,22 +497,6 @@ impl IdeProject {
             };
             #[cfg(not(unix))]
             let mode = 0o100644;
-            let mut content = ArtifactRef {
-                digest: Digest::of(&bytes),
-                media_type: "application/octet-stream".into(),
-                byte_count: bytes.len() as u64,
-                kind: "source".into(),
-            };
-            if let Some(ledger) = publish {
-                if known.get(&content.digest).copied() != Some(&content) {
-                    content = ledger.store(
-                        "source",
-                        "application/octet-stream",
-                        &bytes,
-                        runner::now_ms()?,
-                    )?;
-                }
-            }
             files.insert(path, FileEntry { mode, content });
         }
         rovik_harness::scope::validate_tree_paths(files.keys().map(String::as_str), true)?;
@@ -1435,6 +1412,126 @@ mod tests {
             },
             snapshot_digest: project.capture(&BTreeSet::new()).unwrap().digest().unwrap(),
         }
+    }
+
+    #[test]
+    fn inspection_keeps_large_images_and_hydrated_lfs_assets_in_exact_snapshots() {
+        use std::io::{Seek, SeekFrom, Write};
+        let (_directory, project) = project();
+        let repository = git2::Repository::open(&project.root).unwrap();
+        let mut index = repository.index().unwrap();
+        std::fs::create_dir_all(project.root.join("assets")).unwrap();
+        let mut assets = BTreeMap::new();
+        for (path, size, lfs) in [
+            ("assets/image.png", 65 * 1024 * 1024, false),
+            ("assets/model.bin", 160 * 1024 * 1024, true),
+        ] {
+            let file = project.root.join(path);
+            let mut output = std::fs::File::create(&file).unwrap();
+            output.write_all(b"\x89PNG\r\n\x1a\n").unwrap();
+            output.set_len(size).unwrap();
+            drop(output);
+            let content = super::super::source::observe(&file, path).unwrap();
+            let (id, git_size) = if lfs {
+                let hex = content.digest.hex();
+                let cached = repository
+                    .path()
+                    .join("lfs/objects")
+                    .join(&hex[..2])
+                    .join(&hex[2..4])
+                    .join(hex);
+                std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+                std::fs::copy(&file, cached).unwrap();
+                let pointer = format!(
+                    "version https://git-lfs.github.com/spec/v1\noid {}\nsize {}\n",
+                    content.digest, size
+                );
+                (
+                    repository.blob(pointer.as_bytes()).unwrap(),
+                    pointer.len() as u32,
+                )
+            } else {
+                let mut writer = repository.blob_writer(None).unwrap();
+                std::io::copy(&mut std::fs::File::open(&file).unwrap(), &mut writer).unwrap();
+                (writer.commit().unwrap(), size as u32)
+            };
+            index
+                .add(&git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    file_size: git_size,
+                    id,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: path.as_bytes().to_vec(),
+                })
+                .unwrap();
+            assets.insert(path, content);
+        }
+        index.write().unwrap();
+        let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
+        let parent = repository.head().unwrap().peel_to_commit().unwrap();
+        let signature = git2::Signature::now("Asset tests", "tests@rovik.invalid").unwrap();
+        repository
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "large assets",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+        let index_before = std::fs::read(repository.path().join("index")).unwrap();
+        let inspected = project.inspect(BTreeSet::new()).unwrap();
+        let ledger = project.ledger().unwrap();
+        let digest = Digest::parse(inspected["snapshotDigest"].as_str().unwrap()).unwrap();
+        let captured: Snapshot = wire::decode(&ledger.read(&digest).unwrap()).unwrap();
+        let baseline = project.integration().unwrap().snapshot(&ledger).unwrap();
+        assert_eq!(
+            captured, baseline,
+            "LFS pointers must resolve to the same bytes as the checkout"
+        );
+        for (path, content) in &assets {
+            assert_eq!(&captured.files[*path].content, content);
+        }
+        ledger.verify_artifacts().unwrap();
+        let materialized = project.state.join("large-assets-materialized");
+        captured.materialize(&ledger, &materialized).unwrap();
+        for (path, content) in &assets {
+            assert_eq!(
+                super::super::source::observe(&materialized.join(path), path).unwrap(),
+                *content
+            );
+        }
+        assert_eq!(
+            project.observe_snapshot(&BTreeSet::new(), None).unwrap(),
+            captured
+        );
+        for path in assets.keys() {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .open(project.root.join(path))
+                .unwrap();
+            output.seek(SeekFrom::End(-1)).unwrap();
+            output.write_all(b"x").unwrap();
+        }
+        let changed = project.observe_snapshot(&BTreeSet::new(), None).unwrap();
+        for (path, content) in &assets {
+            assert_ne!(
+                changed.files[*path].content.digest, content.digest,
+                "same-size asset edits must invalidate verification"
+            );
+        }
+        assert_eq!(
+            std::fs::read(repository.path().join("index")).unwrap(),
+            index_before
+        );
     }
 
     #[test]

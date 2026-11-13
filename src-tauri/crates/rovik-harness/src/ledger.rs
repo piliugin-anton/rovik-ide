@@ -129,7 +129,11 @@ impl Ledger {
         }
         Ok(Self {
             connection,
-            artifacts: ArtifactStore::open(&root.join("artifacts"), 64 * 1024 * 1024)?,
+            artifacts: ArtifactStore::with_source_limit(
+                &root.join("artifacts"),
+                crate::artifacts::MAX_BUFFER_BYTES,
+                crate::artifacts::MAX_SOURCE_BYTES,
+            )?,
             root,
         })
     }
@@ -141,16 +145,27 @@ impl Ledger {
         bytes: &[u8],
         now: u64,
     ) -> Result<ArtifactRef> {
+        self.publish(now, |store| store.put(kind, media_type, bytes))
+    }
+    /// Publish a binary or text source stream with bounded memory.
+    pub fn store_source(&self, reader: impl std::io::Read, now: u64) -> Result<ArtifactRef> {
+        self.publish(now, |store| store.put_source(reader))
+    }
+    fn publish(
+        &self,
+        now: u64,
+        publish: impl FnOnce(&ArtifactStore) -> Result<ArtifactRef>,
+    ) -> Result<ArtifactRef> {
         // Serialize publication with retention, including reuse of an aged orphan.
         let tx =
             rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        let reference = self.artifacts.put(kind, media_type, bytes)?;
+        let reference = publish(&self.artifacts)?;
         self.connection.execute(
             "INSERT OR IGNORE INTO artifacts VALUES(?1,?2,?3,?4,?5)",
             params![
                 reference.digest.as_str(),
-                kind,
-                media_type,
+                reference.kind,
+                reference.media_type,
                 integer(reference.byte_count)?,
                 integer(now)?
             ],
@@ -193,11 +208,19 @@ impl Ledger {
     pub fn read(&self, digest: &Digest) -> Result<Vec<u8>> {
         self.artifacts.read(&self.reference(digest)?)
     }
+    /// Stream a registered artifact, checking its identity before the caller publishes it.
+    pub fn copy_to(&self, digest: &Digest, writer: impl std::io::Write) -> Result<()> {
+        self.artifacts.copy_to(&self.reference(digest)?, writer)
+    }
+    /// Detect NUL or invalid UTF-8 without allocating the complete source asset.
+    pub fn is_binary(&self, digest: &Digest) -> Result<bool> {
+        self.artifacts.is_binary(&self.reference(digest)?)
+    }
     /// Check both content integrity and the independently registered reference type.
     pub fn verify_reference(&self, reference: &ArtifactRef) -> Result<()> {
         let registered: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM artifact_types WHERE digest=?1 AND kind=?2 AND media_type=?3)", params![reference.digest.as_str(), reference.kind, reference.media_type], |r|r.get(0))?;
         require(registered, "artifact reference type is not registered")?;
-        self.artifacts.read(reference)?;
+        self.artifacts.copy_to(reference, std::io::sink())?;
         Ok(())
     }
     /// Create an intake with explicit budgets. A duplicate run is an error.
@@ -209,7 +232,7 @@ impl Ledger {
         now: u64,
     ) -> Result<RunRecord> {
         id(run_id)?;
-        self.read(input)?;
+        self.copy_to(input, std::io::sink())?;
         require(!budgets.is_empty(), "run needs explicit budgets")?;
         let tx = self
             .connection
@@ -254,7 +277,7 @@ impl Ledger {
         restart: Option<State>,
         now: u64,
     ) -> Result<RunRecord> {
-        self.read(event)?;
+        self.copy_to(event, std::io::sink())?;
         expected.state.permits(next, expected.restart_state)?;
         require(
             next != State::Blocked
@@ -288,7 +311,7 @@ impl Ledger {
     }
     /// Select new immutable evidence inputs and record the invalidation event.
     pub fn bind(&mut self, expected: &RunRecord, binding: &Digest, now: u64) -> Result<RunRecord> {
-        self.read(binding)?;
+        self.copy_to(binding, std::io::sink())?;
         require(
             !expected.state.terminal() && expected.state != State::Blocked,
             "cannot rebind a blocked or terminal run",
@@ -355,7 +378,7 @@ impl Ledger {
             duration_ms > 0 && !reservation.is_empty(),
             "operation requires deadline and reservation",
         )?;
-        self.read(input)?;
+        self.copy_to(input, std::io::sink())?;
         let expires = now
             .checked_add(duration_ms)
             .ok_or_else(|| Error::new("lease expiry overflow".into()))?;
@@ -453,7 +476,7 @@ impl Ledger {
         usage: &BTreeMap<String, u64>,
         now: u64,
     ) -> Result<bool> {
-        self.read(output)?;
+        self.copy_to(output, std::io::sink())?;
         self.verify_lease(lease, now)?;
         let usage_receipt = self.store_json("receipt", &serde_json::json!({"operation_id":lease.operation_id,"generation":lease.generation,"actual":usage}), now)?;
         let tx = self
@@ -526,7 +549,7 @@ impl Ledger {
     pub fn verify_artifacts(&self) -> Result<()> {
         let mut statement = self.connection.prepare("SELECT digest FROM artifacts")?;
         for row in statement.query_map([], |r| r.get::<_, String>(0))? {
-            self.read(&Digest::parse(&row?)?)?;
+            self.copy_to(&Digest::parse(&row?)?, std::io::sink())?;
         }
         Ok(())
     }

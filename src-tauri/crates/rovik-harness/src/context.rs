@@ -66,6 +66,12 @@ pub fn ranked_sources(
         .collect();
     let mut ranked = Vec::new();
     for (path, file) in &snapshot.files {
+        // Assets stay in the verified snapshot, but cannot fit a model message.
+        if file.content.byte_count > crate::wire::MAX_JSON_BYTES as u64
+            || ledger.is_binary(&file.content.digest)?
+        {
+            continue;
+        }
         let Ok(text) = String::from_utf8(ledger.read(&file.content.digest)?) else {
             continue;
         };

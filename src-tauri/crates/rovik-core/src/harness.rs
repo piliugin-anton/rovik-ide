@@ -185,6 +185,7 @@ pub mod ide;
 pub mod ide_prepare;
 pub mod ide_setup;
 pub mod ide_source;
+mod source;
 pub use git_delivery::{DeliveryCandidate, DeliveryReceipt, MergeCandidate};
 
 /// Integration observer for one explicitly selected Git repository and reference.
@@ -243,22 +244,22 @@ impl GitIntegration {
         use rovik_harness::snapshot::{FileEntry, Snapshot};
         let mut files = std::collections::BTreeMap::new();
         let mut failure = None;
-        tree.walk(git2::TreeWalkMode::PreOrder,|prefix,entry|{
+        let walked = tree.walk(git2::TreeWalkMode::PreOrder,|prefix,entry|{
             if entry.kind()==Some(git2::ObjectType::Tree){return git2::TreeWalkResult::Ok;}
             let result=(||->Result<()> {
                 let name=entry.name().map_err(|_|Error::new("non-UTF-8 tracked path is unsupported".into()))?;
                 let path=format!("{prefix}{name}");rovik_harness::scope::validate_path(&path)?;
                 let mode=entry.filemode() as u32;
                 if ![0o100644,0o100755].contains(&mode){return Err(Error::new(format!("unsupported tracked file mode for {path}; declare a supported dependency bundle")));}
-                let blob=repository.find_blob(entry.id()).map_err(|e|Error::new(e.to_string()))?;
-                let content=ledger.store("source","application/octet-stream",blob.content(),rovik_harness::runner::now_ms()?)?;
+                let content=source::blob(repository,ledger,entry.id(),&path)?;
                 files.insert(path,FileEntry {mode,content});Ok(())
             })();
             match result {Ok(())=>git2::TreeWalkResult::Ok,Err(e)=>{failure=Some(e);git2::TreeWalkResult::Abort}}
-        }).map_err(|e|Error::new(e.to_string()))?;
+        });
         if let Some(error) = failure {
             return Err(error);
         }
+        walked.map_err(|error| Error::new(error.to_string()))?;
         let snapshot = Snapshot {
             schema_version: 1,
             base_revision: revision.into(),
@@ -328,13 +329,15 @@ impl GitIntegration {
                 }
                 parent = directory.parent();
             }
-            if meta.len() > 64 * 1024 * 1024 {
-                return Err(Error::new("dirty file exceeds snapshot size limit".into()));
-            }
-            let bytes = std::fs::read(&file)?;
+            source::require_hydrated(&file, &path, meta.len())?;
+            let content = source::observe(&file, &path)?;
+            source::publish(ledger, &file, &path, &content)?;
             let after = std::fs::symlink_metadata(&file)?;
             if after.len() != meta.len()
+                || content.byte_count != meta.len()
                 || after.modified()? != meta.modified()?
+                || after.permissions() != meta.permissions()
+                || !after.is_file()
                 || after.file_type().is_symlink()
             {
                 return Err(Error::new(
@@ -352,12 +355,6 @@ impl GitIntegration {
             };
             #[cfg(not(unix))]
             let mode = 0o100644;
-            let content = ledger.store(
-                "source",
-                "application/octet-stream",
-                &bytes,
-                rovik_harness::runner::now_ms()?,
-            )?;
             snapshot.files.insert(path, FileEntry { mode, content });
         }
         use rovik_harness::controller::Integration;

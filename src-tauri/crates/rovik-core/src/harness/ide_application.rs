@@ -594,7 +594,11 @@ fn file_matches(
             return Ok(false);
         }
     }
-    Ok(std::fs::read(path)? == ledger.read(&entry.content.digest)?)
+    ledger.verify_reference(&entry.content)?;
+    if metadata.len() != entry.content.byte_count {
+        return Ok(false);
+    }
+    Ok(super::super::source::observe(&path, &path.to_string_lossy())? == entry.content)
 }
 
 fn exact_preimages(
@@ -699,19 +703,25 @@ fn materialize(
                 .any(|part| part.eq_ignore_ascii_case(".git")),
             "Application cannot modify Git control paths.",
         )?;
-        let before = change
-            .before
-            .as_ref()
-            .map(|entry| ledger.read(&entry.content.digest))
-            .transpose()?;
+        let before = change.before.as_ref();
+        let write = |file: &Path, digest: &Digest| -> Result<()> {
+            let mut temporary = tempfile::NamedTempFile::new_in(private)?;
+            ledger.copy_to(digest, temporary.as_file_mut())?;
+            temporary.as_file().sync_all()?;
+            temporary
+                .persist(file)
+                .map_err(|error| Error::from(error.error))?;
+            #[cfg(unix)]
+            std::fs::File::open(private)?.sync_all()?;
+            Ok(())
+        };
         if let Some(after) = &change.after {
             let upper = private.join(format!("after-{index}"));
-            crate::atomic_file::write_atomic_private(&upper, &ledger.read(&after.content.digest)?)?;
+            write(&upper, &after.content.digest)?;
             let base_copy = before
-                .as_ref()
-                .map(|bytes| {
+                .map(|entry| {
                     let file = private.join(format!("before-{index}"));
-                    crate::atomic_file::write_atomic_private(&file, bytes)?;
+                    write(&file, &entry.content.digest)?;
                     Ok::<_, Error>(file)
                 })
                 .transpose()?;
@@ -733,7 +743,9 @@ fn materialize(
             changes.push(OverlayChange::Delete {
                 path: path.clone(),
                 by_product: false,
-                base: Some(DeletedBase::file(&before)),
+                base: Some(DeletedBase::File {
+                    hash: before.content.digest.hex().into(),
+                }),
             });
         }
     }
@@ -778,6 +790,79 @@ mod tests {
         }
         std::fs::write(root.join("unselected.txt"), "user's unselected bytes").unwrap();
         (directory, root, ledger, base, candidate)
+    }
+
+    #[test]
+    fn large_asset_application_stages_exact_bytes_and_guards_deletions_by_hash() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let directory = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(&directory.path().join("ledger")).unwrap();
+        let content = ledger
+            .store_source(std::io::repeat(0xff).take(65 * 1024 * 1024), 1)
+            .unwrap();
+        let base = Snapshot {
+            schema_version: 1,
+            base_revision: "asset-base".into(),
+            files: [(
+                "image.png".into(),
+                rovik_harness::snapshot::FileEntry {
+                    mode: 0o100644,
+                    content: content.clone(),
+                },
+            )]
+            .into(),
+            deletions: vec![],
+            dependency_assets: vec![],
+        };
+        let root = directory.path().join("worktree");
+        base.materialize(&ledger, &root).unwrap();
+        assert!(file_matches(&root, &ledger, "image.png", base.files.get("image.png")).unwrap());
+        let mut changed = base.clone();
+        changed.files.get_mut("image.png").unwrap().mode = 0o100755;
+        let staging = directory.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        let writes = materialize(&staging, &ledger, &base, &changed).unwrap();
+        assert_eq!(
+            materialize(&staging, &ledger, &base, &changed).unwrap(),
+            writes,
+            "a retry after revoked approval must refresh private staging atomically"
+        );
+        let OverlayChange::Write {
+            upper: Some(upper),
+            base_copy: Some(before),
+            ..
+        } = &writes[0]
+        else {
+            panic!("expected staged asset")
+        };
+        for path in [upper, before] {
+            assert_eq!(
+                super::super::super::source::observe(path, "image.png").unwrap(),
+                content
+            );
+        }
+        let mut deleted = base.clone();
+        deleted.files.clear();
+        deleted.deletions.push("image.png".into());
+        let changes = materialize(&staging, &ledger, &base, &deleted).unwrap();
+        let OverlayChange::Delete {
+            base: Some(proof), ..
+        } = &changes[0]
+        else {
+            panic!("expected guarded deletion")
+        };
+        let path = root.join("image.png");
+        assert!(proof.still(&path));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut output = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        output.seek(SeekFrom::End(-1)).unwrap();
+        output.write_all(b"x").unwrap();
+        assert!(!proof.still(&path));
+        assert!(!file_matches(&root, &ledger, "image.png", base.files.get("image.png")).unwrap());
     }
 
     #[test]

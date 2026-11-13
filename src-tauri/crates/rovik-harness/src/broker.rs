@@ -141,6 +141,10 @@ impl<'a> Broker<'a> {
                     .files
                     .get(path)
                     .ok_or_else(|| Error::new("file is not in the admitted snapshot".into()))?;
+                require(
+                    !self.ledger.is_binary(&file.content.digest)?,
+                    "file is a binary asset, not UTF-8 source text",
+                )?;
                 let text = String::from_utf8(self.ledger.read(&file.content.digest)?)
                     .map_err(|_| Error::new("file is not UTF-8 text".into()))?;
                 let lines: Vec<_> = text
@@ -173,6 +177,9 @@ impl<'a> Broker<'a> {
                 let mut hits = Vec::new();
                 'files: for (path, file) in &self.snapshot.files {
                     if !scope::matches(pattern, path) {
+                        continue;
+                    }
+                    if self.ledger.is_binary(&file.content.digest)? {
                         continue;
                     }
                     let bytes = self.ledger.read(&file.content.digest)?;

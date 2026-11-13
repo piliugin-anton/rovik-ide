@@ -24,7 +24,7 @@ impl Controller {
     ) -> Result<T> {
         let setup = self.setup(run_id)?;
         setup.authority.authorize(principal, "delivery")?;
-        self.ledger.read(subject)?;
+        self.ledger.copy_to(subject, std::io::sink())?;
         let tx = rusqlite::Transaction::new_unchecked(
             &self.ledger.connection,
             rusqlite::TransactionBehavior::Immediate,

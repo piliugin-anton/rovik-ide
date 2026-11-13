@@ -343,10 +343,11 @@ impl Controller {
             }))?,
         )?;
         for digest in blobs {
-            write(
-                &format!("artifacts/{}", digest.hex()),
-                &self.ledger.read(&digest)?,
-            )?;
+            let name = format!("artifacts/{}", digest.hex());
+            let path = destination.join(&name);
+            std::fs::create_dir_all(destination.join("artifacts"))?;
+            self.ledger.copy_to(&digest, std::fs::File::create(path)?)?;
+            files.insert(name, digest);
         }
         let manifest = BundleManifest {
             schema_version: 1,

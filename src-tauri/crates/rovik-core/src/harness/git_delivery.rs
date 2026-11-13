@@ -68,8 +68,13 @@ fn tree(repository: &git2::Repository, ledger: &Ledger, snapshot: &Snapshot) -> 
     snapshot.validate(ledger, true)?;
     let mut index = git2::Index::new().map_err(git)?;
     for (path, file) in &snapshot.files {
-        let bytes = ledger.read(&file.content.digest)?;
-        let blob = repository.blob(&bytes).map_err(git)?;
+        let blob = super::source::delivery_blob(
+            repository,
+            ledger,
+            &snapshot.base_revision,
+            path,
+            &file.content,
+        )?;
         index
             .add(&git2::IndexEntry {
                 ctime: git2::IndexTime::new(0, 0),
@@ -79,7 +84,7 @@ fn tree(repository: &git2::Repository, ledger: &Ledger, snapshot: &Snapshot) -> 
                 mode: file.mode,
                 uid: 0,
                 gid: 0,
-                file_size: u32::try_from(bytes.len())
+                file_size: u32::try_from(file.content.byte_count)
                     .map_err(|_| Error::new("Git blob exceeds index size limit".into()))?,
                 id: blob,
                 flags: 0,

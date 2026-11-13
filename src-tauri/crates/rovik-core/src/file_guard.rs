@@ -41,6 +41,22 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(&hash(bytes))
 }
 
+/// Hash a file in bounded memory, including assets too large for an editor buffer.
+pub fn sha256_file(path: &Path) -> io::Result<String> {
+    use io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let length = file.read(&mut buffer)?;
+        if length == 0 {
+            break;
+        }
+        digest.update(&buffer[..length]);
+    }
+    Ok(hex(&digest.finalize()))
+}
+
 /// Who wrote a file through the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Writer {

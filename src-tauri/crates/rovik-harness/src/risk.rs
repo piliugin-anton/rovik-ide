@@ -94,6 +94,9 @@ pub fn assess_for_languages(
         let mut texts = vec![];
         for snapshot in [base, candidate] {
             if let Some(file) = snapshot.files.get(path) {
+                if ledger.is_binary(&file.content.digest)? {
+                    continue;
+                }
                 texts.push(
                     String::from_utf8_lossy(&ledger.read(&file.content.digest)?).into_owned(),
                 );

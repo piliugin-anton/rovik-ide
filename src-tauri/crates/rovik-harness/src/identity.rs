@@ -10,6 +10,37 @@ use sha2::{Digest as _, Sha256};
 pub struct Digest(String);
 
 impl Digest {
+    /// Hash and copy a bounded stream without retaining its contents in memory.
+    pub fn copy(
+        mut reader: impl std::io::Read,
+        mut writer: impl std::io::Write,
+        maximum_bytes: u64,
+    ) -> Result<(Self, u64)> {
+        let mut hash = Sha256::new();
+        let mut count = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let length = reader.read(&mut buffer)?;
+            if length == 0 {
+                break;
+            }
+            count = count
+                .checked_add(length as u64)
+                .ok_or_else(|| Error::new("stream length overflow".into()))?;
+            crate::require(
+                count <= maximum_bytes,
+                format!("content exceeds the {maximum_bytes}-byte limit"),
+            )?;
+            hash.update(&buffer[..length]);
+            writer.write_all(&buffer[..length])?;
+        }
+        let hex: String = hash
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok((Self(format!("sha256:{hex}")), count))
+    }
     /// Hash exact bytes without normalizing source text.
     pub fn of(bytes: &[u8]) -> Self {
         let hex: String = Sha256::digest(bytes)
