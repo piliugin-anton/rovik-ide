@@ -128,6 +128,7 @@ fn deleted_cleanup_and_new_ffi_cannot_be_downgraded_by_worker_tags() {
         policy.routes.insert(
             risk.into(),
             RiskRoute {
+                commands_by_configuration: Default::default(),
                 concurrency_cases: Default::default(),
                 commands: [setup.registry.commands[0].id.clone()].into(),
                 reviews: [format!("review-{risk}")].into(),
@@ -167,6 +168,7 @@ fn concurrency_routes_require_distinct_cases_for_every_property_and_configuratio
     )
     .unwrap();
     let mut route = RiskRoute {
+        commands_by_configuration: Default::default(),
         commands: [setup.registry.commands[0].id.clone()].into(),
         reviews: ["concurrency-review".into()].into(),
         concurrency_cases: Default::default(),
@@ -416,4 +418,159 @@ fn actual_sanitizers_and_ffi_consumers_reject_resource_and_abi_mutants() {
     assert_eq!(report.executed(), 20);
     assert_eq!(report.passed.len(), 20);
     assert!(report.failed.is_empty());
+}
+
+#[test]
+fn legacy_risk_routes_keep_their_canonical_identity_and_global_command_requirement() {
+    let original = serde_json::json!({"commands":["native-tests"],"reviews":["design-review"],"concurrency_cases":{}});
+    let route: RiskRoute = serde_json::from_value(original.clone()).unwrap();
+    assert!(route.commands_by_configuration.is_empty());
+    assert_eq!(
+        Digest::of_json(&original).unwrap(),
+        Digest::of_json(&route).unwrap()
+    );
+}
+
+#[test]
+fn mixed_profile_risk_routes_require_the_correct_native_command_and_review_in_every_configuration()
+{
+    use std::collections::{BTreeMap, BTreeSet};
+    let directory = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&directory.path().join("state")).unwrap();
+    let mut setup =
+        fixtures::quota_rust(&ledger, "mixed-risk", Digest::of(b"image"), "base").unwrap();
+    let runtime = fixtures::quota_runtime(
+        &ledger,
+        "runtime-risk",
+        Digest::of(b"image"),
+        "base",
+        rovik_harness::profile::Language::TypeScript,
+    )
+    .unwrap();
+    let native_configuration = setup.plan.configurations[0].clone();
+    let runtime_configuration = runtime.plan.configurations[0].clone();
+    let native_command = setup.registry.commands[0].id.clone();
+    let runtime_command = runtime.registry.commands[0].id.clone();
+    setup
+        .registry
+        .commands
+        .extend(runtime.registry.commands.clone());
+    setup
+        .plan
+        .configurations
+        .push(runtime_configuration.clone());
+    setup.plan.checks.extend(runtime.plan.checks.clone());
+    setup.plan.review_requirements.push("design-review".into());
+    let mut policy = RiskPolicy {
+        routes: BTreeMap::from([(
+            "public-api".into(),
+            RiskRoute {
+                commands: BTreeSet::from([native_command.clone(), runtime_command.clone()]),
+                commands_by_configuration: BTreeMap::from([
+                    (
+                        native_configuration.clone(),
+                        BTreeSet::from([native_command.clone()]),
+                    ),
+                    (
+                        runtime_configuration.clone(),
+                        BTreeSet::from([runtime_command.clone()]),
+                    ),
+                ]),
+                reviews: BTreeSet::from(["design-review".into()]),
+                concurrency_cases: BTreeMap::new(),
+            },
+        )]),
+    };
+    let assessment = risk::Assessment {
+        risks: BTreeSet::from(["public-api".into()]),
+        sources: BTreeMap::new(),
+    };
+    policy
+        .validate(&assessment, &setup.plan, &setup.registry)
+        .unwrap();
+    for mutation in [
+        "missing",
+        "unknown",
+        "empty",
+        "union",
+        "wrong-check",
+        "legacy",
+    ] {
+        let mut invalid = policy.clone();
+        let route = invalid.routes.get_mut("public-api").unwrap();
+        match mutation {
+            "missing" => {
+                route
+                    .commands_by_configuration
+                    .remove(&runtime_configuration);
+            }
+            "unknown" => {
+                route.commands_by_configuration.insert(
+                    Digest::of(b"unknown"),
+                    BTreeSet::from([runtime_command.clone()]),
+                );
+            }
+            "empty" => {
+                route
+                    .commands_by_configuration
+                    .insert(runtime_configuration.clone(), BTreeSet::new());
+            }
+            "union" => {
+                route.commands.insert("unregistered".into());
+            }
+            "wrong-check" => {
+                route.commands_by_configuration.insert(
+                    native_configuration.clone(),
+                    BTreeSet::from([runtime_command.clone()]),
+                );
+                route.commands_by_configuration.insert(
+                    runtime_configuration.clone(),
+                    BTreeSet::from([native_command.clone()]),
+                );
+            }
+            "legacy" => {
+                route.commands_by_configuration.clear();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            invalid
+                .validate(&assessment, &setup.plan, &setup.registry)
+                .is_err(),
+            "{mutation}"
+        );
+    }
+    setup
+        .plan
+        .review_requirements
+        .retain(|review| review != "design-review");
+    assert!(policy
+        .validate(&assessment, &setup.plan, &setup.registry)
+        .unwrap_err()
+        .message
+        .contains("review"));
+    setup.plan.review_requirements.push("design-review".into());
+    let mut additional_risk = assessment.clone();
+    additional_risk.risks.insert("unsafe".into());
+    assert!(policy
+        .validate(&additional_risk, &setup.plan, &setup.registry)
+        .unwrap_err()
+        .message
+        .contains("unrouted risk"));
+    policy
+        .routes
+        .get_mut("public-api")
+        .unwrap()
+        .commands_by_configuration
+        .remove(&native_configuration);
+    let no_risks = risk::Assessment {
+        risks: BTreeSet::new(),
+        sources: BTreeMap::new(),
+    };
+    assert!(
+        policy
+            .validate(&no_risks, &setup.plan, &setup.registry)
+            .is_err(),
+        "an incomplete explicit matrix cannot await a risk to become invalid"
+    );
 }

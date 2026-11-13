@@ -59,6 +59,9 @@ jobs:
       - name: Verify saved IDE changes through the actual controller
         working-directory: src-tauri
         run: cargo test --locked -p rovik-core --lib harness::ide::tests::native_ide_verification -- --ignored --test-threads=1
+      - name: Implement a saved IDE plan with the selected model and native verification
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-core --lib harness::ide::plan::tests::native_plan_implementation -- --ignored --test-threads=1
       - name: Prepare isolation fixture outside verification
         run: |
           docker pull alpine:3.22.0

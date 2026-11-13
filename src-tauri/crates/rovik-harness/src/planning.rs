@@ -129,6 +129,10 @@ impl PlanningInput {
             }
         }
         let mut checks = Vec::new();
+        let configuration_ids = configurations.keys().cloned().collect();
+        for invariant in &self.contract.invariants {
+            invariant.validate_configurations(&configuration_ids)?;
+        }
         let mut identities = BTreeSet::new();
         for template in &self.catalog.checks {
             crate::id(&template.check_id)?;
@@ -270,7 +274,10 @@ impl PlanningInput {
                         .flat_map(|c| c.expected_case_ids.iter())
                         .collect();
                     require(
-                        invariant.case_ids.iter().all(|case| cases.contains(case)),
+                        invariant
+                            .cases_for_configuration(&digest)?
+                            .iter()
+                            .all(|case| cases.contains(case)),
                         "planner cannot establish the invariant's protected case inventory",
                     )?;
                 }

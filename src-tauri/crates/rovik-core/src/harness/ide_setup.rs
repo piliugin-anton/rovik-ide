@@ -57,6 +57,8 @@ pub struct SetupSummary {
     pub candidate_reviews: Vec<String>,
     /// Relevant failing cases required to establish oracle sensitivity.
     pub negative_control_cases: Vec<String>,
+    /// Conditional evidence and candidate review routes proposed for operator review.
+    pub risk_policy: rovik_harness::risk::RiskPolicy,
 }
 
 /// One native check as presented in the setup review.
@@ -147,6 +149,7 @@ pub fn summarize(setup: &TaskSetup) -> Result<SetupSummary> {
         approvals: setup.approval_requirements(None)?,
         candidate_reviews: setup.plan.review_requirements.clone(),
         negative_control_cases: setup.negative_control_cases.clone(),
+        risk_policy: setup.risk_policy.clone(),
     })
 }
 

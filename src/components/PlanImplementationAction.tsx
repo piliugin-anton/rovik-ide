@@ -1,4 +1,4 @@
-import { createResource, onCleanup, Show } from 'solid-js';
+import { createResource, createSignal, onCleanup, Show } from 'solid-js';
 import { chatApi } from '../lib/chatApi';
 import { chatStore } from '../lib/chatStore';
 import { activeRunId, isRunning, showChat } from '../lib/agentRuns';
@@ -19,8 +19,9 @@ export default function PlanImplementationAction(props: {
   /** Editor text, including unsaved edits; otherwise read the saved plan. */
   content?: string;
   canImplement?: boolean;
-  onImplement?: () => void;
+  onImplement?: (requireVerified?: boolean) => void;
 }) {
+  const [requireVerified, setRequireVerified] = createSignal(false);
   const [implementation, { refetch }] = createResource(
     () => ({
       path: props.path,
@@ -120,12 +121,24 @@ export default function PlanImplementationAction(props: {
         </Show>
       </Show>
       <Show when={props.canImplement && status() !== 'implemented' && status() !== 'implementing'}>
+        <label class="settings-hint">
+          <input
+            type="checkbox"
+            checked={requireVerified()}
+            onChange={(event) => setRequireVerified(event.currentTarget.checked)}
+          />{' '}
+          Require verified result
+        </label>
         <button
           type="button"
           class="chat-action-button primary"
           disabled={implementation.loading}
-          onClick={() => props.onImplement?.()}
-          title="Switch to Agent mode and carry out this plan"
+          onClick={() => props.onImplement?.(requireVerified())}
+          title={
+            requireVerified()
+              ? 'Review the exact plan and acceptance criteria before verified implementation'
+              : 'Switch to Agent mode and carry out this plan'
+          }
         >
           Implement this plan
         </button>

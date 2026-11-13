@@ -15,6 +15,7 @@ fn contract() -> TaskContract {
 fn registry(contract: &TaskContract) -> ContractRegistry {
     ContractRegistry {
         profiles: contract.profile_ids.iter().cloned().collect(),
+        configurations: Default::default(),
         suites: [(
             contract.acceptance_suite_ids[0].clone(),
             contract
@@ -237,5 +238,75 @@ fn every_native_profile_requires_pinned_assets_and_explicit_target_facts() {
         profile.require_resolved().unwrap();
         profile.facts.remove(language.required_fields()[0]);
         assert!(profile.require_resolved().is_err());
+    }
+}
+
+#[test]
+fn legacy_invariant_serialization_retains_its_identity_and_all_configuration_cases() {
+    let original: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../examples/quota-contract.v1.json")).unwrap();
+    let contract = contract();
+    assert_eq!(
+        Digest::of_json(&original).unwrap(),
+        Digest::of_json(&contract).unwrap()
+    );
+    for invariant in &contract.invariants {
+        assert_eq!(
+            invariant
+                .cases_for_configuration(&Digest::of(b"any-target"))
+                .unwrap(),
+            invariant.case_ids
+        );
+    }
+}
+
+#[test]
+fn configuration_case_mapping_requires_a_complete_nonempty_matrix_and_exact_case_union() {
+    let mut contract = contract();
+    contract.invariants.truncate(1);
+    contract.invariants[0].case_ids = vec!["backend-case".into(), "frontend-case".into()];
+    let backend = Digest::of(b"rust-target");
+    let frontend = Digest::of(b"typescript-target");
+    let mut registry = registry(&contract);
+    registry.configurations = [backend.clone(), frontend.clone()].into();
+    contract.invariants[0].cases_by_configuration = BTreeMap::from([
+        (backend.clone(), vec!["backend-case".into()]),
+        (frontend.clone(), vec!["frontend-case".into()]),
+    ]);
+    contract.validate(&registry).unwrap();
+    assert_eq!(
+        contract.invariants[0]
+            .cases_for_configuration(&backend)
+            .unwrap(),
+        ["backend-case"]
+    );
+    assert!(contract.invariants[0]
+        .cases_for_configuration(&Digest::of(b"unknown"))
+        .is_err());
+    for mutation in ["missing", "unknown", "empty", "duplicate", "union"] {
+        let mut invalid = contract.clone();
+        let mapping = &mut invalid.invariants[0].cases_by_configuration;
+        match mutation {
+            "missing" => {
+                mapping.remove(&frontend);
+            }
+            "unknown" => {
+                mapping.insert(Digest::of(b"unknown"), vec!["frontend-case".into()]);
+            }
+            "empty" => {
+                mapping.insert(frontend.clone(), vec![]);
+            }
+            "duplicate" => {
+                mapping.insert(
+                    frontend.clone(),
+                    vec!["frontend-case".into(), "frontend-case".into()],
+                );
+            }
+            "union" => {
+                mapping.insert(frontend.clone(), vec!["backend-case".into()]);
+            }
+            _ => unreachable!(),
+        }
+        assert!(invalid.validate(&registry).is_err(), "{mutation}");
     }
 }

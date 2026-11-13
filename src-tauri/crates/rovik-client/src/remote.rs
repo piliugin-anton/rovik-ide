@@ -888,11 +888,11 @@ impl Remote {
             ..
         } = &mut request
         {
-            if !self.serves(&host, features::POLYGLOT_HARNESS) {
+            if !self.serves(&host, operation.required_feature()) {
                 return Err(Fail::new(
                     FailCode::BadRequest,
                     format!(
-                        "{} needs an update before it can run polyglot verification.",
+                        "{} needs an update before it can perform this polyglot operation.",
                         self.host_name(&host)
                     ),
                 ));
@@ -900,14 +900,7 @@ impl Remote {
             if self.is_moving_back(dialog_id) {
                 return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
             }
-            if matches!(
-                operation,
-                rovik_protocol::harness::Operation::Inspect { .. }
-                    | rovik_protocol::harness::Operation::Verify { .. }
-                    | rovik_protocol::harness::Operation::Configure { .. }
-                    | rovik_protocol::harness::Operation::Status { .. }
-                    | rovik_protocol::harness::Operation::Resume { .. }
-            ) {
+            if operation.requires_current_source() {
                 *source = Some(
                     self.sync_before_verification(&host, dialog_id)
                         .await
@@ -919,6 +912,9 @@ impl Remote {
             // A local drive or project path is never an execution path on a host.
             // The daemon binds this operation to its owned chat worktree.
             *root = None;
+            // Harness state stays on its execution host, outside chat-row mirroring.
+            // Move ephemeral provider credentials directly into the one transport call.
+            return self.client(&host)?.call(request).await;
         }
         if let Request::ClmReadFile { path, .. } = &request {
             if !self.serves(&host, features::CONTEXT_FILES) {

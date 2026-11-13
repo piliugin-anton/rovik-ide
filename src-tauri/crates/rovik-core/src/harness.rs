@@ -5,7 +5,7 @@ use crate::{
     chat_request::{self, Api, Clients, Limits, RequestSpec},
 };
 use rovik_harness::{
-    provider::{ModelRequest, ModelResponse, Provider, Usage},
+    provider::{ModelRequest, ModelResponse, Provider, Reservation, Usage},
     runner::Cancellation,
     wire, Error, Result,
 };
@@ -24,6 +24,33 @@ pub struct Rates {
     pub output: u64,
 }
 impl Rates {
+    fn reservation(
+        &self,
+        request_bytes: usize,
+        control_bytes: usize,
+        output: u64,
+    ) -> Result<Reservation> {
+        // The serialized user message is bounded independently by the controller.
+        // UTF-8 bytes conservatively bound input tokens; reserve additional framing
+        // for the role and the chat-completions message envelope.
+        let input = u64::try_from(request_bytes)
+            .ok()
+            .and_then(|n| n.checked_add(control_bytes as u64))
+            .and_then(|n| n.checked_add(16 * 1024))
+            .ok_or_else(|| Error::new("model input reservation overflow".into()))?;
+        let tokens = input
+            .checked_add(output)
+            .ok_or_else(|| Error::new("model token reservation overflow".into()))?;
+        let numerator = (u128::from(input) * u128::from(self.input.max(self.cached_input)))
+            .checked_add(u128::from(output) * u128::from(self.output))
+            .ok_or_else(|| Error::new("model cost reservation overflow".into()))?;
+        let cost_microunits = u64::try_from(numerator.div_ceil(1_000_000))
+            .map_err(|_| Error::new("model cost reservation overflow".into()))?;
+        Ok(Reservation {
+            tokens,
+            cost_microunits,
+        })
+    }
     fn usage(&self, value: serde_json::Value) -> Result<Usage> {
         let input = value
             .get("prompt_tokens")
@@ -95,6 +122,24 @@ impl HarnessProvider {
     }
 }
 impl Provider for HarnessProvider {
+    fn validate_reservation(
+        &self,
+        request: &ModelRequest,
+        reservation: &Reservation,
+    ) -> Result<()> {
+        let required = self.rates.reservation(
+            wire::canonical(request)?.len(),
+            request.role.control().len(),
+            request.maximum_output_tokens,
+        )?;
+        if reservation.tokens < required.tokens
+            || reservation.cost_microunits < required.cost_microunits
+        {
+            return Err(Error::classified(rovik_harness::FailureCategory::Budget,
+                format!("model reservation is below the complete request bound ({} tokens, {} cost microunits); review context, output and budget limits", required.tokens, required.cost_microunits)));
+        }
+        Ok(())
+    }
     fn generate(
         &mut self,
         request: &ModelRequest,
@@ -126,6 +171,7 @@ impl Provider for HarnessProvider {
 
 mod git_delivery;
 pub mod ide;
+pub mod ide_prepare;
 pub mod ide_setup;
 pub use git_delivery::{DeliveryCandidate, DeliveryReceipt, MergeCandidate};
 
@@ -361,6 +407,68 @@ mod tests {
         assert!(rates
             .usage(serde_json::json!({"prompt_tokens":u64::MAX,"completion_tokens":u64::MAX}))
             .is_err());
+    }
+    #[tokio::test]
+    async fn underfunded_requests_never_claim_budget_or_call_the_model() {
+        let (base, seen) =
+            testing::model(vec![Reply::Usage(20, 10, Box::new(Reply::Text("{}")))]).await;
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            for (price, tokens) in [(1_000_000, 1_000_000), (0, 100)] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut ledger =
+                    rovik_harness::ledger::Ledger::open(&directory.path().join("ledger")).unwrap();
+                let input = ledger
+                    .store("context", "text/plain", b"reviewed task", 1)
+                    .unwrap();
+                ledger
+                    .create_run(
+                        "underfunded",
+                        &input.digest,
+                        &[
+                            ("model_calls".into(), 1),
+                            ("tokens".into(), 1_000_000),
+                            ("cost_microunits".into(), 0),
+                        ]
+                        .into(),
+                        1,
+                    )
+                    .unwrap();
+                let before = ledger.budgets("underfunded").unwrap();
+                let mut provider = HarnessProvider::new(
+                    runtime.clone(),
+                    format!("{base}/chat/completions"),
+                    "synthetic".into(),
+                    Rates {
+                        input: price,
+                        cached_input: price,
+                        output: price,
+                    },
+                )
+                .unwrap();
+                let error = rovik_harness::provider::accounted_call(
+                    &mut ledger,
+                    "underfunded",
+                    &request(),
+                    Reservation {
+                        tokens,
+                        cost_microunits: 0,
+                    },
+                    &mut provider,
+                    &Cancellation::default(),
+                )
+                .unwrap_err();
+                assert!(error.message.contains("model reservation"));
+                assert_eq!(
+                    ledger.budgets("underfunded").unwrap(),
+                    before,
+                    "no claim may be created for an underfunded request"
+                );
+            }
+        })
+        .await
+        .unwrap();
+        assert!(seen.lock().unwrap().is_empty(), "positive prices with zero cost budget and incomplete input reservations must fail before HTTP");
     }
     #[test]
     fn importing_a_revision_ignores_dirty_worktree_bytes_and_never_changes_them() {

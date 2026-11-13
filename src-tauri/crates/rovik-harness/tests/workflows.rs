@@ -21,6 +21,12 @@ fn setup(ledger: &Ledger, id: &str) -> TaskSetup {
 fn registry(setup: &TaskSetup) -> ContractRegistry {
     ContractRegistry {
         profiles: setup.profiles.iter().map(|p| p.id.clone()).collect(),
+        configurations: setup
+            .profiles
+            .iter()
+            .flat_map(|p| &p.configurations)
+            .map(|c| c.digest().unwrap())
+            .collect(),
         suites: setup.suites.clone(),
         constraints: setup.constraint_names.clone(),
         risks: setup.risk_names.clone(),
@@ -473,4 +479,138 @@ fn context_prefers_cited_source_after_the_first_twelve_paths_and_keeps_exact_pro
         ranked[0].artifact_digest,
         snapshot.files["source29.rs"].content.digest
     );
+}
+
+#[test]
+fn planner_uses_each_configuration_case_mapping_without_weakening_legacy_coverage() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
+    let mut setup = setup(&ledger, "configuration-cases");
+    let mut second = setup.profiles[0].configurations[0].clone();
+    second.id = "other-platform".into();
+    setup.profiles[0].configurations.push(second);
+    let first = setup.profiles[0].configurations[0].digest().unwrap();
+    let second = setup.profiles[0].configurations[1].digest().unwrap();
+    for invariant in &mut setup.contract.invariants {
+        let original = invariant.case_ids.clone();
+        let other: Vec<_> = original
+            .iter()
+            .map(|case| format!("other-{case}"))
+            .collect();
+        invariant.case_ids.extend(other.clone());
+        invariant.cases_by_configuration =
+            BTreeMap::from([(first.clone(), original), (second.clone(), other)]);
+    }
+    setup.design.contract_digest = Digest::of_json(&setup.contract).unwrap();
+    let checks = setup.profiles[0]
+        .configurations
+        .iter()
+        .map(|config| CheckTemplate {
+            check_id: "mapped-cases".into(),
+            profile_id: setup.profiles[0].id.clone(),
+            configuration_id: config.id.clone(),
+            command_id: setup.registry.commands[0].id.clone(),
+            parameters: BTreeMap::new(),
+            obligations: setup
+                .contract
+                .invariants
+                .iter()
+                .map(|i| i.id.clone())
+                .collect(),
+            case_ids: setup
+                .contract
+                .invariants
+                .iter()
+                .flat_map(|i| {
+                    i.cases_for_configuration(&config.digest().unwrap())
+                        .unwrap()
+                        .iter()
+                        .cloned()
+                })
+                .collect(),
+            minimum_test_count: 1,
+            dependencies: vec![],
+            fast: false,
+        })
+        .collect();
+    let mut input = PlanningInput {
+        run_id: setup.run_id,
+        contract: setup.contract,
+        design: setup.design,
+        policy: setup.policy,
+        oracle_digest: setup.oracle.digest().unwrap(),
+        profiles: setup.profiles,
+        registry: setup.registry,
+        catalog: Catalog {
+            schema_version: 1,
+            checks,
+            semantic_rules: vec![],
+            candidate_reviews: vec![],
+        },
+    };
+    let plan = input.derive().unwrap();
+    assert_eq!(plan.required_final().count(), 2);
+    assert!(plan
+        .required_final()
+        .find(|c| c.configuration_digest == first)
+        .unwrap()
+        .expected_case_ids
+        .iter()
+        .all(|case| !case.starts_with("other-")));
+    assert!(plan
+        .required_final()
+        .find(|c| c.configuration_digest == second)
+        .unwrap()
+        .expected_case_ids
+        .iter()
+        .all(|case| case.starts_with("other-")));
+    let saved = input.contract.clone();
+    input.catalog.checks[1]
+        .case_ids
+        .remove("other-reserve-exact");
+    assert!(input
+        .derive()
+        .unwrap_err()
+        .message
+        .contains("protected case"));
+    input.catalog.checks[1]
+        .case_ids
+        .insert("other-reserve-exact".into());
+    for invariant in &mut input.contract.invariants {
+        invariant.cases_by_configuration.clear();
+    }
+    input.design.contract_digest = Digest::of_json(&input.contract).unwrap();
+    assert!(input
+        .derive()
+        .unwrap_err()
+        .message
+        .contains("protected case"));
+    input.contract = saved;
+    input.contract.invariants[0]
+        .cases_by_configuration
+        .remove(&second);
+    input.design.contract_digest = Digest::of_json(&input.contract).unwrap();
+    assert!(input
+        .derive()
+        .unwrap_err()
+        .message
+        .contains("registered configurations"));
+}
+
+#[test]
+fn setup_validation_cannot_collapse_two_profile_matrices_into_one_configuration() {
+    let directory = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&directory.path().join("state")).unwrap();
+    let mut setup = setup(&ledger, "ambiguous-profile");
+    let mut other = setup.profiles[0].clone();
+    other.id = "different-build-root".into();
+    other.build_root = "other".into();
+    setup.contract.profile_ids.push(other.id.clone());
+    setup.profiles.push(other);
+    setup.design.contract_digest = Digest::of_json(&setup.contract).unwrap();
+    assert!(setup
+        .validate(&ledger)
+        .unwrap_err()
+        .message
+        .contains("ambiguous configuration"));
 }

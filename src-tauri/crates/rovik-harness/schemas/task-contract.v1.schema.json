@@ -97,6 +97,16 @@
             "type": "string",
             "minLength": 1
           },
+          "cases_by_configuration": {
+            "type": "object",
+            "propertyNames": { "pattern": "^sha256:[0-9a-f]{64}$" },
+            "additionalProperties": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
           "case_ids": {
             "type": "array",
             "items": {

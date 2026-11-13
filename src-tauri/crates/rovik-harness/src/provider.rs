@@ -137,6 +137,15 @@ pub trait Provider {
     fn supports_role(&self, _role: Role) -> bool {
         true
     }
+    /// Reject an underfunded request before any durable claim or external call.
+    /// Adapters with known token bounds and prices override this check.
+    fn validate_reservation(
+        &self,
+        _request: &ModelRequest,
+        _reservation: &Reservation,
+    ) -> Result<()> {
+        Ok(())
+    }
     /// Generate one bounded response; controller code handles retries and formatting repair.
     fn generate(
         &mut self,
@@ -168,6 +177,7 @@ pub fn accounted_call(
     }
 
     require(!cancel.is_cancelled(), "model attempt cancelled")?;
+    provider.validate_reservation(request, &reservation)?;
     let now = crate::runner::now_ms()?;
     let input = ledger.store_json("context", request, now)?;
     let lease = ledger.claim(

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { DialogSummary } from '../types';
+import type { HarnessPlanOperation } from './polyglotPlan';
 
 /** A known chat on the currently selected project's execution host. */
 export interface HarnessChatContext {
@@ -60,6 +61,10 @@ export type HarnessRunStatus =
 
 export interface HarnessRun {
   runId: string;
+  kind?: 'verification' | 'implementation';
+  planDigest?: string;
+  providerBinding?: unknown;
+  drafts?: { role: string; draft: unknown; advisory: true; requiresReview: true }[];
   state: string;
   status: HarnessRunStatus;
   snapshotDigest: string;
@@ -98,6 +103,7 @@ export interface HarnessSetup {
   invariants?: { id: string; statement: string; owner: string; case_ids: string[] }[];
   candidateReviews?: string[];
   negativeControlCases?: string[];
+  riskPolicy?: unknown;
 }
 
 export interface HarnessInspection {
@@ -144,7 +150,10 @@ export type HarnessOperation =
   | { action: 'approve'; runId: string; request: HarnessApprovalRequest };
 
 /** The same RPC reaches the local backend or the selected chat's cloud host. */
-export function harnessRequest<T>(target: HarnessTarget, request: HarnessOperation): Promise<T> {
+export function harnessRequest<T>(
+  target: HarnessTarget,
+  request: HarnessOperation | HarnessPlanOperation
+): Promise<T> {
   return invoke<T>('polyglot_harness', {
     root: target.root,
     executionHost: target.dialogId ? 'chat' : 'local',

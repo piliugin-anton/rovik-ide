@@ -28,6 +28,50 @@ pub struct Invariant {
     pub owner: String,
     /// Registered acceptance cases.
     pub case_ids: Vec<String>,
+    /// Exact cases for every configured target. Omission preserves the legacy
+    /// requirement that all global cases execute in every configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cases_by_configuration: BTreeMap<Digest, Vec<String>>,
+}
+
+impl Invariant {
+    /// Resolve protected cases without treating an incomplete mapping as an exemption.
+    pub fn cases_for_configuration(&self, configuration: &Digest) -> Result<&[String]> {
+        if self.cases_by_configuration.is_empty() {
+            return Ok(&self.case_ids);
+        }
+        self.cases_by_configuration
+            .get(configuration)
+            .map(Vec::as_slice)
+            .ok_or_else(|| crate::Error::new("invariant omits a required configuration".into()))
+    }
+
+    /// Validate a complete explicit matrix and its globally registered case union.
+    pub fn validate_configurations(&self, configurations: &BTreeSet<Digest>) -> Result<()> {
+        if self.cases_by_configuration.is_empty() {
+            return Ok(());
+        }
+        require(
+            !configurations.is_empty()
+                && self
+                    .cases_by_configuration
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+                    == *configurations,
+            "invariant case mapping must cover exactly the registered configurations",
+        )?;
+        let mut union = BTreeSet::new();
+        for cases in self.cases_by_configuration.values() {
+            require(!cases.is_empty(), "configuration has no invariant cases")?;
+            unique(cases.iter().map(String::as_str))?;
+            union.extend(cases.iter().cloned());
+        }
+        require(
+            union == self.case_ids.iter().cloned().collect(),
+            "invariant configuration case union differs from registered cases",
+        )
+    }
 }
 
 /// A question that must not be silently answered by a model assumption.
@@ -93,6 +137,9 @@ pub struct TaskContract {
 pub struct ContractRegistry {
     /// Registered profile IDs, including templates while drafting.
     pub profiles: BTreeSet<String>,
+    /// Complete target identities for explicit per-configuration case mappings.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub configurations: BTreeSet<Digest>,
     /// Registered suite ID to exact case inventory.
     pub suites: BTreeMap<String, BTreeSet<String>>,
     /// Supported constraint names.
@@ -139,6 +186,7 @@ impl TaskContract {
         require(!self.invariants.is_empty(), "contract has no invariants")?;
         unique(self.invariants.iter().map(|i| i.id.as_str()))?;
         for invariant in &self.invariants {
+            invariant.validate_configurations(&registry.configurations)?;
             require(
                 !invariant.owner.trim().is_empty() && !invariant.statement.trim().is_empty(),
                 "invariant has no owner or statement",

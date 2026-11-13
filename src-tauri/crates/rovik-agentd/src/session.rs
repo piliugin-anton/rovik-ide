@@ -33,6 +33,7 @@ const FEATURES: &[&str] = &[
     features::MEMORY_SYNC,
     features::CONTEXT_FILES,
     features::POLYGLOT_HARNESS,
+    features::POLYGLOT_IMPLEMENTATION,
     features::MIRROR,
     features::HOST,
     features::CLEAN_UP,

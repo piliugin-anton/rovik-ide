@@ -7,7 +7,7 @@ function label(key: string): string {
 }
 
 /** Render the actual reviewed artifact as labelled fields, preserving every value. */
-function SubjectFields(props: { value: unknown }) {
+export function SubjectFields(props: { value: unknown }) {
   if (Array.isArray(props.value)) {
     return (
       <ul>

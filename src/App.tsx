@@ -99,7 +99,7 @@ import {
   type Marks,
   type OpenInEditor,
 } from './lib/openInEditor';
-import { isPlanFile, requestImplementPlan } from './lib/plans';
+import { isPlanFile, requestImplementPlan, verifiedEditorPlanPath } from './lib/plans';
 import PlanImplementationAction from './components/PlanImplementationAction';
 import {
   isBrowserTab,
@@ -1273,12 +1273,21 @@ export default function App() {
    * "Implement this plan" over a plan file: saves it, then hands it to the
    * chat, which starts the run in Agent mode (lib/plans.ts).
    */
-  async function implementOpenPlan() {
+  async function implementOpenPlan(requireVerified = false) {
     const file = activeFile();
     if (!file || !isPlanFile(file.path)) return;
     if (file.dirty) await saveActiveFile();
-    setSidebarTab('chat');
-    requestImplementPlan({ path: file.path });
+    try {
+      const path = requireVerified ? verifiedEditorPlanPath(file.path, rootPath()) : file.path;
+      setSidebarTab('chat');
+      requestImplementPlan({
+        path,
+        requireVerified,
+        sourceRoot: requireVerified ? rootPath()! : undefined,
+      });
+    } catch (error) {
+      notify({ kind: 'error', title: 'The plan could not be prepared', message: String(error) });
+    }
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */
@@ -2319,6 +2328,11 @@ export default function App() {
           >
             <ChatPanel
               rootPath={rootPath}
+              unsavedFiles={() =>
+                openFiles()
+                  .filter((file) => file.dirty && !file.readOnly)
+                  .map((file) => file.path)
+              }
               onLoadingChange={setLoadingChats}
               activeFileContext={activeFileContext}
               files={tree.files}
@@ -2383,7 +2397,7 @@ export default function App() {
                 path={activePath()!}
                 content={activeFile()?.content}
                 canImplement={!activeFile()?.readOnly}
-                onImplement={() => void implementOpenPlan()}
+                onImplement={(requireVerified) => void implementOpenPlan(requireVerified)}
               />
             </div>
           </Show>

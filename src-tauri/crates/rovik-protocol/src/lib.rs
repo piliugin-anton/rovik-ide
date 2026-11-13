@@ -63,6 +63,8 @@ pub const FORWARD_UPGRADE: &str = "rovik-forward";
 pub mod features {
     /// Trusted project setup and fresh polyglot verification through `Harness`.
     pub const POLYGLOT_HARNESS: &str = "polyglot-harness";
+    /// Reviewed plan implementation and preparation with ephemeral provider credentials.
+    pub const POLYGLOT_IMPLEMENTATION: &str = "polyglot-implementation";
     /// Reads current context files, including task cards, without a mounted volume.
     pub const CONTEXT_FILES: &str = "context-files";
     /// Incremental project-memory exchange, including edits and deletion markers.

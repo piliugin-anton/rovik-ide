@@ -123,6 +123,12 @@ After pushing the final phase, inspect the PR's CI results and fix regressions.
   tests, 919 protocol/client/daemon tests and a real baseline/control/final
   verification passed. The native run preserved the checkout and index and made
   no model calls. Clippy added no warnings.
-- Phase 2: pending.
+- Phase 2: implemented. Guided preparation, exact saved-plan binding, trusted
+  provider selection and reservation accounting, bounded private implementation,
+  review/export, cancellation and recovery are connected to the existing plan
+  action. All 1,156 frontend cases, type checks and formatting passed. The native
+  plan test made one priced model call, verified the private candidate and
+  preserved dirty source and the Git index. Full Rust validation also exposed
+  independent timing and file-history races; their fixes are delivered separately.
 - Phase 3: pending.
 - Phase 4: pending.

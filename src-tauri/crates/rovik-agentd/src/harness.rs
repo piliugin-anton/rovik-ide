@@ -16,14 +16,7 @@ pub fn serve(
     operation: Operation,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Fail>> + Send + '_>> {
     Box::pin(async move {
-        let fresh = matches!(
-            operation,
-            Operation::Inspect { .. }
-                | Operation::Verify { .. }
-                | Operation::Configure { .. }
-                | Operation::Status { .. }
-                | Operation::Resume { .. }
-        );
+        let fresh = operation.requires_current_source();
         // Share the worktree mutation guard with WorkSync and ordinary chat runs.
         // Private-job cancellation and exact approval decisions remain available.
         let _files = fresh

@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js';
 import { open } from '@tauri-apps/plugin-dialog';
 import { onFileDeleted, onFileWritten } from '../lib/approvals';
-import PolyglotApproval from './PolyglotApproval';
+import PolyglotApproval, { SubjectFields } from './PolyglotApproval';
 import {
   displayedHarnessStatus,
   harnessRequest,
@@ -29,6 +29,10 @@ export default function PolyglotHarnessPanel(props: {
   executionLabel?: string;
   /** Undefined means the caller cannot establish what the editor has saved. */
   unsavedFiles?: readonly string[];
+  /** Preparation reuses setup selection without starting a separate verification. */
+  setupOnly?: boolean;
+  onInspection?: (inspection: HarnessInspection, untracked: string[]) => void;
+  onInputPending?: () => void;
 }) {
   const [inspection, setInspection] = createSignal<HarnessInspection>();
   const [selectedFiles, setSelectedFiles] = createSignal<string[]>([]);
@@ -59,6 +63,7 @@ export default function PolyglotHarnessPanel(props: {
   function acceptInspection(value: HarnessInspection) {
     setInspection(value);
     setFreshnessKnown(true);
+    props.onInspection?.(value, [...selectedFiles()]);
     if (!value.setups.some((s) => s.id === setupId()))
       setSetupId(value.configuration?.setupId ?? value.setups[0]?.id ?? '');
     if (!value.host.engines.some((e) => engineKey(e) === engineId())) {
@@ -71,6 +76,7 @@ export default function PolyglotHarnessPanel(props: {
   }
 
   async function inspect(files = selectedFiles()) {
+    props.onInputPending?.();
     const scope = generation;
     const number = ++requestNumber;
     setLoading(true);
@@ -93,6 +99,7 @@ export default function PolyglotHarnessPanel(props: {
   }
 
   async function action(request: HarnessOperation, kind: 'inspection' | 'run') {
+    if (kind === 'inspection') props.onInputPending?.();
     const scope = generation;
     const number = ++requestNumber;
     setLoading(false);
@@ -228,8 +235,9 @@ export default function PolyglotHarnessPanel(props: {
   return (
     <div class="polyglot-harness">
       <p class="settings-hint">
-        Verify an exact snapshot against reviewed acceptance tests and architecture rules.
-        Verification uses the execution host’s protected environment and makes no model calls.
+        {props.setupOnly
+          ? 'Configure the protected acceptance tests and architecture rules for the reviewed plan. Implementation uses the selected model; verification checks run without model calls.'
+          : 'Verify an exact snapshot against reviewed acceptance tests and architecture rules. Verification uses the execution host’s protected environment and makes no model calls.'}
       </p>
       <p class="settings-hint">
         Execution:{' '}
@@ -281,7 +289,10 @@ export default function PolyglotHarnessPanel(props: {
                 aria-label="Prepared verification setup"
                 value={setupId()}
                 disabled={busy() || loading()}
-                onChange={(e) => setSetupId(e.currentTarget.value)}
+                onChange={(e) => {
+                  props.onInputPending?.();
+                  setSetupId(e.currentTarget.value);
+                }}
               >
                 <option value="">Choose a setup</option>
                 <For each={info().setups}>
@@ -314,6 +325,12 @@ export default function PolyglotHarnessPanel(props: {
                       Negative controls: {setup().negativeControlCases!.join(', ')}
                     </p>
                   </Show>
+                  <Show when={setup().riskPolicy}>
+                    <details>
+                      <summary>Risk evidence requirements</summary>
+                      <SubjectFields value={setup().riskPolicy} />
+                    </details>
+                  </Show>
                   <ul>
                     <For each={setup().checks}>
                       {(check) => (
@@ -344,7 +361,10 @@ export default function PolyglotHarnessPanel(props: {
                 aria-label="Container engine"
                 value={engineId()}
                 disabled={busy() || loading()}
-                onChange={(e) => setEngineId(e.currentTarget.value)}
+                onChange={(e) => {
+                  props.onInputPending?.();
+                  setEngineId(e.currentTarget.value);
+                }}
               >
                 <option value="">Choose an installed engine</option>
                 <For each={info().host.engines}>
@@ -430,24 +450,27 @@ export default function PolyglotHarnessPanel(props: {
                 )}
               </For>
             </Show>
-            <button
-              type="button"
-              class="chat-action-button primary"
-              disabled={
-                busy() ||
-                loading() ||
-                !!inputProblem() ||
-                !info().host.supported ||
-                !info().configuration ||
-                setupId() !== info().configuration?.setupId ||
-                engineId() !== (info().configuration ? engineKey(info().configuration!.engine) : '')
-              }
-              onClick={() => void verify()}
-            >
-              Verify changes
-            </button>
+            <Show when={!props.setupOnly}>
+              <button
+                type="button"
+                class="chat-action-button primary"
+                disabled={
+                  busy() ||
+                  loading() ||
+                  !!inputProblem() ||
+                  !info().host.supported ||
+                  !info().configuration ||
+                  setupId() !== info().configuration?.setupId ||
+                  engineId() !==
+                    (info().configuration ? engineKey(info().configuration!.engine) : '')
+                }
+                onClick={() => void verify()}
+              >
+                Verify changes
+              </button>
+            </Show>
 
-            <Show when={info().runs.length > 1}>
+            <Show when={!props.setupOnly && info().runs.length > 1}>
               <label class="setting-row">
                 <span>Run history</span>
                 <select
@@ -473,7 +496,7 @@ export default function PolyglotHarnessPanel(props: {
         )}
       </Show>
 
-      <Show when={run()}>
+      <Show when={!props.setupOnly && run()}>
         {(current) => (
           <section aria-label="Verification result">
             <p

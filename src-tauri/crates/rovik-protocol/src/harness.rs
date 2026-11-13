@@ -40,6 +40,40 @@ pub struct SourceBinding {
     pub tracked_paths: Vec<String>,
 }
 
+/// Explicit billing rates in microunits per million tokens, including deliberate zero rates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelRates {
+    /// Uncached input rate.
+    pub input: u64,
+    /// Cached input rate.
+    pub cached_input: u64,
+    /// Output rate.
+    pub output: u64,
+}
+
+/// Ephemeral selected IDE provider. Credentials are never persisted with runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImplementationProvider {
+    /// Existing IDE model selection; Debug redacts its API key.
+    pub profile: crate::agent::ModelProfile,
+    /// Explicit reviewed billing rates.
+    pub rates: ModelRates,
+}
+
+/// An advisory preparation role, with no approval or candidate-write capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DraftRole {
+    /// Propose domain requirements.
+    Domain,
+    /// Propose responsibility and reuse decisions.
+    Architect,
+    /// Propose protected acceptance tests.
+    Oracle,
+}
+
 /// User management actions, never exposed through the worker tool broker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -49,6 +83,71 @@ pub struct SourceBinding {
     deny_unknown_fields
 )]
 pub enum Operation {
+    /// Read the exact saved plan on the execution host for review.
+    InspectPlan {
+        /// In-project saved plan path.
+        plan_path: String,
+    },
+    /// Build a prepared setup from reviewed guided configuration.
+    PrepareWorkspace {
+        /// Closed WorkspaceSetupInput decoded by the host builder.
+        input: Value,
+    },
+    /// Register a verified implementation; exact decisions require approval before execution.
+    ImplementPlan {
+        /// In-project saved plan path.
+        plan_path: String,
+        /// Exact plan bytes the operator reviewed.
+        expected_plan_digest: String,
+        /// Exact source tree the operator reviewed.
+        expected_snapshot_digest: String,
+        /// Selected untracked source files.
+        #[serde(default)]
+        untracked: Vec<String>,
+        /// All selected editor buffers have been saved.
+        saved_buffers: bool,
+        /// Operator confirmed that protected criteria cover this plan.
+        plan_criteria_reviewed: bool,
+        /// Ephemeral selected model and explicit billing rates.
+        provider: ImplementationProvider,
+    },
+    /// Resume implementation with credentials supplied again, preserving its model binding and budget.
+    ResumeImplementation {
+        /// Durable controller run identity.
+        run_id: String,
+        /// Same provider/model/rates; a rotated API key is allowed.
+        provider: ImplementationProvider,
+    },
+    /// Generate a bounded advisory draft against the run's exact plan and source.
+    DraftPlan {
+        /// Durable implementation intake paying for the draft.
+        run_id: String,
+        /// Advisory role to invoke.
+        role: DraftRole,
+        /// Ephemeral selected provider, matching the registered run binding.
+        provider: ImplementationProvider,
+    },
+    /// Review the exact candidate changes without applying them to the checkout.
+    ReviewChanges {
+        /// Durable controller run identity.
+        run_id: String,
+    },
+    /// Export an immutable review bundle into controller-private storage.
+    ExportReview {
+        /// Durable controller run identity.
+        run_id: String,
+    },
+    /// Prepare an unreferenced accepted commit; never update a checkout or branch.
+    PrepareDelivery {
+        /// Durable accepted run identity.
+        run_id: String,
+        /// Explicit destination branch.
+        destination_reference: String,
+        /// Expected destination commit.
+        expected_head: String,
+        /// Reviewed commit message.
+        message: String,
+    },
     /// Discover project inputs and reusable, reviewed configuration.
     Inspect {
         /// Explicitly selected untracked files to include in the snapshot.
@@ -113,9 +212,127 @@ pub enum Operation {
     },
 }
 
+impl Operation {
+    /// Whether this action must observe current synchronized source bytes and index selection.
+    /// Both desktop routing and the daemon use this classification before capturing inputs.
+    pub fn requires_current_source(&self) -> bool {
+        match self {
+            Self::InspectPlan { .. }
+            | Self::PrepareWorkspace { .. }
+            | Self::ImplementPlan { .. }
+            | Self::ResumeImplementation { .. }
+            | Self::DraftPlan { .. }
+            | Self::ReviewChanges { .. }
+            | Self::ExportReview { .. }
+            | Self::PrepareDelivery { .. }
+            | Self::Inspect { .. }
+            | Self::Configure { .. }
+            | Self::Verify { .. }
+            | Self::Status { .. }
+            | Self::Resume { .. } => true,
+            Self::ImportSetup { .. }
+            | Self::Approvals { .. }
+            | Self::Approve { .. }
+            | Self::Cancel { .. }
+            | Self::Recover { .. } => false,
+        }
+    }
+
+    /// The host capability required before serializing this action or forwarding model credentials.
+    pub fn required_feature(&self) -> &'static str {
+        match self {
+            Self::InspectPlan { .. }
+            | Self::PrepareWorkspace { .. }
+            | Self::ImplementPlan { .. }
+            | Self::ResumeImplementation { .. }
+            | Self::DraftPlan { .. }
+            | Self::ReviewChanges { .. }
+            | Self::ExportReview { .. }
+            | Self::PrepareDelivery { .. } => crate::features::POLYGLOT_IMPLEMENTATION,
+            Self::Inspect { .. }
+            | Self::ImportSetup { .. }
+            | Self::Configure { .. }
+            | Self::Verify { .. }
+            | Self::Status { .. }
+            | Self::Approvals { .. }
+            | Self::Approve { .. }
+            | Self::Cancel { .. }
+            | Self::Resume { .. }
+            | Self::Recover { .. } => crate::features::POLYGLOT_HARNESS,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn implementation_provider() -> Value {
+        serde_json::json!({
+            "profile":{"id":"provider::model", "label":"Model", "model":"model",
+                "baseUrl":"https://model.example/v1", "apiKey":"ephemeral-test-key"},
+            "rates":{"input":1,"cachedInput":0,"output":2}
+        })
+    }
+
+    #[test]
+    fn every_implementation_operation_requires_current_source_and_a_capable_host() {
+        let provider = implementation_provider();
+        let requests = [
+            serde_json::json!({"action":"inspectPlan","planPath":"plans/change.md"}),
+            serde_json::json!({"action":"prepareWorkspace","input":{}}),
+            serde_json::json!({"action":"implementPlan","planPath":"plans/change.md", "expectedPlanDigest":"plan", "expectedSnapshotDigest":"source", "untracked":[], "savedBuffers":true,"planCriteriaReviewed":true,"provider":provider}),
+            serde_json::json!({"action":"resumeImplementation","runId":"run","provider":provider}),
+            serde_json::json!({"action":"draftPlan","runId":"run","role":"architect","provider":provider}),
+            serde_json::json!({"action":"reviewChanges","runId":"run"}),
+            serde_json::json!({"action":"exportReview","runId":"run"}),
+            serde_json::json!({"action":"prepareDelivery","runId":"run", "destinationReference":"refs/heads/main", "expectedHead":"head", "message":"Reviewed changes"}),
+        ];
+        for request in requests {
+            let operation: Operation = serde_json::from_value(request).unwrap();
+            assert!(operation.requires_current_source(), "{operation:?}");
+            assert_eq!(
+                operation.required_feature(),
+                crate::features::POLYGLOT_IMPLEMENTATION
+            );
+            let encoded = serde_json::to_vec(&operation).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Operation>(&encoded).unwrap(),
+                operation
+            );
+            assert!(!format!("{operation:?}").contains("ephemeral-test-key"));
+        }
+    }
+
+    #[test]
+    fn private_job_cancellation_and_exact_decisions_do_not_require_current_source() {
+        let operations = [
+            Operation::Cancel {
+                run_id: "run".into(),
+            },
+            Operation::Recover {
+                run_id: "run".into(),
+            },
+            Operation::Approvals {
+                run_id: "run".into(),
+            },
+            Operation::Approve {
+                run_id: "run".into(),
+                request: Value::Null,
+            },
+        ];
+        for operation in operations {
+            assert!(!operation.requires_current_source());
+            assert_eq!(
+                operation.required_feature(),
+                crate::features::POLYGLOT_HARNESS
+            );
+        }
+        assert!(Operation::Status {
+            run_id: "run".into()
+        }
+        .requires_current_source());
+    }
 
     #[test]
     fn verification_requires_an_explicit_saved_snapshot_and_rejects_authority_injection() {

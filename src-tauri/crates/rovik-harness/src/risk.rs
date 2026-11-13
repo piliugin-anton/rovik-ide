@@ -1,6 +1,7 @@
 //! Conservative risk routing from immutable source changes and declared task risks.
 //! Lexical signals can add obligations; their absence never certifies safety.
 use crate::{
+    identity::Digest,
     ledger::Ledger,
     plan::{CheckPlan, Phase},
     require,
@@ -23,6 +24,10 @@ pub struct RiskPolicy {
 pub struct RiskRoute {
     /// Required final command IDs with native behavioral inventory.
     pub commands: BTreeSet<String>,
+    /// Exact commands for every configuration. Omission retains the requirement
+    /// that every global command run in every configured target.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands_by_configuration: BTreeMap<Digest, BTreeSet<String>>,
     /// Candidate-bound authenticated semantic review types.
     pub reviews: BTreeSet<String>,
     /// Protected concurrency cases grouped by the property they exercise.
@@ -30,6 +35,16 @@ pub struct RiskRoute {
     /// This records tested schedules and never claims exhaustive race freedom.
     #[serde(default)]
     pub concurrency_cases: BTreeMap<String, BTreeSet<String>>,
+}
+impl RiskRoute {
+    fn commands_for_configuration(&self, configuration: &Digest) -> Result<&BTreeSet<String>> {
+        if self.commands_by_configuration.is_empty() {
+            return Ok(&self.commands);
+        }
+        self.commands_by_configuration
+            .get(configuration)
+            .ok_or_else(|| crate::Error::new("risk route omits a required configuration".into()))
+    }
 }
 /// Attributed risk assessment, recorded before verification and recomputed at the gate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +265,45 @@ pub fn assess_for_languages(
     Ok(assessment)
 }
 impl RiskPolicy {
+    /// Reject incomplete explicit matrices before a run or conditional risk check.
+    /// Existing documents without mappings retain their original interpretation.
+    pub fn validate_configuration_mappings(&self, plan: &CheckPlan) -> Result<()> {
+        let configurations: BTreeSet<_> = plan.configurations.iter().cloned().collect();
+        for route in self.routes.values() {
+            if route.commands_by_configuration.is_empty() {
+                continue;
+            }
+            require(
+                !configurations.is_empty()
+                    && route
+                        .commands_by_configuration
+                        .keys()
+                        .cloned()
+                        .collect::<BTreeSet<_>>()
+                        == configurations,
+                "risk command mapping must cover exactly the registered configurations",
+            )?;
+            require(
+                route
+                    .commands_by_configuration
+                    .values()
+                    .all(|commands| !commands.is_empty()),
+                "risk configuration has no required commands",
+            )?;
+            require(
+                route
+                    .commands_by_configuration
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+                    == route.commands,
+                "risk configuration command union differs from registered commands",
+            )?;
+        }
+        Ok(())
+    }
+
     /// Added risks cannot be suppressed by a worker or satisfied by advisory checks.
     pub fn validate(
         &self,
@@ -257,6 +311,7 @@ impl RiskPolicy {
         plan: &CheckPlan,
         registry: &crate::registry::CommandRegistry,
     ) -> Result<()> {
+        self.validate_configuration_mappings(plan)?;
         for risk in &assessment.risks {
             let required = matches!(
                 risk.as_str(),
@@ -294,19 +349,20 @@ impl RiskPolicy {
                 format!("missing candidate review for {risk}"),
             )?;
             for configuration in &plan.configurations {
+                let commands = route.commands_for_configuration(configuration)?;
                 if risk == "concurrency" {
                     let planned: BTreeSet<_> = plan
                         .required_final()
                         .filter(|check| {
                             check.configuration_digest == *configuration
-                                && route.commands.contains(&check.command_id)
+                                && commands.contains(&check.command_id)
                         })
                         .flat_map(|check| check.expected_case_ids.iter())
                         .collect();
                     require(route.concurrency_cases.values().flatten().all(|case| planned.contains(case)),
                         "concurrency property has no protected case in a required final configuration")?;
                 }
-                for command in &route.commands {
+                for command in commands {
                     require(
                         registry.get(command)?.kind == crate::plan::CheckKind::Behavioral,
                         "risk requires behavioral native evidence",

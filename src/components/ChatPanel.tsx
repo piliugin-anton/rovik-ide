@@ -94,6 +94,8 @@ import {
 import TodoPanel from './TodoPanel';
 import PriorWorkPanel from './PriorWorkPanel';
 import IsolationBar from './IsolationBar';
+import PolyglotPlanImplementation from './PolyglotPlanImplementation';
+import { verifiedPlanContextProblem } from '../lib/polyglotPlan';
 import AutopilotStrip from './AutopilotStrip';
 import {
   runningCandidate,
@@ -277,6 +279,7 @@ interface ChatProps {
   /** Includes the chat list, active transcript and composer restoration. */
   onLoadingChange?: (loading: boolean) => void;
   rootPath: Accessor<string | null>;
+  unsavedFiles?: Accessor<readonly string[]>;
   activeFileContext: Accessor<ActiveFileContext | null>;
   files: Accessor<TreeRow[]>;
   /**
@@ -288,6 +291,15 @@ interface ChatProps {
 
 export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
+  const [strictPlan, setStrictPlan] = createSignal<{
+    root: string;
+    dialogId: string;
+    path: string;
+    profile: ModelProfile;
+    projectId: string;
+    owner: string;
+  }>();
+  const [strictActive, setStrictActive] = createSignal(false);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
   const [subagentSettings, setSubagentSettings] =
@@ -3111,6 +3123,7 @@ export default function ChatPanel(props: ChatProps) {
   ): Promise<boolean> {
     const profile = activeProfile();
     if (!profile) return false;
+    if (strictActive() && strictPlan()?.dialogId === dialogId) return false;
     const readOnly = readOnlyReason(store.summaryOf(dialogId)?.place, cloud.hosts);
     if (readOnly) {
       notify({ title: 'This chat can’t change now', message: readOnly, timeout: 6000 });
@@ -3155,7 +3168,10 @@ export default function ChatPanel(props: ChatProps) {
   const waitingIds = createMemo(waitingChats);
 
   /** Why the open chat can't change now: one that's moving is read-only (U02). */
-  const readOnly = () => readOnlyReason(activeDialog()?.place, cloud.hosts);
+  const readOnly = () =>
+    strictActive() && strictPlan()?.dialogId === activeDialogId()
+      ? 'A verified implementation is running. Cancel it before starting an ordinary agent run.'
+      : readOnlyReason(activeDialog()?.place, cloud.hosts);
 
   /**
    * How a Continue would start `dialogId`, once what's queued for it is
@@ -3214,12 +3230,12 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /** "Implement this plan" under the plan in the chat: its file. */
-  function implementPlan() {
+  function implementPlan(requireVerified = false) {
     const dialogId = activeDialogId();
     if (!dialogId) return;
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
     const file = last?.meta?.planFile;
-    if (file) startImplementation(dialogId, file);
+    if (file) startImplementation(dialogId, file, requireVerified);
   }
 
   /**
@@ -3228,8 +3244,17 @@ export default function ChatPanel(props: ChatProps) {
    * request, which keeps it in view for the whole run (the current request
    * is never dropped from the context); the chat shows a short line.
    */
-  async function startImplementation(dialogId: string, file: string) {
-    if (!activeProfile() || isRunning(dialogId)) return;
+  async function startImplementation(dialogId: string, file: string, requireVerified = false) {
+    if (!activeProfile() || isRunning(dialogId) || strictActive()) return;
+    if (requireVerified) {
+      const root = props.rootPath();
+      const projectId = props.projectId();
+      const dialog = store.summaryOf(dialogId);
+      if (!root || !projectId || store.projectId() !== projectId || !dialog || readOnly()) return;
+      const owner = dialog.place?.kind === 'host' ? dialog.place.host : 'local';
+      setStrictPlan({ root, dialogId, path: file, profile: activeProfile()!, projectId, owner });
+      return;
+    }
     try {
       const { content, meta } = await implementationMessage(dialogId, file);
       if (activeDialogId() !== dialogId || !activeProfile() || isRunning(dialogId)) return;
@@ -3267,7 +3292,15 @@ export default function ChatPanel(props: ChatProps) {
     const dialogId = activeDialogId();
     if (!dialogId || sending() || loadingHistory()) return;
     const request = takeImplementPlanRequest();
-    if (request) startImplementation(dialogId, request.path);
+    if (request?.requireVerified && request.sourceRoot && request.sourceRoot !== props.rootPath()) {
+      notify({
+        kind: 'error',
+        title: 'The plan’s project changed',
+        message: 'Open the original project and choose verified implementation again.',
+      });
+      return;
+    }
+    if (request) startImplementation(dialogId, request.path, request.requireVerified);
   }
   const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
   onCleanup(stopPlanRequests);
@@ -4668,6 +4701,40 @@ export default function ChatPanel(props: ChatProps) {
           onConnector() ? connectorTitle(connectorKindOf(activeProfile()!.baseUrl)) : undefined
         }
       />
+      <Show when={strictPlan()} keyed>
+        {(plan) => (
+          <PolyglotPlanImplementation
+            target={{ root: plan.root, dialogId: plan.dialogId }}
+            contextProblem={verifiedPlanContextProblem(plan, {
+              root: props.rootPath(),
+              projectId: props.projectId(),
+              chatProjectId: store.projectId(),
+              owner: !store.summaryOf(plan.dialogId)
+                ? undefined
+                : store.summaryOf(plan.dialogId)?.place
+                  ? store.summaryOf(plan.dialogId)?.place?.kind === 'host'
+                    ? store.summaryOf(plan.dialogId)?.place?.host
+                    : undefined
+                  : 'local',
+            })}
+            planPath={plan.path}
+            profile={plan.profile}
+            unsavedFiles={props.unsavedFiles?.()}
+            executionLabel={
+              store.summaryOf(plan.dialogId)?.place?.kind === 'host'
+                ? (cloud.hosts.find(
+                    (host) => host.id === store.summaryOf(plan.dialogId)?.place?.host
+                  )?.name ?? 'Selected chat’s host')
+                : 'This computer (selected chat)'
+            }
+            onActiveChange={setStrictActive}
+            onClose={() => {
+              setStrictPlan(undefined);
+              setStrictActive(false);
+            }}
+          />
+        )}
+      </Show>
       {/* What the project's memory gave this run, above its checklist. */}
       <Show when={recalledMemories(activeDialogId())} keyed>
         {(memories) => <PriorWorkPanel memories={memories} />}

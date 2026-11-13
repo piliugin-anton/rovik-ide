@@ -206,10 +206,25 @@ impl TaskSetup {
         crate::id(&self.repository_id)?;
         let registry = ContractRegistry {
             profiles: self.profiles.iter().map(|p| p.id.clone()).collect(),
+            configurations: self
+                .profiles
+                .iter()
+                .flat_map(|p| &p.configurations)
+                .map(|c| c.digest())
+                .collect::<Result<_>>()?,
             suites: self.suites.clone(),
             constraints: self.constraint_names.clone(),
             risks: self.risk_names.clone(),
         };
+        require(
+            registry.configurations.len()
+                == self
+                    .profiles
+                    .iter()
+                    .map(|p| p.configurations.len())
+                    .sum::<usize>(),
+            "ambiguous configuration shared by profiles",
+        )?;
         self.contract.validate(&registry)?;
         self.contract.require_resolved()?;
         self.design.validate(&self.contract)?;
@@ -295,6 +310,8 @@ impl TaskSetup {
             )?;
         }
         self.plan.validate(&self.plan_registry()?)?;
+        self.risk_policy
+            .validate_configuration_mappings(&self.plan)?;
         self.baseline.validate(self)?;
         for profile in &self.profiles {
             for config in &profile.configurations {
@@ -421,6 +438,16 @@ impl TaskSetup {
             .flat_map(|i| i.case_ids.iter().cloned())
             .collect();
         for configuration in &self.plan.configurations {
+            let required_cases: BTreeSet<_> = self
+                .contract
+                .invariants
+                .iter()
+                .map(|i| i.cases_for_configuration(configuration))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
             let covered: BTreeSet<_> = self
                 .plan
                 .required_final()
@@ -428,7 +455,7 @@ impl TaskSetup {
                 .flat_map(|c| c.expected_case_ids.iter().cloned())
                 .collect();
             require(
-                cases.is_subset(&covered),
+                required_cases.is_subset(&covered),
                 "final matrix omits contract acceptance cases",
             )?;
         }
@@ -951,13 +978,19 @@ impl Controller {
             setup.worker.context_bytes.saturating_sub(4096),
         )
     }
-    fn role_registry(setup: &TaskSetup) -> ContractRegistry {
-        ContractRegistry {
+    fn role_registry(setup: &TaskSetup) -> Result<ContractRegistry> {
+        Ok(ContractRegistry {
             profiles: setup.profiles.iter().map(|p| p.id.clone()).collect(),
+            configurations: setup
+                .profiles
+                .iter()
+                .flat_map(|p| &p.configurations)
+                .map(|c| c.digest())
+                .collect::<Result<_>>()?,
             suites: setup.suites.clone(),
             constraints: setup.constraint_names.clone(),
             risks: setup.risk_names.clone(),
-        }
+        })
     }
     fn role_artifacts(&self, setup: &TaskSetup) -> Result<BTreeMap<String, Digest>> {
         let mut artifacts = BTreeMap::from([
@@ -980,7 +1013,7 @@ impl Controller {
         let Some(limits) = &setup.reviewer else {
             return Ok(true);
         };
-        let registry = Self::role_registry(setup);
+        let registry = Self::role_registry(setup)?;
         let artifacts = self.role_artifacts(setup)?;
         let input = crate::roles::RoleInput {
             run_id: &setup.run_id,
@@ -1012,7 +1045,7 @@ impl Controller {
         provider: &mut dyn Provider,
         cancel: &Cancellation,
     ) -> Result<crate::roles::DraftResponse> {
-        let registry = Self::role_registry(setup);
+        let registry = Self::role_registry(setup)?;
         let artifacts = self.role_artifacts(setup)?;
         let input = crate::roles::RoleInput {
             run_id: &setup.run_id,

@@ -152,7 +152,7 @@ export default function MessageList(props: {
   onOpenProjectChecks: () => void;
   /** The finished Plan-mode reply that gets "Implement this plan". */
   planMessageId?: string | null;
-  onImplementPlan?: () => void;
+  onImplementPlan?: (requireVerified?: boolean) => void;
   /** The chat can't change now (it's moving): no Retry, Continue or Implement. */
   readOnly?: boolean;
   /**

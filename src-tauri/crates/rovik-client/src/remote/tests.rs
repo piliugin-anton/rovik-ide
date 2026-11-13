@@ -2832,3 +2832,107 @@ async fn remote_verification_status_requires_current_local_inputs_and_resolved_s
         .any(|request| matches!(request, Request::Harness { .. })));
     remote.disconnect(HOST);
 }
+
+#[tokio::test]
+async fn implementation_credentials_are_not_sent_to_verification_only_hosts() {
+    use rovik_protocol::harness::{ImplementationProvider, ModelRates, Operation};
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let fake = Fake::default();
+    fake.features
+        .lock()
+        .unwrap()
+        .push(features::POLYGLOT_HARNESS.into());
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let provider = ImplementationProvider {
+        profile: start("chat", StartKind::Resume, None).profile,
+        rates: ModelRates {
+            input: 1,
+            cached_input: 0,
+            output: 2,
+        },
+    };
+    let operations = [
+        Operation::InspectPlan {
+            plan_path: "plans/change.md".into(),
+        },
+        Operation::ResumeImplementation {
+            run_id: "run".into(),
+            provider,
+        },
+        Operation::PrepareDelivery {
+            run_id: "run".into(),
+            destination_reference: "refs/heads/main".into(),
+            expected_head: "head".into(),
+            message: "Reviewed changes".into(),
+        },
+    ];
+    for operation in operations {
+        let error = remote
+            .route(
+                "chat",
+                Request::Harness {
+                    dialog_id: "chat".into(),
+                    root: Some("/private-local-root".into()),
+                    source: None,
+                    operation,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("update"), "{error}");
+    }
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| matches!(request, Request::Harness { .. })));
+    remote.disconnect(HOST);
+}
+
+#[tokio::test]
+async fn implementation_does_not_use_an_unsynchronized_cloud_worktree() {
+    use rovik_protocol::harness::{ImplementationProvider, ModelRates, Operation};
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let fake = Fake::default();
+    fake.features.lock().unwrap().extend([
+        features::POLYGLOT_HARNESS.into(),
+        features::POLYGLOT_IMPLEMENTATION.into(),
+        features::PROJECTS.into(),
+    ]);
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let error = remote
+        .route(
+            "chat",
+            Request::Harness {
+                dialog_id: "chat".into(),
+                root: Some("/private-local-root".into()),
+                source: None,
+                operation: Operation::ResumeImplementation {
+                    run_id: "run".into(),
+                    provider: ImplementationProvider {
+                        profile: start("chat", StartKind::Resume, None).profile,
+                        rates: ModelRates {
+                            input: 1,
+                            cached_input: 0,
+                            output: 2,
+                        },
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("project-backed"), "{error}");
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| matches!(request, Request::Harness { .. })));
+    remote.disconnect(HOST);
+}

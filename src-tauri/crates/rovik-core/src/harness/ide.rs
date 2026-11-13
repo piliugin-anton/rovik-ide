@@ -26,6 +26,9 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+#[path = "ide_plan.rs"]
+mod plan;
+
 type ActiveRuns = BTreeMap<(PathBuf, String), Cancellation>;
 static ACTIVE: OnceLock<Mutex<ActiveRuns>> = OnceLock::new();
 static OWNERSHIP: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -91,6 +94,8 @@ pub struct Configuration {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunInput {
+    #[serde(default)]
+    plan: Option<plan::PlanBinding>,
     execution_root: PathBuf,
     #[serde(default)]
     baseline_reference: Option<String>,
@@ -609,6 +614,55 @@ impl IdeProject {
 
     fn dispatch(&self, request: Operation) -> Result<Value> {
         match request {
+            Operation::InspectPlan { plan_path } => encode(&self.read_plan(&plan_path)?),
+            Operation::PrepareWorkspace { input } => {
+                let ledger = self.ledger()?;
+                let baseline = self.integration()?.snapshot(&ledger)?;
+                let input = decode(input)?;
+                let setup = super::ide_prepare::build(
+                    &self.root,
+                    &ledger,
+                    &self.repository_id,
+                    &baseline,
+                    &input,
+                )?;
+                self.register_setup(setup)?;
+                self.inspect(BTreeSet::new())
+            }
+            Operation::ImplementPlan {
+                plan_path,
+                expected_plan_digest,
+                expected_snapshot_digest,
+                untracked,
+                saved_buffers,
+                plan_criteria_reviewed,
+                provider,
+            } => {
+                check(saved_buffers && plan_criteria_reviewed, "Save all included buffers and review that protected acceptance criteria cover the complete plan.")?;
+                self.start_implementation(
+                    &plan_path,
+                    &Digest::parse(&expected_plan_digest)?,
+                    &Digest::parse(&expected_snapshot_digest)?,
+                    untracked.into_iter().collect(),
+                    provider,
+                )
+            }
+            Operation::ResumeImplementation { run_id, provider } => {
+                self.resume_implementation(&run_id, provider, None)
+            }
+            Operation::DraftPlan {
+                run_id,
+                role,
+                provider,
+            } => self.resume_implementation(&run_id, provider, Some(role)),
+            Operation::ReviewChanges { run_id } => self.review_changes(&run_id),
+            Operation::ExportReview { run_id } => self.export_review(&run_id),
+            Operation::PrepareDelivery {
+                run_id,
+                destination_reference,
+                expected_head,
+                message,
+            } => self.prepare_delivery(&run_id, &destination_reference, &expected_head, &message),
             Operation::Inspect { untracked } => self.inspect(untracked.into_iter().collect()),
             Operation::ImportSetup { path } => {
                 let path = Path::new(&path);
@@ -716,6 +770,10 @@ impl IdeProject {
             }
             Operation::Resume { run_id } => {
                 let input = self.run_input(&run_id)?;
+                check(
+                    input.plan.is_none(),
+                    "Resume this implementation with its selected provider credentials.",
+                )?;
                 self.require_run_context(&input)?;
                 let target = self.execution_project(&input);
                 target.current_capture(&input.snapshot_digest, &input.untracked)?;
@@ -908,6 +966,7 @@ impl IdeProject {
         let mut controller = self.controller(Some(&configuration.engine))?;
         controller.create(&setup, now)?;
         let input = RunInput {
+            plan: None,
             execution_root: self.root.clone(),
             baseline_reference: self.baseline_reference.clone(),
             tracked_paths: self.tracked_paths.clone(),
@@ -991,6 +1050,16 @@ impl IdeProject {
     }
 
     fn launch(&self, run_id: &str, input: RunInput) -> Result<()> {
+        self.launch_with_provider(run_id, input, None, None)
+    }
+
+    fn launch_with_provider(
+        &self,
+        run_id: &str,
+        input: RunInput,
+        provider: Option<rovik_protocol::harness::ImplementationProvider>,
+        role: Option<rovik_protocol::harness::DraftRole>,
+    ) -> Result<()> {
         let ownership = ownership(&self.state)?;
         let _ownership = ownership
             .lock()
@@ -1021,9 +1090,27 @@ impl IdeProject {
                     if controller.ledger.run(&run)?.state == State::Blocked {
                         controller.resume(&Principal::current()?, &run)?;
                     }
-                    let report =
-                        controller.execute(&run, &mut OfflineProvider, &integration, &cancel)?;
-                    encode(&report)
+                    match provider {
+                        Some(selection) => {
+                            let mut provider = plan::provider(&selection)?;
+                            if let Some(role) = role {
+                                plan::draft(&mut controller, &run, role, &mut provider, &cancel)
+                            } else {
+                                encode(&controller.execute(
+                                    &run,
+                                    &mut provider,
+                                    &integration,
+                                    &cancel,
+                                )?)
+                            }
+                        }
+                        None => encode(&controller.execute(
+                            &run,
+                            &mut OfflineProvider,
+                            &integration,
+                            &cancel,
+                        )?),
+                    }
                 }))
                 .unwrap_or_else(|_| {
                     Err(Error::new(
@@ -1106,8 +1193,13 @@ impl IdeProject {
             Ok(digest) => Some(digest.clone()),
             Err(_) => None,
         };
-        let stale =
-            !configuration_current || current_digest.as_ref() != Some(&input.snapshot_digest);
+        let plan_current = input.plan.as_ref().is_none_or(|binding| {
+            self.read_plan(&binding.path)
+                .is_ok_and(|plan| plan.digest == binding.digest)
+        });
+        let stale = !configuration_current
+            || !plan_current
+            || current_digest.as_ref() != Some(&input.snapshot_digest);
         let worker_error = error.is_some();
         let mut reasons: Vec<String> = error.into_iter().collect();
         if let Err(error) = current {
@@ -1218,7 +1310,7 @@ impl IdeProject {
             reasons.push("Interrupted execution or unknown usage needs recovery and accounting reconciliation before resuming.".into());
         }
         Ok(
-            json!({"runId":run_id,"workspace":self.root,"state":run.state,"status":status,"snapshotDigest":input.snapshot_digest,
+            json!({"runId":run_id,"kind":if input.plan.is_some(){"implementation"}else{"verification"},"planDigest":input.plan.as_ref().map(|p| &p.digest),"providerBinding":input.plan.as_ref().map(|p| &p.provider),"drafts":plan::drafts(&controller, run_id)?,"workspace":self.root,"state":run.state,"status":status,"snapshotDigest":input.snapshot_digest,
             "candidateDigest":candidate.map(|candidate|candidate.digest()).transpose()?,"configurationDigest":input.configuration_digest,
             "reason":reasons.first(),"reasons":reasons,"pendingApprovals":pending,"checks":checks,"gate":gate,
             "budgets":budgets,"operations":operations,
@@ -1248,7 +1340,7 @@ mod tests {
     use super::*;
     use rovik_harness::fixtures;
 
-    fn project() -> (tempfile::TempDir, IdeProject) {
+    pub(super) fn project() -> (tempfile::TempDir, IdeProject) {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("project");
         std::fs::create_dir_all(root.join("implementations/quota")).unwrap();
@@ -1273,7 +1365,7 @@ mod tests {
         (directory, project)
     }
 
-    fn prepared(project: &IdeProject, image: Digest, executable: &str) -> Configuration {
+    pub(super) fn prepared(project: &IdeProject, image: Digest, executable: &str) -> Configuration {
         let ledger = project.ledger().unwrap();
         let baseline = project.integration().unwrap().snapshot(&ledger).unwrap();
         let mut setup =

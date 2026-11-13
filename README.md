@@ -188,6 +188,12 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   and whether a result is stale. Verification preserves the checkout and index
   and makes no model calls. See the
   [IDE integration plan](docs/design/polyglot-ide-integration.md).
+- **Verified plan implementation.** Select **Require verified result** when
+  implementing a saved plan. Guided setup covers Rust, C, C++, JavaScript,
+  TypeScript and Python with explicit protected tests and execution inputs.
+  Review exact approvals, provider prices and the resulting private candidate;
+  cancellation and recovery preserve the same run and budget. This path needs a
+  supported Linux execution host and an OpenAI-compatible Chat Completions model.
 - **Local Docker setup.** On startup, Rovik installs Docker when it is missing
   on a supported desktop. Progress and retry actions appear alongside the
   browser installation notifications. Linux uses signed distribution packages

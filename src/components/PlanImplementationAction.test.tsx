@@ -206,3 +206,32 @@ test('a status lookup failure is visible and can be retried without crashing the
     refreshPlanImplementations();
   }
 });
+
+test('Require verified result passes explicit intent without changing ordinary implementation by default', async () => {
+  record = null;
+  lookupError = false;
+  const selected: (boolean | undefined)[] = [];
+  const root = container();
+  const dispose = render(
+    () => (
+      <PlanImplementationAction
+        path={file}
+        content="# New plan"
+        canImplement
+        onImplement={(strict) => selected.push(strict)}
+      />
+    ),
+    root
+  );
+  try {
+    await tick();
+    root.querySelector<HTMLButtonElement>('.primary')!.click();
+    const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    root.querySelector<HTMLButtonElement>('.primary')!.click();
+    assert.deepEqual(selected, [false, true]);
+  } finally {
+    dispose();
+  }
+});

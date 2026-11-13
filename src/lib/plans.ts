@@ -33,6 +33,24 @@ export function relativePlanPath(path: string, root: string | null): string {
   return path.startsWith(r) ? path.slice(r.length + 1) : path;
 }
 
+/** A desktop editor plan is routed by its validated project-relative path on any host. */
+export function verifiedEditorPlanPath(path: string, root: string | null): string {
+  if (!root) throw new Error('Open the plan’s project before verified implementation.');
+  const source = path.replace(/\\/g, '/');
+  const prefix = root.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+  const windows = /^[a-z]:\//i.test(prefix);
+  const within = windows
+    ? source.toLowerCase().startsWith(prefix.toLowerCase())
+    : source.startsWith(prefix);
+  const relative = within ? source.slice(prefix.length) : '';
+  if (
+    !/^\.rovik\/plans\/[^/]+\.md$/i.test(relative) ||
+    relative.split('/').some((part) => part === '..' || part === '.')
+  )
+    throw new Error('Select a saved plan inside the current project’s .rovik/plans folder.');
+  return relative;
+}
+
 /**
  * The message that implements a saved plan, in Agent mode: a short line for
  * the chat naming the saved plan's current title, and the plan's path, from
@@ -99,6 +117,10 @@ export async function openPlan(dialogId: string | null, path: string): Promise<v
 export interface ImplementPlanRequest {
   /** The plan file (absolute), saved. */
   path: string;
+  /** Route through the reviewed polyglot controller instead of the ordinary agent. */
+  requireVerified?: boolean;
+  /** Editor-origin strict requests remain bound to the project they were saved in. */
+  sourceRoot?: string;
 }
 
 const pending: ImplementPlanRequest[] = [];

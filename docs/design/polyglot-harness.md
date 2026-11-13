@@ -11,10 +11,10 @@ provider, process and permission adapters remain the integration points.
 Open the Git repository root in Rovik and select **Set up and verify changes…**
 under Project Checks. The panel discovers build roots, including nested Cargo and
 JavaScript manifests, and lists available verification setups. Discovery does not
-authorize commands or infer domain rules. Initially, import a prepared setup
-bundle containing `setup.json` and its referenced sibling CAS assets; guided
-preparation is part of the next integration phase. The import copies source and
-environment assets, never prior approvals, receipts or verdicts.
+authorize commands or infer domain rules. Import a prepared setup bundle containing
+`setup.json` and its referenced sibling CAS assets, or create a configuration from
+a saved plan as described below. The import copies source and environment assets,
+never prior approvals, receipts or verdicts.
 
 Select **This computer** on a supported Linux desktop, or open the project's chat
 on a connected Linux host and select that host. Docker or Podman must be usable on
@@ -38,6 +38,46 @@ changes; it does not apply an implementation or deploy the project.
 
 The ordered [IDE integration plan](polyglot-ide-integration.md) tracks verified plan
 implementation, Autopilot integration and editor architecture feedback.
+
+## Verified plan implementation
+
+Open a saved plan in `.rovik/plans/`, select **Require verified result**, then
+**Implement this plan**. Review the exact saved plan, execution host and model.
+Choose a **Prepared verification setup** or expand **Create a verification setup
+from this project**. Save editable buffers and explicitly select any untracked
+inputs. On a cloud host, Git-ignored plans must be made available explicitly;
+they are not silently synchronized.
+
+Review the **Input rate**, **Cached input rate** and **Output rate** in microunits
+per million tokens. Enter zero explicitly for a free model. Confirm that the
+acceptance criteria cover the plan, then choose **Start verified implementation**.
+The trusted controller owns implementation and bounded repair. This route currently
+supports OpenAI-compatible Chat Completions providers; connector agents, Responses
+and direct Anthropic API routes need separate adapters. Credentials come from the
+selected host's trusted provider configuration and stay outside candidate assets.
+
+Guided preparation supports Rust, C, C++, JavaScript, TypeScript and Python. It
+requires explicit profile and configuration facts, committed protected tests with
+real case IDs, a known failing Git revision, and a prepared immutable image and
+offline dependencies. It does not infer domain requirements or install those
+inputs. Each invariant maps to protected cases in every required configuration.
+TypeScript `extends` and project references require a separately prepared
+single-project compiler configuration; many Vite/Tauri defaults need this step.
+Runtime oracle tests exercise `/build/project` (TypeScript output is under
+`/build/project/dist`). Public API changes require protected tests in each
+configuration and a separate design review. Unsafe, FFI, resource and concurrency
+risks require their dedicated evidence routes; incomplete routes block preparation.
+
+Review each exact requested approval before **Resume verified implementation**.
+**Recover interrupted implementation** restores interrupted work without resetting
+accounting; **Cancel implementation** stops it. Preparation-role drafts are advisory
+and must be transferred into reviewed setup decisions explicitly. Reopening the
+same unchanged plan exposes its saved **Open implementation …** entries.
+
+**Accepted — verified candidate** identifies a private candidate that passed the
+reviewed gate. **Review verified changes** opens its diff; **Export review bundle**
+saves a bundle on the execution host. These actions preserve the working tree and
+index. Applying a candidate is added by the following delivery integration phase.
 
 ## Trust boundary
 
@@ -306,10 +346,10 @@ hosts retain their rootless Podman setup.
 
 ## IDE integration roadmap
 
-Project setup and model-free **Verify changes** are available through the shared
-core service and typed desktop/daemon RPCs described above. The next phases add
-verified plan implementation, Autopilot integration and editor architecture
-feedback, in that order. The [integration plan](polyglot-ide-integration.md)
+Project setup, model-free **Verify changes** and verified plan implementation are
+available through the shared core service and typed desktop/daemon RPCs described
+above. The next phases add Autopilot integration and editor architecture feedback,
+in that order. The [integration plan](polyglot-ide-integration.md)
 records their acceptance criteria and implementation status.
 
 An approved bug-fix or API-refactor plan with explicit behavioral acceptance
