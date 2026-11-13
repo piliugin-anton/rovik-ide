@@ -483,6 +483,9 @@ fn dispatch(request: &Request) -> Result<Value> {
         }
         Operation::Probe | Operation::Index => {
             let input = request.native_input()?;
+            if !crate::runtime::version_keys(input.profile.language).is_empty() {
+                return super::imports::index(&input, request.operation);
+            }
             let (config, compiler) = configuration(&input)?;
             if request.operation == Operation::Probe {
                 return Ok(

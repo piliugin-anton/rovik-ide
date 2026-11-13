@@ -5,7 +5,7 @@ use crate::{
     require, wire, Error, Result,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One request, persisted in protected oracle assets before execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +59,9 @@ pub struct NativeInput {
     /// Native tests which discovery must retain.
     #[serde(default)]
     pub required_test_ids: BTreeSet<String>,
+    /// Protected compiler project for TypeScript import resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typescript_project: Option<String>,
 }
 impl Request {
     /// Reject protocol errors and unresolved configuration before spawning tools.
@@ -87,6 +90,18 @@ impl Request {
                 .any(|c| c.id == input.configuration_id),
             "unknown pack configuration",
         )?;
+        if crate::runtime::version_keys(input.profile.language).is_empty() {
+            require(
+                input.typescript_project.is_none(),
+                "unexpected TypeScript project",
+            )?;
+        } else {
+            crate::runtime::configuration(
+                &input.profile,
+                &input.configuration_id,
+                input.typescript_project.as_deref(),
+            )?;
+        }
         Ok(input)
     }
 }
@@ -124,6 +139,8 @@ pub enum Precision {
     CargoResolved,
     /// Fresh configured compiler dependencies and CMake codemodel.
     ConfiguredBuild,
+    /// Parsed project imports resolved against the prepared runtime. External modules are leaves.
+    ProjectImports,
     /// Discovery only; cannot establish a boundary.
     Lexical,
 }
@@ -182,6 +199,8 @@ pub struct Graph {
 struct IndexResult {
     language: Language,
     graph: Graph,
+    #[serde(default)]
+    versions: BTreeMap<String, String>,
 }
 
 /// Decode one correlated response. Extra objects, fields, versions and partial replies fail.
@@ -226,6 +245,14 @@ pub fn verify_index(request: &Request, bytes: &[u8], configuration: &Digest) -> 
         result.language == input.profile.language,
         "pack language mismatch",
     )?;
+    let expected: BTreeMap<_, _> = crate::runtime::version_keys(input.profile.language)
+        .iter()
+        .map(|key| (key.to_string(), input.profile.facts[*key].clone()))
+        .collect();
+    require(
+        result.versions == expected,
+        "import graph tool versions mismatch",
+    )?;
     let config = input
         .profile
         .configurations
@@ -248,11 +275,8 @@ impl Graph {
                 == match input.profile.language {
                     Language::Rust => Precision::CargoResolved,
                     Language::C | Language::Cpp => Precision::ConfiguredBuild,
-                    _ => {
-                        return Err(Error(
-                            "configured import graphs are not supported for this runtime pack"
-                                .into(),
-                        ))
+                    Language::JavaScript | Language::TypeScript | Language::Python => {
+                        Precision::ProjectImports
                     }
                 },
             "graph precision is insufficient",
@@ -266,23 +290,44 @@ impl Graph {
                 "unresolved graph edge",
             )?;
         }
+        let mut outgoing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for edge in &self.edges {
+            outgoing.entry(&edge.source).or_default().push(&edge.target);
+        }
         for rule in &input.forbidden_edges {
+            for pattern in [&rule.source, &rule.target] {
+                require(!pattern.is_empty(), "empty architecture boundary")?;
+                if pattern.contains('*') {
+                    require(
+                        self.precision == Precision::ProjectImports,
+                        "directory boundaries require project import evidence",
+                    )?;
+                    crate::scope::validate_pattern(pattern)?;
+                }
+            }
+            let mut pending: Vec<_> = nodes
+                .iter()
+                .copied()
+                .filter(|node| crate::scope::matches(&rule.source, node))
+                .collect();
             require(
-                nodes.contains(rule.source.as_str()),
+                !pending.is_empty(),
                 "architecture boundary source disappeared",
             )?;
             let mut visited = BTreeSet::new();
-            let mut pending = vec![rule.source.as_str()];
             while let Some(node) = pending.pop() {
                 if !visited.insert(node) {
                     continue;
                 }
-                for edge in self.edges.iter().filter(|e| e.source == node) {
+                for target in outgoing.get(node).into_iter().flatten() {
                     require(
-                        edge.target != rule.target,
-                        format!("forbidden dependency: {} -> {}", rule.source, rule.target),
+                        !crate::scope::matches(&rule.target, target),
+                        format!(
+                            "forbidden dependency: {} -> {} (observed {} -> {})",
+                            rule.source, rule.target, node, target
+                        ),
                     )?;
-                    pending.push(&edge.target);
+                    pending.push(target);
                 }
             }
         }

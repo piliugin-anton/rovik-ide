@@ -157,7 +157,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   tests, immutable snapshots and sandbox receipts. C, C++, Rust, Node.js JavaScript,
   strict TypeScript and Python/pytest fixtures exercise the workflow, with
   offline dependencies, bounded repairs, approval maintenance
-  and recovery after controller loss. See [Polyglot harness](docs/design/polyglot-harness.md)
+  and recovery after controller loss. JavaScript, TypeScript and Python also support
+  protected checks for direct and transitive project import boundaries.
+  See [Polyglot harness](docs/design/polyglot-harness.md)
   for supported targets, measured limits and operator setup.
 - **Local Docker setup.** On startup, Rovik installs Docker when it is missing
   on a supported desktop. Progress and retry actions appear alongside the

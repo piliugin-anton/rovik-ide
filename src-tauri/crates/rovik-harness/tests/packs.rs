@@ -19,6 +19,7 @@ fn input(ledger: &Ledger) -> NativeInput {
             target: "io".into(),
         }],
         required_test_ids: Default::default(),
+        typescript_project: None,
     }
 }
 fn graph(input: &NativeInput) -> Graph {
@@ -148,6 +149,7 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
             profile: setup.profiles[0].clone(),
             forbidden_edges: vec![],
             required_test_ids: Default::default(),
+            typescript_project: None,
         };
         let mut files = vec![];
         let cmake=format!("cmake_minimum_required(VERSION 3.25)\nproject(graph LANGUAGES {})\noption(FORBIDDEN \"edge\" OFF)\nadd_executable(consumer src/main.{})\nif(FORBIDDEN)\n target_compile_definitions(consumer PRIVATE FORBIDDEN)\nendif()\nenable_testing()\nadd_test(NAME consumer-smoke COMMAND consumer)\n",if language==Language::C {"C"}else{"CXX"},if language==Language::C {"c"}else{"cpp"});
@@ -372,6 +374,7 @@ fn effective_native_commands_must_retain_the_required_sanitizer_mode() {
         profile: setup.profiles[0].clone(),
         forbidden_edges: vec![],
         required_test_ids: Default::default(),
+        typescript_project: None,
     };
     let mut graph = Graph {
         precision: Precision::ConfiguredBuild,

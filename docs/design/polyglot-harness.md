@@ -384,10 +384,72 @@ Native Node and pytest reports are independently parsed by the controller.
 Malformed or truncated reports, missing required cases, zero executed tests,
 tool-version mismatches, dependency failures and TypeScript errors cannot count
 as a successful check or a behavioral negative control. Skipped required cases
-block acceptance. Test names must be unique within each check. These packs do
-not yet provide configured import-graph assertions, browser/Deno/Bun runners,
-Jest/Vitest integrations or Python type checking; such obligations need separately
+block acceptance. Test names must be unique within each check. Browser/Deno/Bun
+runners, Jest/Vitest integrations and Python type checking still need separately
 registered and validated checks.
+
+#### Architectural boundaries for runtime languages
+
+JavaScript, TypeScript and Python support protected `index` requests through
+`packs::graph_command`. Register the request in the oracle and include that command
+as a required final check in every applicable configuration. Use the same resolved
+runtime profile and offline dependency bundle as the behavioral checks. TypeScript
+index requests also name a self-contained protected `typescript_project` JSON file
+covering the analyzed modules; repository compiler configuration cannot replace it.
+
+The Rust adapter parses every project module with pinned language grammars and
+returns `project_imports` evidence. Node resolves ESM imports and CommonJS literal
+`require` calls without executing the imported code; the pinned TypeScript compiler's
+resolution trace covers type imports, re-exports, extension substitution and protected
+path aliases. The adapter also parses emitted JavaScript and follows Node resolution
+from its emitted location, so conditional exports cannot hide a forbidden runtime
+dependency behind a different type declaration. Python resolves absolute and relative
+imports against the prepared project, wheel and interpreter search roots without
+importing candidate packages. Namespace packages and package initializers contribute
+dependencies too. Imports in conditional branches are conservatively included.
+
+Rules use exact node IDs or directory patterns ending in `/**`. For example, this
+part of an approved index request prohibits dependencies from any domain module
+into infrastructure, including indirect paths through shared modules:
+
+```json
+{
+  "forbidden_edges": [{ "source": "domain/**", "target": "infrastructure/**" }]
+}
+```
+
+Project node IDs are repository-relative paths. Imported external modules have
+IDs such as `node:fs`, `npm:fixture-identity` and `python:sqlite3`. Those modules are
+opaque leaves: the check covers project import paths, including paths ending at an
+external module, and does not claim to analyze third-party internals. It does not
+prove all runtime dependencies or DDD semantics through arbitrary reflection.
+
+Missing modules, invalid syntax, insufficient graph precision, missing source
+layers, tool-version mismatches and unsupported loading block the check. Computed
+JavaScript imports, aliased `require`, escaped specifiers, TypeScript reference
+directives, Python wildcard imports and dynamic Python import machinery/reflection
+(including `importlib`, `runpy`, `builtins` and import-related `sys` mutation) require a separate
+checker. Python project modules cannot shadow standard-library names. The current
+Python search layout is the project root followed by prepared wheels and
+interpreter roots; custom `sys.path` and zip import roots are unsupported.
+
+The controller independently validates the observed graph and rejects direct or
+transitive forbidden paths. A graph does not count as behavioral test evidence.
+Native conformance tests exercise these checks with `cargo test -p rovik-harness
+--test imports -- --ignored`, using the rebuilt pinned image and Docker opt-in
+described above. Rebuilding the tool changes the approved image identity; existing
+image approvals do not silently acquire new checker behavior.
+
+For a mixed project such as Tauri with a Rust backend and React/TypeScript frontend,
+one task can require checks for both profiles against the same candidate. The
+current adapters do not automatically configure Tauri: the Cargo graph expects a
+root manifest or workspace, and frontend resolution follows Node/TypeScript rules,
+not arbitrary Vite plugins. A nested `src-tauri` manifest, bundler-specific aliases,
+assets and browser tests need registered checks with the correct working directories
+and prepared dependencies. Register integration tests for command names, serialized
+arguments/results and errors across `invoke()`; separate language import graphs do
+not establish that IPC contract. Full Linux Tauri builds also need the appropriate
+GTK/WebKit development packages, and platform packaging needs checks on its target OS.
 
 Risk attribution distinguishes managed constructors from C++ ownership. It still
 routes changed file handles, FFI and worker/thread signals to their required

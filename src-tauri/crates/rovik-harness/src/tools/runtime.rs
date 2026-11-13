@@ -9,11 +9,11 @@ use crate::{
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
-const PROJECT: &str = "/build/project";
-const NODE: &str = "/usr/local/bin/node";
+pub(super) const PROJECT: &str = "/build/project";
+pub(super) const NODE: &str = "/usr/local/bin/node";
 const NPM: &str = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
 const TSC: &str = "/usr/local/lib/node_modules/typescript/bin/tsc";
-const PYTHON: &str = "/usr/bin/python3";
+pub(super) const PYTHON: &str = "/usr/bin/python3";
 
 fn version(command: &[&str], prefix: &str) -> Result<String> {
     let text = checked(&args(command), Path::new("/build"))?;
@@ -23,7 +23,7 @@ fn version(command: &[&str], prefix: &str) -> Result<String> {
         .ok_or_else(|| Error("malformed runtime version output".into()))?
         .to_string())
 }
-fn versions(language: Language) -> Result<BTreeMap<String, String>> {
+pub(super) fn versions(language: Language) -> Result<BTreeMap<String, String>> {
     let mut result = BTreeMap::new();
     if language == Language::Python {
         result.insert(
@@ -49,7 +49,7 @@ fn versions(language: Language) -> Result<BTreeMap<String, String>> {
     }
     Ok(result)
 }
-fn prepare_node(input: &TestInput) -> Result<()> {
+fn prepare_node(typescript_project: Option<&str>) -> Result<()> {
     let root = Path::new(PROJECT);
     let manifest: Value = read(root.join("package.json"))?;
     require(
@@ -102,18 +102,12 @@ fn prepare_node(input: &TestInput) -> Result<()> {
         ]),
         root,
     )?;
-    if input.profile.language == Language::TypeScript {
+    if let Some(typescript_project) = typescript_project {
         require(
             !Path::new("/build/project/dist").exists(),
             "TypeScript output must be generated in a fresh directory",
         )?;
-        let project = format!(
-            "/oracle/{}",
-            input
-                .typescript_project
-                .as_deref()
-                .ok_or_else(|| Error("missing protected TypeScript project".into()))?
-        );
+        let project = format!("/oracle/{typescript_project}");
         // These flags cannot be weakened by repository tsconfig files. The project
         // itself is an approved oracle asset, including its source selection.
         checked(
@@ -215,14 +209,17 @@ fn prepare_python() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
-    let config = input.validate()?;
-    let language = input.profile.language;
+/// Prepare immutable dependencies without executing project modules or tests.
+pub(super) fn prepare(
+    profile: &crate::profile::Profile,
+    typescript_project: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
+    let language = profile.language;
     let observed = versions(language)?;
     require(
         observed
             .iter()
-            .all(|(key, value)| input.profile.facts.get(key) == Some(value)),
+            .all(|(key, value)| profile.facts.get(key) == Some(value)),
         "installed runtime/tool versions differ from approved profile",
     )?;
     require(
@@ -230,8 +227,19 @@ pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
         "runtime build must start in a fresh directory",
     )?;
     copy_tree(Path::new("/snapshot"), Path::new(PROJECT))?;
-    let mut argv = if language == Language::Python {
+    if language == Language::Python {
         prepare_python()?;
+    } else {
+        prepare_node(typescript_project)?;
+    }
+    Ok(observed)
+}
+
+pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
+    let config = input.validate()?;
+    let language = input.profile.language;
+    let observed = prepare(&input.profile, input.typescript_project.as_deref())?;
+    let mut argv = if language == Language::Python {
         // -I excludes PYTHONPATH/sitecustomize injection before pytest starts.
         // Configuration, plugins and conftest discovery cannot come from the candidate.
         std::fs::write("/build/pytest.ini", "[pytest]\n")?;
@@ -250,7 +258,6 @@ pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
             "-q",
         ])
     } else {
-        prepare_node(input)?;
         args(&[NODE, "--test", "--test-reporter=junit"])
     };
     argv.extend(input.test_files.iter().map(|s| format!("/oracle/{s}")));

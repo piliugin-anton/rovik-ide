@@ -30,61 +30,16 @@ pub struct TestInput {
 impl TestInput {
     /// Validate the supported, explicit runtime policy before launching tools.
     pub fn validate(&self) -> Result<&Configuration> {
-        self.profile.require_resolved()?;
         require(
             self.snapshot_handle == "snapshot:active",
             "unknown runtime snapshot capability",
         )?;
-        let config = self
-            .profile
-            .configurations
-            .iter()
-            .find(|c| c.id == self.configuration_id)
-            .ok_or_else(|| Error("unknown runtime configuration".into()))?;
+        let config = configuration(
+            &self.profile,
+            &self.configuration_id,
+            self.typescript_project.as_deref(),
+        )?;
         let language = self.profile.language;
-        require(
-            matches!(
-                language,
-                Language::JavaScript | Language::TypeScript | Language::Python
-            ),
-            "not a supported runtime language",
-        )?;
-        require(
-            config.target == "linux-x86_64"
-                && config.features.is_empty()
-                && !config.default_features
-                && config.build_targets == ["protected-tests"],
-            "unsupported runtime target, features or build targets",
-        )?;
-        let facts = &self.profile.facts;
-        let expected: &[(&str, &str)] = if language == Language::Python {
-            &[
-                ("test_runner", "pytest"),
-                ("dependency_policy", "hashed-wheels-offline"),
-                ("import_policy", "isolated-pytest"),
-            ]
-        } else {
-            &[
-                ("test_runner", "node:test"),
-                ("dependency_policy", "npm-ci-offline-no-scripts"),
-                ("module_system", "esm"),
-            ]
-        };
-        require(
-            expected
-                .iter()
-                .all(|(key, value)| facts.get(*key).map(String::as_str) == Some(*value)),
-            "unsupported runtime policy facts",
-        )?;
-        require(
-            config.runtime
-                == if language == Language::Python {
-                    "cpython"
-                } else {
-                    "node"
-                },
-            "runtime does not match language",
-        )?;
         require(
             !self.test_files.is_empty() && !self.required_test_ids.is_empty(),
             "runtime check needs protected tests and required cases",
@@ -104,34 +59,93 @@ impl TestInput {
         for id in &self.required_test_ids {
             crate::id(id)?;
         }
-        if language == Language::TypeScript {
-            require(
-                config.flags == ["--strict", "--noEmitOnError"],
-                "TypeScript requires strict checking and no emit on error",
-            )?;
-            crate::scope::validate_path(
-                self.typescript_project
-                    .as_deref()
-                    .ok_or_else(|| Error("TypeScript needs a protected compiler project".into()))?,
-            )?;
-        } else {
-            require(
-                config.flags.is_empty() && self.typescript_project.is_none(),
-                "unexpected runtime compiler configuration",
-            )?;
-        }
-        for key in version_keys(language) {
-            let version = &facts[*key];
-            require(
-                version.split('.').count() == 3
-                    && version
-                        .split('.')
-                        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
-                format!("{key} must be an exact release version"),
-            )?;
-        }
+
         Ok(config)
     }
+}
+
+/// Shared supported runtime configuration for behavioral and architecture checks.
+pub(crate) fn configuration<'a>(
+    profile: &'a Profile,
+    configuration_id: &str,
+    typescript_project: Option<&str>,
+) -> Result<&'a Configuration> {
+    profile.require_resolved()?;
+    let config = profile
+        .configurations
+        .iter()
+        .find(|c| c.id == configuration_id)
+        .ok_or_else(|| Error("unknown runtime configuration".into()))?;
+    let language = profile.language;
+    require(
+        matches!(
+            language,
+            Language::JavaScript | Language::TypeScript | Language::Python
+        ),
+        "not a supported runtime language",
+    )?;
+    require(
+        config.target == "linux-x86_64"
+            && config.features.is_empty()
+            && !config.default_features
+            && config.build_targets == ["protected-tests"],
+        "unsupported runtime target, features or build targets",
+    )?;
+    let facts = &profile.facts;
+    let expected: &[(&str, &str)] = if language == Language::Python {
+        &[
+            ("test_runner", "pytest"),
+            ("dependency_policy", "hashed-wheels-offline"),
+            ("import_policy", "isolated-pytest"),
+        ]
+    } else {
+        &[
+            ("test_runner", "node:test"),
+            ("dependency_policy", "npm-ci-offline-no-scripts"),
+            ("module_system", "esm"),
+        ]
+    };
+    require(
+        expected
+            .iter()
+            .all(|(key, value)| facts.get(*key).map(String::as_str) == Some(*value)),
+        "unsupported runtime policy facts",
+    )?;
+    require(
+        config.runtime
+            == if language == Language::Python {
+                "cpython"
+            } else {
+                "node"
+            },
+        "runtime does not match language",
+    )?;
+    if language == Language::TypeScript {
+        require(
+            config.flags == ["--strict", "--noEmitOnError"],
+            "TypeScript requires strict checking and no emit on error",
+        )?;
+        crate::scope::validate_path(
+            typescript_project
+                .ok_or_else(|| Error("TypeScript needs a protected compiler project".into()))?,
+        )?;
+    } else {
+        require(
+            config.flags.is_empty() && typescript_project.is_none(),
+            "unexpected runtime compiler configuration",
+        )?;
+    }
+    for key in version_keys(language) {
+        let version = &facts[*key];
+        require(
+            version.split('.').count() == 3
+                && version
+                    .split('.')
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+            format!("{key} must be an exact release version"),
+        )?;
+    }
+    Ok(config)
 }
 
 pub(crate) fn version_keys(language: Language) -> &'static [&'static str] {

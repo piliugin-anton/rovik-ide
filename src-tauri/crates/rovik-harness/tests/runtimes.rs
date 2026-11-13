@@ -78,6 +78,7 @@ fn runtime_evidence_requires_protected_profiles_versions_cases_and_complete_repo
             configuration_id: input.configuration_id.clone(),
             forbidden_edges: vec![],
             required_test_ids: Default::default(),
+            typescript_project: None,
         };
         let graph = rovik_harness::pack_protocol::Graph {
             precision: rovik_harness::pack_protocol::Precision::ConfiguredBuild,
@@ -92,7 +93,7 @@ fn runtime_evidence_requires_protected_profiles_versions_cases_and_complete_repo
             .validate(&native_input)
             .unwrap_err()
             .0
-            .contains("not supported"));
+            .contains("precision"));
         let configuration = input.validate().unwrap().digest().unwrap();
         let versions = input
             .profile
