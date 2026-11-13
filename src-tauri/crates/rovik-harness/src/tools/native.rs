@@ -133,13 +133,15 @@ fn configuration(input: &NativeInput) -> Result<(&Configuration, String)> {
     };
     Ok((config, version))
 }
-fn rust_graph(config: &Configuration) -> Result<Graph> {
+fn rust_graph(config: &Configuration, build_root: &str) -> Result<Graph> {
     if Path::new("/dependencies/cargo").is_dir() {
         copy_tree(Path::new("/dependencies/cargo"), Path::new("/build/cargo"))?;
     }
     let mut command = args(&[
         "/usr/local/cargo/bin/cargo",
         "metadata",
+        "--manifest-path",
+        &format!("{ROOT}/{build_root}/Cargo.toml"),
         "--format-version=1",
         "--locked",
         "--offline",
@@ -220,7 +222,7 @@ fn cmake_feature(value: &str) -> bool {
         && (matches!(value, "ON" | "OFF")
             || (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())))
 }
-fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
+fn cmake_graph(language: Language, config: &Configuration, build_root: &str) -> Result<Graph> {
     let build = Path::new(BUILD);
     require(
         !build.exists(),
@@ -238,7 +240,7 @@ fn cmake_graph(language: Language, config: &Configuration) -> Result<Graph> {
     let mut command = args(&[
         "/usr/bin/cmake",
         "-S",
-        ROOT,
+        &format!("{ROOT}/{build_root}"),
         "-B",
         BUILD,
         "-G",
@@ -444,12 +446,6 @@ struct Explanation {
     parser_version: u32,
     diagnostic: String,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProposedPlan {
-    plan: crate::plan::CheckPlan,
-    registered_commands: BTreeSet<String>,
-}
 fn dispatch(request: &Request) -> Result<Value> {
     require(
         request.protocol_version == 1,
@@ -473,16 +469,9 @@ fn dispatch(request: &Request) -> Result<Value> {
             Ok(json!({"diagnostics":[{"rule_id":"native-log", "message": input.diagnostic}]}))
         }
         Operation::PlanChecks => {
-            let input: ProposedPlan = wire::decode(&wire::canonical(&request.payload)?)?;
-            require(
-                input
-                    .plan
-                    .checks
-                    .iter()
-                    .all(|c| input.registered_commands.contains(&c.command_id)),
-                "unregistered plan command",
-            )?;
-            Ok(json!({"plan":input.plan}))
+            let input: crate::planning::PlanningInput =
+                wire::decode(&wire::canonical(&request.payload)?)?;
+            Ok(json!({"plan":input.derive()?}))
         }
         Operation::Probe | Operation::Index => {
             let input = request.native_input()?;
@@ -496,9 +485,9 @@ fn dispatch(request: &Request) -> Result<Value> {
                 );
             }
             let graph = if input.profile.language == Language::Rust {
-                rust_graph(config)?
+                rust_graph(config, &input.profile.build_root)?
             } else {
-                cmake_graph(input.profile.language, config)?
+                cmake_graph(input.profile.language, config, &input.profile.build_root)?
             };
             Ok(json!({"language":input.profile.language,"graph":graph}))
         }

@@ -137,13 +137,8 @@ pub(super) fn index(input: &NativeInput, operation: Operation) -> Result<Value> 
     }
     let python = input.profile.language == Language::Python;
     let mut files = BTreeMap::new();
-    sources(
-        Path::new("/snapshot"),
-        Path::new("/snapshot"),
-        python,
-        &mut files,
-        &mut 0,
-    )?;
+    let source_root = Path::new("/snapshot").join(&input.profile.build_root);
+    sources(&source_root, &source_root, python, &mut files, &mut 0)?;
     require(!files.is_empty(), "no project modules found")?;
     let mut imports = Vec::new();
     for (path, source) in &files {
@@ -251,7 +246,7 @@ pub(super) fn index(input: &NativeInput, operation: Operation) -> Result<Value> 
             }
         }
     }
-    let graph = Graph {
+    let mut graph = Graph {
         precision: Precision::ProjectImports,
         nodes: nodes.into_values().collect(),
         edges: edges
@@ -268,5 +263,28 @@ pub(super) fn index(input: &NativeInput, operation: Operation) -> Result<Value> 
         test_inventory: vec![],
     };
     // The controller independently applies the approved boundaries to this observed graph.
+    if !input.profile.build_root.is_empty() {
+        let local: BTreeSet<_> = graph
+            .nodes
+            .iter()
+            .filter(|node| node.path.is_some())
+            .map(|node| node.id.clone())
+            .collect();
+        let prefix = |path: &str| format!("{}/{path}", input.profile.build_root);
+        for node in &mut graph.nodes {
+            if let Some(path) = &mut node.path {
+                *path = prefix(path);
+                node.id = prefix(&node.id);
+            }
+        }
+        for edge in &mut graph.edges {
+            if local.contains(&edge.source) {
+                edge.source = prefix(&edge.source);
+            }
+            if local.contains(&edge.target) {
+                edge.target = prefix(&edge.target);
+            }
+        }
+    }
     Ok(json!({"language":input.profile.language,"graph":graph,"versions":versions}))
 }

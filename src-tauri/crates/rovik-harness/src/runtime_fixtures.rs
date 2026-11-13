@@ -220,6 +220,8 @@ pub fn quota_runtime(
     )]
     .into();
     setup.design.contract_digest = Digest::of_json(&setup.contract)?;
+    setup.design.mechanism_decisions =
+        vec![crate::design::MechanismDecision::direct("quota", path)];
     setup.design.existing_code_considered[0].file = path.into();
     setup.design.existing_code_considered[0].symbol = "reserve".into();
     setup.design.existing_code_considered[0].source_revision = setup.base.digest()?;
@@ -240,6 +242,18 @@ pub fn quota_runtime(
     check.configuration_digest = profile.configurations[0].digest()?;
     check.expected_case_ids = cases;
     check.minimum_test_count = check.expected_case_ids.len() as u64;
+    setup.baseline.expected_failures[0].check_id = check.check_id.clone();
+    setup.baseline.expected_failures[0].configuration_digest = check.configuration_digest.clone();
+    setup.baseline.expected_failures[0].case_ids = ["reserve-exact", "reserve-maximum"]
+        .into_iter()
+        .map(|case| {
+            if python {
+                format!("test_reserve[{case}]")
+            } else {
+                case.into()
+            }
+        })
+        .collect();
     setup.plan.configurations = vec![check.configuration_digest.clone()];
     setup.plan.contract_digest = Digest::of_json(&setup.contract)?;
     setup.plan.design_digest = Digest::of_json(&setup.design)?;

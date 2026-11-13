@@ -47,6 +47,63 @@ pub struct ContextBundle {
     pub omitted: Vec<String>,
 }
 
+/// Rank exact source observations by explicit citations, writable ownership and task terms.
+/// Low-ranked files remain retrievable through the scoped broker; no first-N truncation
+/// can silently remove a mandatory contract clause.
+pub fn ranked_sources(
+    ledger: &Ledger,
+    snapshot: &crate::snapshot::Snapshot,
+    query: &str,
+    preferred: &[String],
+    scope: Option<&crate::scope::Scope>,
+) -> Result<Vec<ContextItem>> {
+    let revision = snapshot.digest()?;
+    let terms: std::collections::BTreeSet<_> = query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|word| word.len() >= 4)
+        .take(128)
+        .map(str::to_lowercase)
+        .collect();
+    let mut ranked = Vec::new();
+    for (path, file) in &snapshot.files {
+        let Ok(text) = String::from_utf8(ledger.read(&file.content.digest)?) else {
+            continue;
+        };
+        let name = path.to_lowercase();
+        let searchable: String = text
+            .chars()
+            .take(16_384)
+            .flat_map(char::to_lowercase)
+            .collect();
+        let score = usize::from(preferred.contains(path)) * 10_000
+            + usize::from(
+                scope.is_some_and(|s| s.allow_write.iter().any(|p| crate::scope::matches(p, path))),
+            ) * 1_000
+            + terms
+                .iter()
+                .filter(|term| name.contains(term.as_str()))
+                .count()
+                * 20
+            + terms
+                .iter()
+                .filter(|term| searchable.contains(term.as_str()))
+                .count();
+        ranked.push((
+            score,
+            ContextItem {
+                item_id: format!("source:{path}"),
+                artifact_digest: file.content.digest.clone(),
+                trust: Trust::ObservedCode,
+                source_revision: revision.clone(),
+                mandatory: false,
+                text,
+            },
+        ));
+    }
+    ranked.sort_by(|(a, x), (b, y)| b.cmp(a).then_with(|| x.item_id.cmp(&y.item_id)));
+    Ok(ranked.into_iter().map(|(_, item)| item).collect())
+}
+
 /// Resolve every item from the trusted artifact store, retaining exact mandatory text.
 pub fn build(
     ledger: &Ledger,

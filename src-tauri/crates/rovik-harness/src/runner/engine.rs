@@ -12,6 +12,21 @@ pub(super) trait Engine: Debug + Send + Sync {
 }
 
 #[derive(Debug)]
+pub(super) struct Management;
+impl Engine for Management {
+    fn version(&self) -> &'static str {
+        "no-execution-capability"
+    }
+    fn command(&self) -> Command {
+        Command::new("/__rovik_no_execution_capability__/unavailable")
+    }
+    fn create_options(&self, _: &mut Command) {}
+    fn needs_cgroup_probe(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct Docker(pub std::path::PathBuf);
 
 impl Engine for Docker {

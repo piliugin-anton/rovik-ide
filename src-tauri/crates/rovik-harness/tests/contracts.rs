@@ -205,6 +205,7 @@ fn final_plans_must_cover_every_configuration_and_obligation() {
 fn every_native_profile_requires_pinned_assets_and_explicit_target_facts() {
     for language in [Language::Rust, Language::Cpp, Language::C] {
         let mut profile = Profile {
+            build_root: String::new(),
             schema_version: 1,
             id: "fixture".into(),
             language,

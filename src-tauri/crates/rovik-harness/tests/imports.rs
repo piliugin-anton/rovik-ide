@@ -137,6 +137,7 @@ fn real_runtime_imports_enforce_layers_reexports_initializers_aliases_and_resolu
             "dynamic",
             "external",
             "conditional",
+            "nested",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let ledger = Ledger::open(&dir.path().join("state")).unwrap();
@@ -173,7 +174,7 @@ fn real_runtime_imports_enforce_layers_reexports_initializers_aliases_and_resolu
             };
             let mut init = "";
             match variant {
-                "direct" => domain = direct.clone(),
+                "direct" | "nested" => domain = direct.clone(),
                 "transitive" => shared = direct.clone(),
                 "alias" if python => init = "from infrastructure.store import reserve\n",
                 "alias" if typescript => domain = "import type { Marker } from '@infra/store.js'; import { type Marker as Inline } from '@infra/store.js'; type Queried = import('@infra/store.js').Marker; export const value: Marker & Inline & Queried = 1;".into(),
@@ -237,7 +238,29 @@ fn real_runtime_imports_enforce_layers_reexports_initializers_aliases_and_resolu
                     ),
                 ]);
             }
-            let candidate = fixtures::snapshot(&ledger, "base", &files).unwrap();
+            let nested: Vec<_> = files
+                .iter()
+                .map(|(path, source)| (format!("frontend/{path}"), *source))
+                .collect();
+            let nested_refs: Vec<_> = nested
+                .iter()
+                .map(|(path, source)| (path.as_str(), *source))
+                .collect();
+            if variant == "nested" {
+                input.profile.build_root = "frontend".into();
+                input.forbidden_edges[0].source = "frontend/domain/**".into();
+                input.forbidden_edges[0].target = "frontend/infrastructure/**".into();
+            }
+            let candidate = fixtures::snapshot(
+                &ledger,
+                "base",
+                if variant == "nested" {
+                    &nested_refs
+                } else {
+                    &files
+                },
+            )
+            .unwrap();
             let request = Request {
                 protocol_version: 1,
                 request_id: "imports".into(),

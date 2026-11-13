@@ -609,7 +609,7 @@ visible and block acceptance until an authorized operator supplies a resolution:
 
 The replacement must be authenticated current evidence for the same check and
 configuration. Revoking this approval blocks verification again. Semantic
-replanning requires a new approved intake; automatic replans are bounded at zero.
+replanning stages a new intake for explicit approval. An authorized `replans` account bounds activations; a replacement retains accounting and invalidates the selected evidence binding.
 One output-format repair is the maximum supported provider repair policy, and
 every provider request has its own actual-usage accounting.
 
@@ -672,3 +672,58 @@ Run the native evaluation with `cargo test -p rovik-harness --test evaluation --
 save its JSON report. `.github/workflows/polyglot-harness.yml` runs the ordinary
 core tests, all supported native suites, the repeated evaluation, isolation and
 process-loss rehearsal, and uploads the evaluation report.
+
+## Preparation, planning and reviewed replanning
+
+A complete approved `TaskSetup` can still be imported directly. `prepare` now starts
+from a request, immutable repository snapshot, registered semantic vocabulary,
+model limits and budgets. `draft` invokes a separate domain analyst, architect,
+oracle author or reviewer with a closed response schema. Every attempt, including
+format repair, uses the shared provider and durable accounting. Drafts have no
+approval, shell or candidate-edit capabilities. Contract and design drafts are
+stored by digest for subsequent review; oracle drafts must be registered and
+approved before they can execute.
+
+`promote` installs the reviewed execution setup into that preparation run without
+resetting model usage. The baseline stage still requires the registered human
+approvals. A configured `reviewer` makes an independent model review after clean
+verification; findings and recommendations are advisory and cannot grant approval.
+
+`inventory` discovers nested Cargo, npm, Python and CMake roots from immutable
+source. It identifies Tauri's separate frontend/backend roots and leaves IPC,
+bundler and browser requirements explicit. `profile resolve` validates operator
+selections, build roots and immutable pins; extensions never select a target or
+assert tool support. A profile's `build_root` selects its native Cargo/CMake or
+runtime project while graph paths remain repository-relative.
+
+`import <repository-id> <path> --dirty <untracked-paths.json>` captures tracked
+working-tree bytes plus an explicit JSON array of untracked paths. It does not
+change HEAD, the Git index or the checkout. Symlinks and changed-during-read inputs
+are rejected. The captured input digest is part of baseline approval.
+
+`plan <planning.json>` and pack `plan_checks` derive the complete matrix from a
+registered capability catalog. Missing obligation/configuration coverage is an
+unsupported-capability error. Registered checker identities, parameter schemas,
+resource bounds, public consumers and protected case inventories remain mandatory.
+A model cannot supply an arbitrary prewritten plan through this operation.
+
+Every required final check also runs on the immutable baseline. Historical failures
+need exact check/configuration/case expectations and a separate `baseline-plan`
+approval tied to that base and plan. Infrastructure errors cannot become historical
+exceptions. These records never excuse a failure on the final candidate.
+
+Design validation checks that reuse citations name existing files and symbols in
+the exact input snapshot. Structured `mechanism_decisions` record pressure, owner,
+alternatives, cost, reuse and evidence; a direct function or module is a valid
+choice. Citation checking is lexical. Semantic suitability still needs review.
+Context selection ranks cited code, writable responsibility scope and task terms,
+retaining exact source provenance and explicit omissions instead of taking the
+first twelve files.
+
+`stage-replan <setup.json>` registers a concrete replacement and prints its exact
+approval requirements. `activate-replan <run> <setup-digest>` checks those approvals,
+spends one authorized replan and restarts baseline verification atomically. It
+preserves earlier inputs, results, events and spent budgets. It cannot expand the
+budget, extend the deadline or change approval authority. Outstanding operations
+must first be reconciled. Semantic questions from the implementer can produce an
+architect draft; activation still requires the operator's exact replacement intake.

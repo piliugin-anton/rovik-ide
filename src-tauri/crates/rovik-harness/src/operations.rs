@@ -204,11 +204,33 @@ impl Ledger {
     }
 }
 impl Controller {
+    fn management_registration(
+        &self,
+        run_id: &str,
+    ) -> Result<(
+        crate::approvals::AuthorityPolicy,
+        Option<crate::runner::Environment>,
+    )> {
+        let current = self.ledger.run(run_id)?;
+        let reference = self.ledger.reference(&current.input_digest)?;
+        if reference.kind == "preparation" {
+            let preparation: crate::roles::Preparation =
+                wire::decode(&self.ledger.read(&current.input_digest)?)?;
+            preparation.base.validate(&self.ledger, true)?;
+            preparation.worker.validate()?;
+            Ok((preparation.authority, None))
+        } else {
+            let setup = self.setup(run_id)?;
+            Ok((setup.authority, Some(setup.environment)))
+        }
+    }
     /// Resume only the durable restart stage after prerequisites and accounting are repaired.
     pub fn resume(&mut self, principal: &Principal, run_id: &str) -> Result<()> {
-        let setup = self.setup(run_id)?;
-        setup.authority.authorize(principal, "operate")?;
-        setup.validate(&self.ledger)?;
+        let (authority, environment) = self.management_registration(run_id)?;
+        authority.authorize(principal, "operate")?;
+        if environment.is_some() {
+            self.setup(run_id)?.validate(&self.ledger)?;
+        }
         self.ledger.verify_artifacts()?;
         let current = self.ledger.run(run_id)?;
         require(
@@ -244,8 +266,8 @@ impl Controller {
     }
     /// Cancel durably. Running adapters observe this state and terminate their jobs.
     pub fn cancel(&mut self, principal: &Principal, run_id: &str) -> Result<()> {
-        self.setup(run_id)?
-            .authority
+        self.management_registration(run_id)?
+            .0
             .authorize(principal, "operate")?;
         let current = self.ledger.run(run_id)?;
         if current.state == State::Cancelled {
@@ -268,9 +290,11 @@ impl Controller {
     /// Fence interrupted work, kill only its registered jobs and retain unknown usage.
     /// This explicit management action also interrupts any still-running controller.
     pub fn recover(&mut self, principal: &Principal, run_id: &str) -> Result<Vec<String>> {
-        let setup = self.setup(run_id)?;
-        setup.authority.authorize(principal, "operate")?;
-        self.backend.require_environment(&setup.environment)?;
+        let (authority, environment) = self.management_registration(run_id)?;
+        authority.authorize(principal, "operate")?;
+        if let Some(environment) = environment {
+            self.backend.require_environment(&environment)?;
+        }
         let current = self.ledger.run(run_id)?;
         require(
             current.state != State::Accepted,
@@ -337,8 +361,9 @@ impl Controller {
         run_id: &str,
         request: &Reconciliation,
     ) -> Result<()> {
-        let setup = self.setup(run_id)?;
-        setup.authority.authorize(principal, "accounting")?;
+        self.management_registration(run_id)?
+            .0
+            .authorize(principal, "accounting")?;
         require(
             !request.reason.trim().is_empty(),
             "accounting reconciliation needs a rationale",

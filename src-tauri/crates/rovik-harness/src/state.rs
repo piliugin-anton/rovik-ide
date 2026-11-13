@@ -82,7 +82,7 @@ impl State {
                 | (Replan, DesignReady)
         );
         let repair = next == Repair && matches!(self, FastChecks | RiskChecks | Review | CleanCi);
-        let replan = next == Replan && matches!(self, DesignReady | Review);
+        let replan = next == Replan && matches!(self, Implement | DesignReady | Review | Repair);
         let resume = self == Blocked
             && restart == Some(next)
             && !matches!(next, Blocked | Accepted | ReadyForApproval)

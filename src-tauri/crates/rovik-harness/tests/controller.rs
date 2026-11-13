@@ -438,7 +438,16 @@ fn actual_rust_patch_passes_the_full_clean_gate_after_rejecting_a_mutant() {
         QUOTA_RUST.as_bytes()
     );
     let accounts = c.ledger.budgets(&setup.run_id).unwrap();
-    assert_eq!(accounts["checks"].spent, 2);
+    assert_eq!(accounts["checks"].spent, 3);
+    assert_eq!(
+        c.ledger
+            .operations(&setup.run_id)
+            .unwrap()
+            .iter()
+            .filter(|o| o.kind == "baseline" && o.state == "completed")
+            .count(),
+        1
+    );
     assert_eq!(accounts["model_calls"].spent, 1);
     assert_eq!(accounts["tokens"].spent, 1300);
     struct Moved;
@@ -523,7 +532,7 @@ fn c_and_cpp_public_consumers_reject_mutants_then_accept_the_repaired_native_api
             }
         }
         assert_eq!(report.state, State::Accepted, "{language:?}: {report:?}");
-        assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 2);
+        assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 3);
     }
 }
 
@@ -570,7 +579,7 @@ fn a_worker_cannot_suppress_an_unsafe_risk_before_native_verification() {
             .any(|r| r.contains("unrouted risk") && r.contains("unsafe")),
         "{report:?}"
     );
-    assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 1);
+    assert_eq!(c.ledger.budgets(&setup.run_id).unwrap()["checks"].spent, 2);
 }
 
 #[test]
@@ -654,7 +663,7 @@ fn bounded_repair_requires_failure_review_and_resume_reuses_only_completed_recei
             }
         }
         let spent = c.ledger.budgets(&setup.run_id).unwrap();
-        assert_eq!(spent["checks"].spent, 3);
+        assert_eq!(spent["checks"].spent, 4);
         assert_eq!(spent["repairs"].spent, 1);
         drop(c);
         let mut c = controller(&root);

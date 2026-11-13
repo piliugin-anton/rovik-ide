@@ -49,7 +49,7 @@ pub(super) fn versions(language: Language) -> Result<BTreeMap<String, String>> {
     }
     Ok(result)
 }
-fn prepare_node(typescript_project: Option<&str>) -> Result<()> {
+fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<()> {
     let root = Path::new(PROJECT);
     let manifest: Value = read(root.join("package.json"))?;
     require(
@@ -137,13 +137,7 @@ fn prepare_node(typescript_project: Option<&str>) -> Result<()> {
         )?;
     } else {
         let mut files = BTreeMap::new();
-        super::imports::sources(
-            Path::new("/snapshot"),
-            Path::new("/snapshot"),
-            false,
-            &mut files,
-            &mut 0,
-        )?;
+        super::imports::sources(source_root, source_root, false, &mut files, &mut 0)?;
         for path in files.keys().filter(|path| {
             [".js", ".mjs", ".cjs"]
                 .iter()
@@ -248,11 +242,12 @@ pub(super) fn prepare(
         !Path::new(PROJECT).exists(),
         "runtime build must start in a fresh directory",
     )?;
-    copy_tree(Path::new("/snapshot"), Path::new(PROJECT))?;
+    let source_root = Path::new("/snapshot").join(&profile.build_root);
+    copy_tree(&source_root, Path::new(PROJECT))?;
     if language == Language::Python {
         prepare_python()?;
     } else {
-        prepare_node(typescript_project)?;
+        prepare_node(typescript_project, &source_root)?;
     }
     Ok(observed)
 }

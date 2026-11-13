@@ -88,7 +88,8 @@ pub struct TaskContract {
 }
 
 /// Trusted onboarding inventory used for semantic reference validation.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContractRegistry {
     /// Registered profile IDs, including templates while drafting.
     pub profiles: BTreeSet<String>,
@@ -230,6 +231,9 @@ pub struct DesignRecord {
     pub concurrency_contract: String,
     /// Pressure, simpler alternatives and selected mechanism, including no abstraction.
     pub variation_decisions: Vec<String>,
+    /// Structured pressure, alternatives, ownership and evidence for each mechanism choice.
+    #[serde(default)]
+    pub mechanism_decisions: Vec<crate::design::MechanismDecision>,
     /// Registered required obligations.
     pub verification_obligations: Vec<String>,
     /// Questions that remain unresolved.

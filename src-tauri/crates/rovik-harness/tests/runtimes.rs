@@ -314,7 +314,7 @@ fn all_runtime_languages_reject_behavioral_mutants_then_accept_through_the_full_
         assert_eq!(worker.calls, 1);
         assert_eq!(
             controller.ledger.budgets(&setup.run_id).unwrap()["checks"].spent,
-            2
+            3
         );
     }
 }

@@ -110,6 +110,7 @@ pub fn quota_rust(
         runtime: "linux-native".into(),
     };
     let profile = Profile {
+        build_root: String::new(),
         schema_version: 1,
         id: "quota-rust-host".into(),
         language: Language::Rust,
@@ -142,7 +143,7 @@ pub fn quota_rust(
         facts: Default::default(),
         scopes: vec![contract.scope.clone()],
     };
-    let design=DesignRecord {schema_version:1,id:"quota-value-object".into(),contract_digest:Digest::of_json(&contract)?,existing_code_considered:vec![ExistingCode {file:"implementations/quota/lib.rs".into(),symbol:"Quota::reserve".into(),source_revision:base.digest()?,suitability:"Keep the existing value object and positive Amount; repair the comparison boundary.".into()}],components:[("quota".into(),"Own quota state and validate reservations without IO or allocation.".into())].into(),invariant_owners:contract.invariants.iter().map(|i|(i.id.clone(),"quota".into())).collect(),public_api_changes:vec!["Preserve Amount, Quota and ReserveError signatures.".into()],resource_contracts:vec!["Caller-owned value; exclusive mutable borrow; no heap ownership.".into()],error_contracts:vec!["Reject zero or insufficient amount without state mutation.".into()],concurrency_contract:"Caller serializes operations on the same value.".into(),variation_decisions:vec!["No new abstraction or dependency is required.".into()],verification_obligations:vec![],unknowns:vec![]};
+    let design=DesignRecord {schema_version:1,id:"quota-value-object".into(),contract_digest:Digest::of_json(&contract)?,existing_code_considered:vec![ExistingCode {file:"implementations/quota/lib.rs".into(),symbol:"Quota::reserve".into(),source_revision:base.digest()?,suitability:"Keep the existing value object and positive Amount; repair the comparison boundary.".into()}],components:[("quota".into(),"Own quota state and validate reservations without IO or allocation.".into())].into(),invariant_owners:contract.invariants.iter().map(|i|(i.id.clone(),"quota".into())).collect(),public_api_changes:vec!["Preserve Amount, Quota and ReserveError signatures.".into()],resource_contracts:vec!["Caller-owned value; exclusive mutable borrow; no heap ownership.".into()],error_contracts:vec!["Reject zero or insufficient amount without state mutation.".into()],concurrency_contract:"Caller serializes operations on the same value.".into(),variation_decisions:vec!["No new abstraction or dependency is required.".into()],mechanism_decisions:vec![crate::design::MechanismDecision::direct("quota","implementations/quota/lib.rs")],verification_obligations:vec![],unknowns:vec![]};
     let plan = CheckPlan {
         schema_version: 1,
         run_id: run_id.into(),
@@ -187,6 +188,7 @@ pub fn quota_rust(
             Principal::current()?.actor_id().into(),
             [
                 "domain-contract".into(),
+                "baseline-plan".into(),
                 "design".into(),
                 "oracle".into(),
                 "revoke".into(),
@@ -212,6 +214,16 @@ pub fn quota_rust(
         contract,
         design,
         profiles: vec![profile],
+        baseline: crate::baseline::BaselinePlan {
+            expected_failures: vec![crate::baseline::ExpectedFailure {
+                check_id: plan.checks[0].check_id.clone(),
+                configuration_digest: plan.configurations[0].clone(),
+                case_ids: ["reserve-exact".into(), "reserve-maximum".into()].into(),
+                rationale:
+                    "The task repairs exact-capacity rejection, including the maximum amount."
+                        .into(),
+            }],
+        },
         negative_control: base.clone(),
         base,
         oracle,
@@ -231,6 +243,7 @@ pub fn quota_rust(
             ("checks".into(), 8),
         ]
         .into(),
+        reviewer: None,
         worker: WorkerLimits {
             infrastructure_retries_per_check: 1,
             model_id: "fixture-scripted".into(),
@@ -374,6 +387,8 @@ pub fn quota_c_family(
     setup.policy.commands = [command.id.clone()].into();
     setup.contract.profile_ids = vec![profile.id.clone()];
     setup.design.contract_digest = Digest::of_json(&setup.contract)?;
+    setup.design.mechanism_decisions =
+        vec![crate::design::MechanismDecision::direct("quota", path)];
     setup.design.existing_code_considered[0].file = path.into();
     setup.design.existing_code_considered[0].symbol = if cpp {
         "Quota::reserve"
@@ -393,6 +408,8 @@ pub fn quota_c_family(
     check.configuration_digest = profile.configurations[0].digest()?;
     check.expected_case_ids = cases;
     check.minimum_test_count = check.expected_case_ids.len() as u64;
+    setup.baseline.expected_failures[0].check_id = check.check_id.clone();
+    setup.baseline.expected_failures[0].configuration_digest = check.configuration_digest.clone();
     setup.plan.configurations = vec![check.configuration_digest.clone()];
     setup.plan.contract_digest = Digest::of_json(&setup.contract)?;
     setup.plan.design_digest = Digest::of_json(&setup.design)?;

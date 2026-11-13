@@ -36,6 +36,10 @@ pub const KINDS: &[&str] = &[
     "graph",
     "exception",
     "interop",
+    "baseline-plan",
+    "baseline-report",
+    "preparation",
+    "role-draft",
 ];
 
 /// Controller-owned store. A worker must never receive this root as a mount.

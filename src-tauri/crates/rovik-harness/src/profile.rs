@@ -123,6 +123,9 @@ pub struct Profile {
     pub schema_version: u32,
     /// Registered profile identifier.
     pub id: String,
+    /// Repository-relative build root; empty selects the repository root.
+    #[serde(default)]
+    pub build_root: String,
     /// Native pack family.
     pub language: Language,
     /// Draft versus executable status.
@@ -143,6 +146,9 @@ impl Profile {
     pub fn require_resolved(&self) -> Result<()> {
         require(self.schema_version == 1, "unsupported profile version")?;
         id(&self.id)?;
+        if !self.build_root.is_empty() {
+            crate::scope::validate_path(&self.build_root)?;
+        }
         require(
             self.status == Resolution::Resolved,
             "template profile cannot authorize execution",

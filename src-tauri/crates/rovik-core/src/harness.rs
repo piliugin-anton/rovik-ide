@@ -5,7 +5,7 @@ use crate::{
     chat_request::{self, Api, Clients, Limits, RequestSpec},
 };
 use rovik_harness::{
-    provider::{ModelRequest, ModelResponse, Provider, Usage, WORKER_CONTROL},
+    provider::{ModelRequest, ModelResponse, Provider, Usage},
     runner::Cancellation,
     wire, Error, Result,
 };
@@ -100,7 +100,7 @@ impl Provider for HarnessProvider {
         request: &ModelRequest,
         cancellation: &Cancellation,
     ) -> Result<ModelResponse> {
-        let body = serde_json::json!({"model":request.provider_model_id,"messages":[{"role":"system","content":WORKER_CONTROL},{"role":"user","content":String::from_utf8(wire::canonical(request)?).map_err(|_|Error::new("invalid model context encoding".into()))?}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":request.maximum_output_tokens,"response_format":{"type":"json_object"}});
+        let body = serde_json::json!({"model":request.provider_model_id,"messages":[{"role":"system","content":request.role.control()},{"role":"user","content":String::from_utf8(wire::canonical(request)?).map_err(|_|Error::new("invalid model context encoding".into()))?}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":request.maximum_output_tokens,"response_format":{"type":"json_object"}});
         self.runtime.block_on(async {
             let (stop,mut cancel)=tokio::sync::watch::channel(cancellation.is_cancelled());
             let timeout=Duration::from_millis(request.timeout_ms);
@@ -181,6 +181,107 @@ impl GitIntegration {
         snapshot.validate(ledger, true)?;
         Ok(snapshot)
     }
+    /// Capture tracked working-tree bytes plus explicitly selected untracked files.
+    /// The index, HEAD and user's checkout are never changed; the returned digest must
+    /// receive the same baseline/scope approval as any other immutable input.
+    pub fn snapshot_worktree(
+        &self,
+        ledger: &rovik_harness::ledger::Ledger,
+        untracked: &std::collections::BTreeSet<String>,
+    ) -> Result<rovik_harness::snapshot::Snapshot> {
+        use rovik_harness::snapshot::FileEntry;
+        let mut snapshot = self.snapshot(ledger)?;
+        let paths: std::collections::BTreeSet<_> = snapshot
+            .files
+            .keys()
+            .cloned()
+            .chain(untracked.iter().cloned())
+            .collect();
+        for path in paths {
+            rovik_harness::scope::validate_path(&path)?;
+            if path
+                .split('/')
+                .any(|part| part.eq_ignore_ascii_case(".git"))
+            {
+                return Err(Error::new(
+                    "Git administrative files cannot enter a source snapshot".into(),
+                ));
+            }
+            let file = self.root.join(&path);
+            let meta = match std::fs::symlink_metadata(&file) {
+                Ok(meta) => meta,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && snapshot.files.contains_key(&path) =>
+                {
+                    snapshot.files.remove(&path);
+                    snapshot.deletions.push(path);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if !meta.is_file()
+                || meta.file_type().is_symlink()
+                || !file.canonicalize()?.starts_with(&self.root)
+            {
+                return Err(Error::new(format!(
+                    "dirty snapshot requires a regular in-repository file: {path}"
+                )));
+            }
+            let mut parent = file.parent();
+            while let Some(directory) = parent.filter(|p| *p != self.root) {
+                if std::fs::symlink_metadata(directory)?
+                    .file_type()
+                    .is_symlink()
+                {
+                    return Err(Error::new(
+                        "dirty snapshot cannot traverse a symlink".into(),
+                    ));
+                }
+                parent = directory.parent();
+            }
+            if meta.len() > 64 * 1024 * 1024 {
+                return Err(Error::new("dirty file exceeds snapshot size limit".into()));
+            }
+            let bytes = std::fs::read(&file)?;
+            let after = std::fs::symlink_metadata(&file)?;
+            if after.len() != meta.len()
+                || after.modified()? != meta.modified()?
+                || after.file_type().is_symlink()
+            {
+                return Err(Error::new(
+                    "working tree changed during capture; retry snapshot import".into(),
+                ));
+            }
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o111 != 0 {
+                    0o100755
+                } else {
+                    0o100644
+                }
+            };
+            #[cfg(not(unix))]
+            let mode = 0o100644;
+            let content = ledger.store(
+                "source",
+                "application/octet-stream",
+                &bytes,
+                rovik_harness::runner::now_ms()?,
+            )?;
+            snapshot.files.insert(path, FileEntry { mode, content });
+        }
+        use rovik_harness::controller::Integration;
+        if self.current_revision(&self.repository_id)? != snapshot.base_revision {
+            return Err(Error::new(
+                "HEAD changed during working-tree capture; retry import".into(),
+            ));
+        }
+        snapshot.deletions.sort();
+        snapshot.validate(ledger, true)?;
+        Ok(snapshot)
+    }
 }
 impl rovik_harness::controller::Integration for GitIntegration {
     fn current_revision(&self, repository_id: &str) -> Result<String> {
@@ -204,6 +305,7 @@ mod tests {
     use rovik_harness::{context::ContextBundle, identity::Digest};
     fn request() -> ModelRequest {
         ModelRequest {
+            role: rovik_harness::provider::Role::Implementer,
             request_id: "request".into(),
             provider_model_id: "fixture".into(),
             context: ContextBundle {
@@ -259,6 +361,28 @@ mod tests {
             std::fs::read(root.join("source.rs")).unwrap(),
             b"uncommitted user work"
         );
+        std::fs::write(root.join("selected.rs"), "explicit new input").unwrap();
+        std::fs::write(root.join("unselected.rs"), "unrelated user file").unwrap();
+        let dirty = integration
+            .snapshot_worktree(&ledger, &["selected.rs".into()].into())
+            .unwrap();
+        assert_eq!(
+            ledger
+                .read(&dirty.files["source.rs"].content.digest)
+                .unwrap(),
+            b"uncommitted user work"
+        );
+        assert!(dirty.files.contains_key("selected.rs"));
+        assert!(!dirty.files.contains_key("unselected.rs"));
+        assert_eq!(repository.index().unwrap().write_tree().unwrap(), tree_id);
+        assert_eq!(repository.head().unwrap().target(), Some(revision));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("source.rs"), root.join("link.rs")).unwrap();
+            assert!(integration
+                .snapshot_worktree(&ledger, &["link.rs".into()].into())
+                .is_err());
+        }
     }
     #[tokio::test]
     async fn one_attempt_bounds_wire_bytes_before_decoding_a_stream_event() {

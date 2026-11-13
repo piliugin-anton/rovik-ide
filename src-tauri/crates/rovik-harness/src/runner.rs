@@ -173,6 +173,13 @@ pub struct ContainerBackend {
 pub type DockerBackend = ContainerBackend;
 
 impl ContainerBackend {
+    /// Inspect and manage preparation state without registering an execution capability.
+    /// This identity cannot satisfy any supported native environment.
+    pub fn management() -> Self {
+        Self {
+            engine: Arc::new(engine::Management),
+        }
+    }
     /// Register an absolute Docker client path. Endpoint selectors cannot redirect it.
     pub fn local(executable: &Path) -> Result<Self> {
         validate_executable(executable)?;

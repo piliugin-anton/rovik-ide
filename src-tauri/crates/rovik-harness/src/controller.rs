@@ -44,6 +44,30 @@ pub struct WorkerLimits {
     #[serde(default = "default_infrastructure_retries")]
     pub infrastructure_retries_per_check: u32,
 }
+impl WorkerLimits {
+    /// Reject unresolved identities, unbounded context/output and excessive automatic retries.
+    pub fn validate(&self) -> Result<()> {
+        require(
+            !self.model_id.trim().is_empty() && self.model_id != "operator-must-select-model",
+            "select an explicit model identity",
+        )?;
+        require(
+            self.context_bytes > 0
+                && self.context_bytes <= wire::MAX_JSON_BYTES
+                && self.output_tokens > 0
+                && self.timeout_ms > 0
+                && self.timeout_ms <= 86_400_000
+                && self.format_repairs <= 1
+                && self.infrastructure_retries_per_check <= 3,
+            "unresolved worker limits",
+        )?;
+        require(
+            self.token_reservation >= self.output_tokens,
+            "token reservation omits requested output",
+        )?;
+        Ok(())
+    }
+}
 fn default_infrastructure_retries() -> u32 {
     1
 }
@@ -66,6 +90,9 @@ pub struct TaskSetup {
     pub profiles: Vec<Profile>,
     /// Immutable authorized baseline.
     pub base: Snapshot,
+    /// Approved pre-existing failures; all other baseline checks must pass.
+    #[serde(default)]
+    pub baseline: crate::baseline::BaselinePlan,
     /// Protected expected behavior and driver assets.
     pub oracle: Snapshot,
     /// Immutable prepared dependency bundle.
@@ -98,6 +125,9 @@ pub struct TaskSetup {
     pub budgets: BTreeMap<String, u64>,
     /// Resolved provider/context limits.
     pub worker: WorkerLimits,
+    /// Optional independently prompted model review, charged to the same run budget.
+    #[serde(default)]
+    pub reviewer: Option<WorkerLimits>,
     /// Trusted relevant mutant or failing baseline used to validate the oracle.
     pub negative_control: Snapshot,
     /// Cases that must fail against that control.
@@ -179,6 +209,7 @@ impl TaskSetup {
         self.contract.validate(&registry)?;
         self.contract.require_resolved()?;
         self.design.validate(&self.contract)?;
+        crate::design::validate(ledger, &self.base, &self.design)?;
         require(
             self.contract
                 .profile_ids
@@ -257,6 +288,7 @@ impl TaskSetup {
             )?;
         }
         self.plan.validate(&self.plan_registry()?)?;
+        self.baseline.validate(self)?;
         for profile in &self.profiles {
             for config in &profile.configurations {
                 let configuration_digest = config.digest()?;
@@ -371,25 +403,10 @@ impl TaskSetup {
                     .all(|c| cases.contains(c)),
             "oracle needs a relevant registered negative control",
         )?;
-        require(
-            !self.worker.model_id.trim().is_empty()
-                && self.worker.model_id != "operator-must-select-model",
-            "select an explicit model identity",
-        )?;
-        require(
-            self.worker.context_bytes > 0
-                && self.worker.context_bytes <= wire::MAX_JSON_BYTES
-                && self.worker.output_tokens > 0
-                && self.worker.timeout_ms > 0
-                && self.worker.timeout_ms <= 86_400_000
-                && self.worker.format_repairs <= 1
-                && self.worker.infrastructure_retries_per_check <= 3,
-            "unresolved worker limits",
-        )?;
-        require(
-            self.worker.token_reservation >= self.worker.output_tokens,
-            "token reservation omits requested output",
-        )?;
+        self.worker.validate()?;
+        if let Some(reviewer) = &self.reviewer {
+            reviewer.validate()?;
+        }
         for unit in ["model_calls", "tokens", "cost_microunits", "checks"] {
             require(
                 self.budgets.contains_key(unit),
@@ -425,6 +442,11 @@ impl TaskSetup {
     /// Exact approval requirements that cannot be removed by a model plan.
     pub fn mandatory_approvals(&self) -> Result<Vec<ApprovalRequirement>> {
         Ok(vec![
+            ApprovalRequirement {
+                subject_digest: Digest::of_json(&self.baseline.subject(self)?)?,
+                approval_type: "baseline-plan".into(),
+                obligation_ids: vec![],
+            },
             ApprovalRequirement {
                 subject_digest: Digest::of_json(&self.contract)?,
                 approval_type: "domain-contract".into(),
@@ -477,10 +499,16 @@ pub struct Controller {
 impl Controller {
     /// Register exact intake artifacts and create the durable run.
     pub fn create(&mut self, setup: &TaskSetup, now: u64) -> Result<RunRecord> {
+        let input = self.register_setup(setup, now)?;
+        self.ledger
+            .create_run(&setup.run_id, &input, &setup.budgets, now)
+    }
+    pub(crate) fn register_setup(&self, setup: &TaskSetup, now: u64) -> Result<Digest> {
         setup.validate(&self.ledger)?;
         self.backend.require_environment(&setup.environment)?;
         require(setup.deadline_ms > now, "task deadline already exhausted")?;
         for (kind, value) in [
+            ("baseline-plan", Ok(setup.baseline.subject(setup)?)),
             ("contract", serde_json::to_value(&setup.contract)),
             ("design", serde_json::to_value(&setup.design)),
             ("policy", serde_json::to_value(&setup.policy)),
@@ -499,8 +527,7 @@ impl Controller {
             self.ledger.store_json("exception", exception, now)?;
         }
         let input = self.ledger.store_json("operation", setup, now)?;
-        self.ledger
-            .create_run(&setup.run_id, &input.digest, &setup.budgets, now)
+        Ok(input.digest)
     }
     /// Reload immutable intake after restart instead of trusting a conversation cache.
     pub fn setup(&self, run_id: &str) -> Result<TaskSetup> {
@@ -559,7 +586,11 @@ impl Controller {
             environment_digest: Digest::of_json(&setup.environment)?,
         })
     }
-    fn select_binding(&mut self, setup: &TaskSetup, candidate: &Snapshot) -> Result<EvidenceKey> {
+    pub(crate) fn select_binding(
+        &mut self,
+        setup: &TaskSetup,
+        candidate: &Snapshot,
+    ) -> Result<EvidenceKey> {
         let now = runner::now_ms()?;
         self.ledger.store_json("snapshot", candidate, now)?;
         let key = self.key(setup, candidate)?;
@@ -579,7 +610,7 @@ impl Controller {
             &self.ledger.read(&key.candidate_digest)?,
         )?))
     }
-    fn approvals_current(
+    pub(crate) fn approvals_current(
         &self,
         setup: &TaskSetup,
         candidate: Option<&Snapshot>,
@@ -609,7 +640,7 @@ impl Controller {
         }
         Ok(true)
     }
-    fn check(
+    pub(crate) fn check(
         &mut self,
         setup: &TaskSetup,
         candidate: &Snapshot,
@@ -805,36 +836,100 @@ impl Controller {
             source_revision: revision.clone(),
             mandatory: false,
         });
-        for (path, file) in candidate
-            .files
-            .iter()
-            .filter(|(path, _)| {
-                setup
-                    .contract
-                    .scope
-                    .allow_write
-                    .iter()
-                    .any(|p| crate::scope::matches(p, path))
-            })
-            .take(12)
-        {
-            let bytes = self.ledger.read(&file.content.digest)?;
-            if let Ok(text) = String::from_utf8(bytes) {
-                items.push(ContextItem {
-                    item_id: format!("source:{path}"),
-                    artifact_digest: file.content.digest.clone(),
-                    trust: Trust::ObservedCode,
-                    source_revision: revision.clone(),
-                    mandatory: false,
-                    text,
-                });
-            }
-        }
+        items.extend(context::ranked_sources(
+            &self.ledger,
+            candidate,
+            &setup.contract.intent,
+            &setup
+                .design
+                .existing_code_considered
+                .iter()
+                .map(|code| code.file.clone())
+                .collect::<Vec<_>>(),
+            Some(&setup.contract.scope),
+        )?);
         context::build(
             &self.ledger,
             items,
             setup.worker.context_bytes.saturating_sub(4096),
         )
+    }
+    fn role_registry(setup: &TaskSetup) -> ContractRegistry {
+        ContractRegistry {
+            profiles: setup.profiles.iter().map(|p| p.id.clone()).collect(),
+            suites: setup.suites.clone(),
+            constraints: setup.constraint_names.clone(),
+            risks: setup.risk_names.clone(),
+        }
+    }
+    fn role_artifacts(&self, setup: &TaskSetup) -> Result<BTreeMap<String, Digest>> {
+        let mut artifacts = BTreeMap::from([
+            ("contract".into(), Digest::of_json(&setup.contract)?),
+            ("design".into(), Digest::of_json(&setup.design)?),
+            ("policy".into(), Digest::of_json(&setup.policy)?),
+            ("plan".into(), Digest::of_json(&setup.plan)?),
+        ]);
+        if let Some(binding) = self.ledger.run(&setup.run_id)?.binding_digest {
+            let evidence = self.ledger.store_json(
+                "report",
+                &self.ledger.completed_results(&setup.run_id, &binding)?,
+                runner::now_ms()?,
+            )?;
+            artifacts.insert("native-evidence".into(), evidence.digest);
+        }
+        Ok(artifacts)
+    }
+    fn independent_review_current(&self, setup: &TaskSetup, candidate: &Snapshot) -> Result<bool> {
+        let Some(limits) = &setup.reviewer else {
+            return Ok(true);
+        };
+        let registry = Self::role_registry(setup);
+        let artifacts = self.role_artifacts(setup)?;
+        let input = crate::roles::RoleInput {
+            run_id: &setup.run_id,
+            role: crate::provider::Role::Reviewer,
+            snapshot: candidate,
+            registry: &registry,
+            artifacts: &artifacts,
+            limits,
+            deadline_ms: setup.deadline_ms,
+        };
+        Ok(
+            crate::roles::completed(&self.ledger, &input)?.is_some_and(|draft| {
+                matches!(
+                    draft.artifact,
+                    crate::roles::DraftArtifact::Review {
+                        recommendation: crate::roles::Recommendation::Ready,
+                        ..
+                    }
+                )
+            }),
+        )
+    }
+    fn run_role(
+        &mut self,
+        setup: &TaskSetup,
+        snapshot: &Snapshot,
+        role: crate::provider::Role,
+        limits: &WorkerLimits,
+        provider: &mut dyn Provider,
+        cancel: &Cancellation,
+    ) -> Result<crate::roles::DraftResponse> {
+        let registry = Self::role_registry(setup);
+        let artifacts = self.role_artifacts(setup)?;
+        let input = crate::roles::RoleInput {
+            run_id: &setup.run_id,
+            role,
+            snapshot,
+            registry: &registry,
+            artifacts: &artifacts,
+            limits,
+            deadline_ms: setup.deadline_ms,
+        };
+        if let Some(previous) = crate::roles::completed(&self.ledger, &input)? {
+            return Ok(previous);
+        }
+        crate::roles::generate(&mut self.ledger, &input, provider, cancel)
     }
     fn implement(
         &mut self,
@@ -863,6 +958,7 @@ impl Controller {
                 "task deadline exhausted",
             )?;
             let request = ModelRequest {
+                role: crate::provider::Role::Implementer,
                 request_id: uuid::Uuid::new_v4().to_string(),
                 provider_model_id: setup.worker.model_id.clone(),
                 context: context.clone(),
@@ -875,61 +971,16 @@ impl Controller {
                 wire::canonical(&request)?.len() <= setup.worker.context_bytes,
                 "complete worker request exceeds context budget",
             )?;
-            let now = runner::now_ms()?;
-            let input = self.ledger.store_json("context", &request, now)?;
-            let reservation: BTreeMap<_, _> = [
-                ("model_calls".into(), 1),
-                ("tokens".into(), setup.worker.token_reservation),
-                ("cost_microunits".into(), setup.worker.cost_reservation),
-            ]
-            .into();
-            let lease = self.ledger.claim(
+            let response = crate::provider::accounted_call(
+                &mut self.ledger,
                 &setup.run_id,
-                &request.request_id,
-                "model",
-                &input.digest,
-                &format!("controller-{}", uuid::Uuid::new_v4()),
-                now,
-                setup.worker.timeout_ms.saturating_add(10_000),
-                &reservation,
-            )?;
-            let response = provider.generate(&request, cancel)?;
-            require(
-                response.request_id == request.request_id
-                    && response.output.len() <= wire::MAX_JSON_BYTES,
-                "provider response correlation or size violation",
-            )?;
-            let output =
-                self.ledger
-                    .store_json("provider-response", &response, runner::now_ms()?)?;
-            let usage = response.usage.as_ref().ok_or_else(|| {
-                Error::new(
-                    "provider supplied no usage; reservation retained for reconciliation".into(),
-                )
-            })?;
-            let tokens = usage
-                .input_tokens
-                .checked_add(usage.output_tokens)
-                .ok_or_else(|| Error::new("provider token usage overflow".into()))?;
-            let cost = usage.cost_microunits.ok_or_else(|| {
-                Error::new(
-                    "provider cost unresolved; reservation retained for reconciliation".into(),
-                )
-            })?;
-            let actual = [
-                ("model_calls".into(), 1),
-                ("tokens".into(), tokens),
-                ("cost_microunits".into(), cost),
-            ]
-            .into();
-            require(
-                self.ledger
-                    .complete(&lease, &output.digest, &actual, runner::now_ms()?)?,
-                "actual model usage exhausted the budget",
-            )?;
-            require(
-                response.finish_reason == "stop",
-                "provider did not complete its structured response",
+                &request,
+                crate::provider::Reservation {
+                    tokens: setup.worker.token_reservation,
+                    cost_microunits: setup.worker.cost_reservation,
+                },
+                provider,
+                cancel,
             )?;
             let turn = wire::decode::<WorkerTurn>(response.output.as_bytes()).and_then(|turn| {
                 turn.validate(&request)?;
@@ -947,10 +998,10 @@ impl Controller {
                 Err(e) => return Err(e),
             };
             if !turn.questions.is_empty() {
-                return Err(Error::new(format!(
-                    "semantic decision required: {}",
-                    turn.questions.join("; ")
-                )));
+                return Err(Error::classified(
+                    crate::FailureCategory::Contract,
+                    format!("semantic decision required: {}", turn.questions.join("; ")),
+                ));
             }
             let broker = Broker::new(&self.ledger, &candidate, diagnostics.clone());
             if let Some(proposal) = turn.proposal {
@@ -1021,7 +1072,7 @@ impl Controller {
             .collect();
         let approvals = self.approvals_current(&setup, Some(&candidate), runner::now_ms()?)?;
         let prior_failures = {
-            let mut statement=self.ledger.connection.prepare("SELECT c.result_id FROM check_results c JOIN operations o ON c.operation_id=o.operation_id WHERE o.run_id=?1 AND o.kind!='negative_control' AND (o.state!='completed' OR c.status!='pass')")?;
+            let mut statement=self.ledger.connection.prepare("SELECT c.result_id FROM check_results c JOIN operations o ON c.operation_id=o.operation_id WHERE o.run_id=?1 AND o.kind NOT IN ('negative_control','baseline') AND (o.state!='completed' OR c.status!='pass')")?;
             let rows = statement.query_map([run_id], |r| r.get::<_, String>(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
                 .into_iter()
@@ -1059,7 +1110,8 @@ impl Controller {
                 .is_ok(),
             no_blocking_unknowns: setup.contract.require_resolved().is_ok()
                 && setup.design.validate(&setup.contract).is_ok(),
-            review_requirements_satisfied: approvals,
+            review_requirements_satisfied: approvals
+                && self.independent_review_current(&setup, &candidate)?,
             approvals_current: approvals,
             integration_candidate_current: integration.current_revision(&setup.repository_id)?
                 == candidate.base_revision,
@@ -1254,6 +1306,7 @@ impl Controller {
                         self.approvals_current(setup, None, runner::now_ms()?)?,
                         "contract, design, oracle or plan approval is missing, expired or revoked",
                     )?;
+                    self.establish_baseline(setup, cancel)?;
                     self.advance(
                         &setup.run_id,
                         State::ContractReady,
@@ -1309,7 +1362,30 @@ impl Controller {
                     self.advance(&setup.run_id,State::Implement,"negative_control_verified",serde_json::json!({"result":result.result_id,"cases":setup.negative_control_cases}))?;
                 }
                 State::Implement => {
-                    let candidate = self.implement(setup, provider, cancel, setup.base.clone(), Vec::new())?;
+                    let candidate = match self.implement(
+                        setup,
+                        provider,
+                        cancel,
+                        setup.base.clone(),
+                        Vec::new(),
+                    ) {
+                        Ok(candidate) => candidate,
+                        Err(error)
+                            if matches!(
+                                error.category,
+                                crate::FailureCategory::Contract | crate::FailureCategory::Design
+                            ) =>
+                        {
+                            self.advance(
+                                &setup.run_id,
+                                State::Replan,
+                                "semantic_replan_requested",
+                                serde_json::json!({"reason":error.message}),
+                            )?;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     self.select_binding(setup, &candidate)?;
                     self.advance(
                         &setup.run_id,
@@ -1328,7 +1404,11 @@ impl Controller {
                         &setup.base,
                         &candidate,
                         &setup.contract.risk_tags,
-                        &setup.profiles.iter().map(|profile| profile.language).collect::<Vec<_>>(),
+                        &setup
+                            .profiles
+                            .iter()
+                            .map(|profile| profile.language)
+                            .collect::<Vec<_>>(),
                     )?;
                     self.ledger
                         .store_json("report", &assessment, runner::now_ms()?)?;
@@ -1369,19 +1449,40 @@ impl Controller {
                         let result = self.check(setup, &candidate, &key, spec, "check", cancel)?;
                         if result.status != Status::Pass {
                             if cancel.is_cancelled() {
-                                let state=self.ledger.run(&setup.run_id)?.state;
-                                if !state.terminal() && state!=State::Blocked {
-                                    self.advance(&setup.run_id,if runner::now_ms()? >= setup.deadline_ms {State::Stopped}else{State::Cancelled},"verification_interrupted",serde_json::json!({"result":result.result_id}))?;
+                                let state = self.ledger.run(&setup.run_id)?.state;
+                                if !state.terminal() && state != State::Blocked {
+                                    self.advance(
+                                        &setup.run_id,
+                                        if runner::now_ms()? >= setup.deadline_ms {
+                                            State::Stopped
+                                        } else {
+                                            State::Cancelled
+                                        },
+                                        "verification_interrupted",
+                                        serde_json::json!({"result":result.result_id}),
+                                    )?;
                                 }
                                 break;
                             }
                             if result.repairable() {
-                                if let Some(budget)=self.ledger.budgets(&setup.run_id)?.get("repairs") {
+                                if let Some(budget) =
+                                    self.ledger.budgets(&setup.run_id)?.get("repairs")
+                                {
                                     if budget.spent < budget.limit && budget.reserved == 0 {
-                                        self.advance(&setup.run_id,State::Repair,"repair_requested",serde_json::json!({"result":result.result_id}))?;
+                                        self.advance(
+                                            &setup.run_id,
+                                            State::Repair,
+                                            "repair_requested",
+                                            serde_json::json!({"result":result.result_id}),
+                                        )?;
                                         break;
                                     }
-                                    self.advance(&setup.run_id,State::Stopped,"repair_budget_exhausted",serde_json::json!({"result":result.result_id}))?;
+                                    self.advance(
+                                        &setup.run_id,
+                                        State::Stopped,
+                                        "repair_budget_exhausted",
+                                        serde_json::json!({"result":result.result_id}),
+                                    )?;
                                     break;
                                 }
                             }
@@ -1393,13 +1494,32 @@ impl Controller {
                         }
                         done.insert((spec.check_id.clone(), spec.configuration_digest.clone()));
                     }
-                    if self.ledger.run(&setup.run_id)?.state != current.state { continue; }
+                    if self.ledger.run(&setup.run_id)?.state != current.state {
+                        continue;
+                    }
                     let next = match current.state {
                         State::FastChecks => State::RiskChecks,
                         State::RiskChecks => State::Review,
                         _ => State::ReadyForApproval,
                     };
                     if current.state == State::CleanCi {
+                        if let Some(limits) = &setup.reviewer {
+                            let draft = self.run_role(
+                                setup,
+                                &candidate,
+                                crate::provider::Role::Reviewer,
+                                limits,
+                                provider,
+                                cancel,
+                            )?;
+                            if let crate::roles::DraftArtifact::Review { recommendation, .. } =
+                                draft.artifact
+                            {
+                                if recommendation != crate::roles::Recommendation::Ready {
+                                    return self.block(&setup.run_id, State::CleanCi, "independent reviewer found changes or semantic decisions; inspect the recorded review before repairing or replanning");
+                                }
+                            }
+                        }
                         let gate = self.verify(&setup.run_id, integration)?;
                         if gate.verdict != Verdict::Ready {
                             let mut report = self.block(
@@ -1441,7 +1561,7 @@ impl Controller {
                         report.gate = Some(gate);
                         return Ok(report);
                     }
-                    self.accept_atomically(&setup.run_id,integration,cancel)?;
+                    self.accept_atomically(&setup.run_id, integration, cancel)?;
                     return Ok(RunReport {
                         run_id: setup.run_id.clone(),
                         state: State::Accepted,
@@ -1454,22 +1574,94 @@ impl Controller {
                     });
                 }
                 State::Repair => {
-                    let candidate=self.current_candidate(&setup.run_id)?.ok_or_else(||Error::new("repair has no candidate".into()))?;
-                    let before=candidate.digest()?;
-                    let binding=self.ledger.run(&setup.run_id)?.binding_digest.ok_or_else(||Error::new("repair has no binding".into()))?;
-                    let results=self.ledger.completed_results(&setup.run_id,&binding)?;
-                    let feedback=results.into_iter().map(|r|serde_json::to_value(r).map_err(|e|Error::new(e.to_string()))).collect::<Result<Vec<_>>>()?;
-                    let input=self.ledger.store_json("operation",&serde_json::json!({"repair_of":before}),runner::now_ms()?)?;
-                    let lease=self.ledger.claim(&setup.run_id,&uuid::Uuid::new_v4().to_string(),"repair",&input.digest,&uuid::Uuid::new_v4().to_string(),runner::now_ms()?,setup.deadline_ms.saturating_sub(runner::now_ms()?).max(1),&[("repairs".into(),1)].into())?;
-                    let outcome=self.implement(setup,provider,cancel,candidate,feedback);
+                    let candidate = self
+                        .current_candidate(&setup.run_id)?
+                        .ok_or_else(|| Error::new("repair has no candidate".into()))?;
+                    let before = candidate.digest()?;
+                    let binding = self
+                        .ledger
+                        .run(&setup.run_id)?
+                        .binding_digest
+                        .ok_or_else(|| Error::new("repair has no binding".into()))?;
+                    let results = self.ledger.completed_results(&setup.run_id, &binding)?;
+                    let feedback = results
+                        .into_iter()
+                        .map(|r| serde_json::to_value(r).map_err(|e| Error::new(e.to_string())))
+                        .collect::<Result<Vec<_>>>()?;
+                    let input = self.ledger.store_json(
+                        "operation",
+                        &serde_json::json!({"repair_of":before}),
+                        runner::now_ms()?,
+                    )?;
+                    let lease = self.ledger.claim(
+                        &setup.run_id,
+                        &uuid::Uuid::new_v4().to_string(),
+                        "repair",
+                        &input.digest,
+                        &uuid::Uuid::new_v4().to_string(),
+                        runner::now_ms()?,
+                        setup.deadline_ms.saturating_sub(runner::now_ms()?).max(1),
+                        &[("repairs".into(), 1)].into(),
+                    )?;
+                    let outcome = self.implement(setup, provider, cancel, candidate, feedback);
                     let output=self.ledger.store_json("operation",&serde_json::json!({"repaired":outcome.is_ok(),"error":outcome.as_ref().err().map(ToString::to_string)}),runner::now_ms()?)?;
-                    require(self.ledger.complete(&lease,&output.digest,&[("repairs".into(),1)].into(),runner::now_ms()?)?,"repair exhausted the budget")?;
-                    let candidate=outcome?;
-                    require(candidate.digest()?!=before,"repair produced no changed candidate")?;
-                    self.select_binding(setup,&candidate)?;
-                    self.advance(&setup.run_id,State::FastChecks,"repair_admitted",serde_json::json!({"candidate":candidate.digest()?}))?;
+                    require(
+                        self.ledger.complete(
+                            &lease,
+                            &output.digest,
+                            &[("repairs".into(), 1)].into(),
+                            runner::now_ms()?,
+                        )?,
+                        "repair exhausted the budget",
+                    )?;
+                    let candidate = match outcome {
+                        Err(error)
+                            if matches!(
+                                error.category,
+                                crate::FailureCategory::Contract | crate::FailureCategory::Design
+                            ) =>
+                        {
+                            self.advance(
+                                &setup.run_id,
+                                State::Replan,
+                                "semantic_replan_required",
+                                serde_json::json!({"reason":error.message}),
+                            )?;
+                            continue;
+                        }
+                        other => other?,
+                    };
+                    require(
+                        candidate.digest()? != before,
+                        "repair produced no changed candidate",
+                    )?;
+                    self.select_binding(setup, &candidate)?;
+                    self.advance(
+                        &setup.run_id,
+                        State::FastChecks,
+                        "repair_admitted",
+                        serde_json::json!({"candidate":candidate.digest()?}),
+                    )?;
                 }
-                State::Replan => return Err(Error::new("semantic replanning requires a newly approved intake; automatic replans are disabled".into())),
+                State::Replan => {
+                    require(
+                        self.ledger
+                            .budgets(&setup.run_id)?
+                            .get("replans")
+                            .is_some_and(|b| b.spent < b.limit),
+                        "replan budget exhausted",
+                    )?;
+                    let draft = self.run_role(
+                        setup,
+                        &setup.base,
+                        crate::provider::Role::Architect,
+                        &setup.worker,
+                        provider,
+                        cancel,
+                    )?;
+                    let digest = Digest::of_json(&draft)?;
+                    return self.block(&setup.run_id, State::Replan, &format!("replan draft {digest} is ready; stage a replacement intake and obtain its exact approvals before activation"));
+                }
                 _ => return Err(Error::new("unhandled workflow state".into())),
             }
         }
@@ -1478,12 +1670,12 @@ impl Controller {
 
 // A separate read connection observes operator cancellation/recovery while a native
 // command or provider request blocks the controller thread. No worker owns this token.
-struct ExecutionMonitor {
+pub(crate) struct ExecutionMonitor {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl ExecutionMonitor {
-    fn start(
+    pub(crate) fn start(
         root: &std::path::Path,
         run_id: &str,
         parent: Cancellation,
