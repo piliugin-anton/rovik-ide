@@ -877,10 +877,49 @@ impl Remote {
 
     /// A chat's request, answered by its owner: the core here, or its host.
     /// The mirror takes the writes its owner tells no event of.
-    pub async fn route(&self, dialog_id: &str, request: Request) -> Result<Response, Fail> {
+    pub async fn route(&self, dialog_id: &str, mut request: Request) -> Result<Response, Fail> {
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
+        if let Request::Harness {
+            root,
+            source,
+            operation,
+            ..
+        } = &mut request
+        {
+            if !self.serves(&host, features::POLYGLOT_HARNESS) {
+                return Err(Fail::new(
+                    FailCode::BadRequest,
+                    format!(
+                        "{} needs an update before it can run polyglot verification.",
+                        self.host_name(&host)
+                    ),
+                ));
+            }
+            if self.is_moving_back(dialog_id) {
+                return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
+            }
+            if matches!(
+                operation,
+                rovik_protocol::harness::Operation::Inspect { .. }
+                    | rovik_protocol::harness::Operation::Verify { .. }
+                    | rovik_protocol::harness::Operation::Configure { .. }
+                    | rovik_protocol::harness::Operation::Status { .. }
+                    | rovik_protocol::harness::Operation::Resume { .. }
+            ) {
+                *source = Some(
+                    self.sync_before_verification(&host, dialog_id)
+                        .await
+                        .map_err(internal)?,
+                );
+            } else {
+                *source = None;
+            }
+            // A local drive or project path is never an execution path on a host.
+            // The daemon binds this operation to its owned chat worktree.
+            *root = None;
+        }
         if let Request::ClmReadFile { path, .. } = &request {
             if !self.serves(&host, features::CONTEXT_FILES) {
                 // Older hosts already support the live context through revisions.

@@ -181,6 +181,13 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   runner; published model-quality results require a separately configured study.
   See [Polyglot harness](docs/design/polyglot-harness.md)
   for supported targets, measured limits and operator setup.
+- **Verify changes in the IDE.** Open Project Checks to inspect a project's
+  build roots, select a prepared verification setup and run the strict harness
+  against saved changes. Choose this computer or the current project's connected
+  Linux chat host. Review exact approvals and see failed checks, recovery actions
+  and whether a result is stale. Verification preserves the checkout and index
+  and makes no model calls. See the
+  [IDE integration plan](docs/design/polyglot-ide-integration.md).
 - **Local Docker setup.** On startup, Rovik installs Docker when it is missing
   on a supported desktop. Progress and retry actions appear alongside the
   browser installation notifications. Linux uses signed distribution packages

@@ -203,6 +203,9 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 
 fn answer(request: &Request) -> Response {
     match request {
+        Request::Harness {
+            dialog_id, root, ..
+        } => Response::Harness(serde_json::json!({"dialogId":dialog_id,"root":root})),
         Request::ClmReadFile { dialog_id, path } => Response::Text(format!("{dialog_id}:{path}")),
         Request::ClmStatus { .. } => Response::ClmStatus(rovik_protocol::clm::ClmStatus {
             mode: Some("clm".into()),

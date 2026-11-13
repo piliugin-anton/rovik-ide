@@ -652,6 +652,14 @@ fn every_request_round_trips() {
     covers(
         "t",
         &[
+            Request::Harness {
+                dialog_id: "d".into(),
+                root: None,
+                source: None,
+                operation: crate::harness::Operation::Status {
+                    run_id: "run".into(),
+                },
+            },
             Request::AgentStart(Box::new(start())),
             Request::AgentStart(Box::new(StartRequest {
                 start: StartKind::RunChecks {
@@ -1055,6 +1063,7 @@ fn every_response_round_trips() {
         "t",
         &[
             Response::MemorySync(json!({"format":1,"through":7,"changes":[]})),
+            Response::Harness(json!({"runId":"run","status":"blocked"})),
             Response::Done,
             Response::Bool(false),
             Response::Steer(SteerReply::Queued),
@@ -2127,5 +2136,21 @@ fn context_file_reads_are_routed_to_the_owning_chat() {
         }
         .target(),
         Some((crate::Target::Chat("source-chat"), crate::Access::Read))
+    );
+}
+
+#[test]
+fn harness_management_requires_write_ownership_even_when_reading_status() {
+    assert_eq!(
+        Request::Harness {
+            dialog_id: "owning-chat".into(),
+            root: None,
+            source: None,
+            operation: crate::harness::Operation::Status {
+                run_id: "run".into()
+            },
+        }
+        .target(),
+        Some((crate::Target::Chat("owning-chat"), crate::Access::Write))
     );
 }

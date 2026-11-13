@@ -39,6 +39,7 @@ import AgentRunsSettings from './AgentRunsSettings';
 import SubagentSettings from './SubagentSettings';
 import AutopilotSettings from './AutopilotSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
+import type { HarnessChatContext } from '../lib/polyglotHarness';
 import RestrictedFilesSettings from './RestrictedFilesSettings';
 import MemorySettings from './MemorySettings';
 import HeavyCommandsSettings from './HeavyCommandsSettings';
@@ -65,6 +66,9 @@ interface SettingsDialogProps {
   initialPage?: SettingsPage;
   /** The open project, for its checks page; none without a project. */
   rootPath?: string | null;
+  /** Writable editor buffers that have not been saved to the project snapshot. */
+  unsavedFiles?: readonly string[];
+  harnessChat?: HarnessChatContext;
   onClose: () => void;
 }
 
@@ -250,6 +254,8 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             <Match when={page() === 'project' && props.rootPath}>
               <ProjectChecksSettings
                 root={props.rootPath!}
+                unsavedFiles={props.unsavedFiles}
+                harnessChat={props.harnessChat}
                 permissions={aiPermissions()}
                 onPermissionsChange={updatePermissions}
                 onOpenPage={setPage}

@@ -18,6 +18,7 @@ pub mod connectors;
 pub mod diff;
 pub mod events;
 mod frame;
+pub mod harness;
 pub mod host;
 pub mod mcp;
 pub mod network;
@@ -60,6 +61,8 @@ pub const FORWARD_UPGRADE: &str = "rovik-forward";
 /// What a daemon serves beyond what protocol 1 began with, named in its
 /// `Welcome` (4.5). A client checks for one before it relies on it.
 pub mod features {
+    /// Trusted project setup and fresh polyglot verification through `Harness`.
+    pub const POLYGLOT_HARNESS: &str = "polyglot-harness";
     /// Reads current context files, including task cards, without a mounted volume.
     pub const CONTEXT_FILES: &str = "context-files";
     /// Incremental project-memory exchange, including edits and deletion markers.

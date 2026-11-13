@@ -26,6 +26,19 @@ use std::collections::BTreeMap;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Request {
+    /// Trusted harness management on the owning chat's execution host. → `Harness`.
+    Harness {
+        /// Chat whose ownership selects and authorizes the host.
+        dialog_id: String,
+        /// Local project path; remote daemons replace it with the owned worktree.
+        #[serde(default)]
+        root: Option<String>,
+        /// Desktop-derived source baseline, validated against the owned host worktree.
+        #[serde(default)]
+        source: Option<crate::harness::SourceBinding>,
+        /// Closed management operation, unavailable to worker tools.
+        operation: crate::harness::Operation,
+    },
     // Agent: runs, and what they wait on.
     /// Boxed: a start is far bigger than any other request, and every
     /// request would take its size.
@@ -437,6 +450,7 @@ impl Request {
             Some((Target::Chat(id), access))
         }
         match self {
+            Request::Harness { dialog_id, .. } => chat(dialog_id, Write),
             Request::AgentStart(start) => chat(&start.dialog_id, Write),
             Request::AgentStop { dialog_id }
             | Request::AgentPause { dialog_id, .. }
@@ -512,6 +526,8 @@ impl Request {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", content = "v", rename_all = "camelCase")]
 pub enum Response {
+    /// Controller-generated project or run summary; never a client-authored verdict.
+    Harness(Value),
     /// A bounded replication page, validated by the memory library.
     MemorySync(Value),
     /// Done, with nothing to tell.

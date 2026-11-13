@@ -453,3 +453,19 @@ fn a_daemon_keeps_a_project_by_the_desktops_id() {
     assert!(!chat_may_use(&conn, Some("desktop-id-1"), &worktree).unwrap());
     assert!(chat_may_use(&conn, Some("desktop-id-1"), &repo).unwrap());
 }
+
+#[test]
+fn verification_project_identity_comes_from_registered_paths_not_candidate_metadata() {
+    let mut conn = db();
+    let root = temp("verification-identity");
+    assert_eq!(opened_project_at(&conn, &root).unwrap(), None);
+    ensure(&mut conn, "trusted", "Project", &root).unwrap();
+    write_id_file(&root, "candidate-controlled").unwrap();
+    assert_eq!(
+        opened_project_at(&conn, &root).unwrap(),
+        Some("trusted".into())
+    );
+    ensure(&mut conn, "ambiguous", "Other project", &root).unwrap();
+    assert!(opened_project_at(&conn, &root).is_err());
+    fs::remove_dir_all(root).unwrap();
+}

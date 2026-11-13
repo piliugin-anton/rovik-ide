@@ -389,6 +389,7 @@ pub fn run() {
             commands::tools::tool_edit_file,
             commands::tools::report_editor_diagnostics,
             commands::project::project_profile,
+            commands::harness::polyglot_harness,
             commands::project::load_project_settings,
             commands::project::save_project_settings,
             commands::project::restricted_files,

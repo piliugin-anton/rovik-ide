@@ -108,6 +108,15 @@ impl Daemon {
 
     async fn serve(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         match request {
+            Request::Harness {
+                dialog_id,
+                source,
+                operation,
+                ..
+            } => {
+                // answer authenticated this chat before any paths or private state are resolved.
+                crate::harness::serve(self, dialog_id, source, operation).await
+            }
             Request::MemorySync {
                 project,
                 replica,

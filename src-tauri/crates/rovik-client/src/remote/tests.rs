@@ -2642,3 +2642,193 @@ async fn context_file_reads_require_support_and_keep_the_owning_chat() {
         remote.disconnect(HOST);
     }
 }
+
+#[tokio::test]
+async fn harness_requests_require_host_support_and_never_forward_local_project_paths() {
+    for supported in [false, true] {
+        let app = App::new();
+        app.chat("chat", None, Vec::new()).await;
+        let fake = Fake::default();
+        if supported {
+            fake.features
+                .lock()
+                .unwrap()
+                .push(features::POLYGLOT_HARNESS.into());
+        }
+        let (remote, fake) = connected_to(&app, fake).await;
+        remote.place("chat", HOST);
+        let operation = rovik_protocol::harness::Operation::Approvals {
+            run_id: "host-run".into(),
+        };
+        let result = remote
+            .route(
+                "chat",
+                Request::Harness {
+                    dialog_id: "chat".into(),
+                    root: Some("C:\\private-local-project".into()),
+                    source: None,
+                    operation: operation.clone(),
+                },
+            )
+            .await;
+        if supported {
+            assert_eq!(
+                result.unwrap(),
+                Response::Harness(serde_json::json!({"dialogId":"chat","root":null}))
+            );
+            assert!(fake.requests.lock().unwrap().contains(&Request::Harness {
+                dialog_id: "chat".into(),
+                root: None,
+                source: None,
+                operation,
+            }));
+        } else {
+            assert!(result.unwrap_err().message.contains("update"));
+            assert!(!fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| matches!(request, Request::Harness { .. })));
+        }
+        remote.disconnect(HOST);
+    }
+}
+
+#[tokio::test]
+async fn verification_never_falls_back_to_unsynchronized_cloud_files() {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let fake = Fake::default();
+    fake.features
+        .lock()
+        .unwrap()
+        .extend([features::POLYGLOT_HARNESS.into(), features::PROJECTS.into()]);
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let error = remote
+        .route(
+            "chat",
+            Request::Harness {
+                dialog_id: "chat".into(),
+                root: Some("/local-project".into()),
+                source: None,
+                operation: rovik_protocol::harness::Operation::Verify {
+                    untracked: vec![],
+                    expected_snapshot_digest: "reviewed-snapshot".into(),
+                    saved_buffers: true,
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("project-backed"));
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| matches!(request, Request::Harness { .. })));
+    remote.disconnect(HOST);
+}
+
+#[tokio::test]
+async fn remote_verification_status_requires_current_local_inputs_and_resolved_syncs() {
+    use rovik_protocol::work::{ChatSync, SyncState};
+    let app = App::new();
+    let project = project_in(&app, "verification-project").await;
+    let file = app.dir.0.join("verification-project/source.txt");
+    std::fs::write(&file, "committed baseline").unwrap();
+    let repository = git2::Repository::init(file.parent().unwrap()).unwrap();
+    let mut index = repository.index().unwrap();
+    index.add_path(std::path::Path::new("source.txt")).unwrap();
+    index.write().unwrap();
+    let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
+    let signature = git2::Signature::now("test", "test@example.com").unwrap();
+    let head = repository
+        .commit(Some("HEAD"), &signature, &signature, "baseline", &tree, &[])
+        .unwrap();
+    drop(tree);
+    std::fs::write(&file, "reviewed bytes").unwrap();
+    let staged = file.parent().unwrap().join("staged.txt");
+    std::fs::write(&staged, "staged candidate").unwrap();
+    index.add_path(std::path::Path::new("staged.txt")).unwrap();
+    index.write().unwrap();
+    std::fs::write(file.parent().unwrap().join("untracked.txt"), "opt-in only").unwrap();
+    app.chat("chat", Some(&project), Vec::new()).await;
+    let fake = Fake::default();
+    fake.features
+        .lock()
+        .unwrap()
+        .extend([features::POLYGLOT_HARNESS.into(), features::PROJECTS.into()]);
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let snapshot = remote.snapshot("chat").await.unwrap().unwrap();
+    remote
+        .lock()
+        .last_sync
+        .insert("chat".into(), snapshot.commit);
+    let request = || Request::Harness {
+        dialog_id: "chat".into(),
+        root: Some("/local-project".into()),
+        source: None,
+        operation: rovik_protocol::harness::Operation::Status {
+            run_id: "verified-run".into(),
+        },
+    };
+    for state in [
+        SyncState::Conflicts,
+        SyncState::Marked,
+        SyncState::Unmergeable,
+    ] {
+        remote.synced(ChatSync {
+            dialog_id: "chat".into(),
+            state,
+            files: vec!["source.txt".into()],
+        });
+        let error = remote.route("chat", request()).await.unwrap_err();
+        assert!(error.message.contains("conflicts"), "{error}");
+    }
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| matches!(request, Request::Harness { .. })));
+    remote.synced(ChatSync {
+        dialog_id: "chat".into(),
+        state: SyncState::Synced,
+        files: vec![],
+    });
+    assert!(remote.route("chat", request()).await.is_ok());
+    let expected = rovik_protocol::harness::SourceBinding {
+        head: head.to_string(),
+        snapshot: snapshot.commit.to_string(),
+        tracked_paths: vec!["source.txt".into(), "staged.txt".into()],
+    };
+    assert!(fake.requests.lock().unwrap().iter().any(|request| matches!(request, Request::Harness { source:Some(binding), root:None, .. } if binding == &expected)));
+    fake.requests.lock().unwrap().clear();
+    // Merely staging existing bytes leaves the shadow commit unchanged, but the
+    // verified scope must still receive the current desktop classification.
+    index
+        .add_path(std::path::Path::new("untracked.txt"))
+        .unwrap();
+    index.write().unwrap();
+    assert!(remote.route("chat", request()).await.is_ok());
+    assert!(fake.requests.lock().unwrap().iter().any(|request| matches!(request,
+        Request::Harness { source:Some(binding), .. }
+        if binding.snapshot == expected.snapshot && binding.tracked_paths == ["source.txt", "staged.txt", "untracked.txt"]
+    )));
+    fake.requests.lock().unwrap().clear();
+    // This fake has no pack upload endpoint. New desktop bytes therefore cannot
+    // reach the host: reading its old verification result must fail closed.
+    std::fs::write(file, "new, unverified desktop bytes").unwrap();
+    assert!(remote.route("chat", request()).await.is_err());
+    assert!(!fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| matches!(request, Request::Harness { .. })));
+    remote.disconnect(HOST);
+}

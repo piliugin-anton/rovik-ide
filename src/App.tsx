@@ -141,6 +141,7 @@ import { startUpdates } from './lib/updates';
 import { startHostUpdates } from './lib/hostUpdates';
 import { onShowChat } from './lib/agentRuns';
 import { cloud } from './lib/cloud';
+import { eligibleHarnessChat } from './lib/polyglotHarness';
 import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
@@ -2483,7 +2484,20 @@ export default function App() {
       <NotificationHost />
       <Show when={appSettingsPage()} keyed>
         {(page) => (
-          <SettingsDialog initialPage={page} rootPath={rootPath()} onClose={closeAppSettings} />
+          <SettingsDialog
+            initialPage={page}
+            rootPath={rootPath()}
+            harnessChat={eligibleHarnessChat(
+              currentProject()?.id,
+              chatStore.projectId(),
+              chatStore.state.active,
+              cloud.hosts
+            )}
+            unsavedFiles={openFiles()
+              .filter((file) => file.dirty && !file.readOnly)
+              .map((file) => file.path)}
+            onClose={closeAppSettings}
+          />
         )}
       </Show>
     </div>

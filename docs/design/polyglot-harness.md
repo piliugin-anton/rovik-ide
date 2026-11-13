@@ -6,6 +6,39 @@ choice. Rovik implements the same boundaries in the `rovik-harness` Rust crate,
 so the desktop, daemon and headless agent can share one controller. The existing
 provider, process and permission adapters remain the integration points.
 
+## IDE verification
+
+Open the Git repository root in Rovik and select **Set up and verify changes…**
+under Project Checks. The panel discovers build roots, including nested Cargo and
+JavaScript manifests, and lists available verification setups. Discovery does not
+authorize commands or infer domain rules. Initially, import a prepared setup
+bundle containing `setup.json` and its referenced sibling CAS assets; guided
+preparation is part of the next integration phase. The import copies source and
+environment assets, never prior approvals, receipts or verdicts.
+
+Select **This computer** on a supported Linux desktop, or open the project's chat
+on a connected Linux host and select that host. Docker or Podman must be usable on
+the execution host, and the setup's pinned image and offline dependencies must be
+available. A disconnected or incompatible host blocks the action. Remote source
+synchronization must succeed before capture; verification uses the actual project
+baseline independently of the host's synchronization commits.
+
+Save editor buffers, select any untracked files to include, review the setup and
+choose **Verify changes**. The service captures the current tracked files and
+selected untracked files without changing the index or checkout. Review each
+requested approval's exact subject and protected assets before approving it, then
+resume. The existing controller runs baseline, negative-control and final checks
+without a model provider. An unsupported or incomplete setup remains blocked.
+
+The panel shows diagnostics and durable run history, with cancellation, recovery
+and resume actions when applicable. A **Verified** result belongs to the exact
+captured input and selected configuration. Later edits, unsaved buffers or changed
+configuration invalidate that current-result claim. This operation verifies saved
+changes; it does not apply an implementation or deploy the project.
+
+The ordered [IDE integration plan](polyglot-ide-integration.md) tracks verified plan
+implementation, Autopilot integration and editor architecture feedback.
+
 ## Trust boundary
 
 The controller owns run transitions, policy, approved contracts, command
@@ -124,8 +157,8 @@ delegated memory, CPU and pids controllers. Before any check starts, the runner
 reads the container's actual cgroup limits and rejects missing or unenforced
 limits. Disabled cgroups are unsupported. The cloud project-services store,
 which deliberately shares per-user limits, is separate from this verification
-store. Cloud daemon routing still needs the IDE integration described below;
-merely having project services available does not establish strict readiness.
+store. The IDE routes verification through the selected Linux chat host; merely
+having project services available does not establish strict readiness.
 
 Prepare images separately, then import an archive into the selected engine with
 `rovik-harness <absolute-state-dir> load-image <archive.tar>`. The task environment
@@ -271,57 +304,21 @@ images and dependency assets still need preparation, and macOS/Windows desktops
 need a supported Linux execution host for the current strict harness. Cloud
 hosts retain their rootless Podman setup.
 
-## Proposed IDE integration
+## IDE integration roadmap
 
-This section is a recommendation; the current entry point is still the headless
-CLI. The best first use case is an approved plan for a bug fix or API refactor
-with explicit behavioral acceptance criteria. Add **Require verified result** to
-the existing **Implement this plan** action and Autopilot task options. The IDE
-should guide setup from project manifests and present missing decisions directly,
-without requiring users to author harness JSON.
+Project setup and model-free **Verify changes** are available through the shared
+core service and typed desktop/daemon RPCs described above. The next phases add
+verified plan implementation, Autopilot integration and editor architecture
+feedback, in that order. The [integration plan](polyglot-ide-integration.md)
+records their acceptance criteria and implementation status.
 
-On first use for a project, select the language profiles, exact tools, dependency
-locks, protected test commands and a Linux execution host. Reuse that approved
-configuration for later tasks while its inputs remain current. The existing
-Prepare stage prepares and freezes dependencies outside verification; the Tests
-stage creates the protected oracle from the approved contract and establishes a
-relevant failing negative control before implementation. Missing inputs or an
-unsupported runtime leave the task blocked with a specific next action.
-
-The flow should fit the existing Autopilot stages:
-
-| Stage               | Proposed strict-mode behavior                                                                                                             |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan / Plan review  | Draft the contract, scope, invariants and required configurations; accepting the plan records the corresponding approval.                 |
-| Prepare / Tests     | Pin the environment and dependencies, review and freeze acceptance tests, and prove the negative control fails for the intended behavior. |
-| Implement / Review  | Let the Rust controller own scoped edits, repairs, budgets and required reviews in an isolated candidate workspace.                       |
-| Checks / Acceptance | Run protected checks against the frozen candidate and expose the controller's actual verdict and evidence.                                |
-| Deliver             | Apply or publish the exact accepted candidate after checking the destination revision is still current.                                   |
-
-The controller should own the strict task's implementation and repair loop so
-Autopilot does not start a competing repair loop. Its progress, missing approvals,
-failure reasons and case results can feed the existing stage strip and
-`VerificationRecord` UI, with **Review**, **Resume** and **Cancel** actions. Model
-acceptance text and ordinary check summaries cannot supply the trusted verdict.
-
-Use the shared `rovik-harness` library through trusted core service methods and
-typed desktop/daemon RPCs. Keep the ledger outside the worker workspace; the
-frontend holds run IDs and renders records. The current integration points are
-`PlanImplementationAction.tsx`, the Autopilot stage/driver modules,
-`agent_run/verify.rs` and the delivery/overlay path. `rovik-core/src/harness.rs`
-already supplies provider and Git adapters, but UI service routing and task
-construction still need implementation.
-
-The first release of this IDE mode should require isolation and use the existing
-Linux Docker or rootless Podman backend, locally or on a connected Linux host.
-Check the selected host's per-job isolation and resource capabilities before
-offering strict mode. Capture the actual
-intended starting tree: the current Git importer captures committed HEAD only,
-so unsaved buffers and uncommitted edits need an explicit saved snapshot before
-execution. Before applying a result, check both the destination revision and
-local edits. Conflict resolution or subsequent edits produce a new candidate
-that needs verification again. A blocked or failed run can remain available as a
-draft diff, while verified delivery requires the accepted candidate's evidence.
+An approved bug-fix or API-refactor plan with explicit behavioral acceptance
+criteria is the intended first implementation use case. Strict tasks use one
+controller for implementation and repair, preserve the original working tree,
+and require current authenticated evidence before delivery. Saved dirty files
+and explicitly selected untracked files are captured by the IDE service; unsaved
+editor buffers block capture. Conflict resolution produces a new candidate that
+needs verification again.
 
 ## Native packs and supported matrix (M4)
 

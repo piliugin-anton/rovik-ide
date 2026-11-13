@@ -125,6 +125,8 @@ impl Provider for HarnessProvider {
 }
 
 mod git_delivery;
+pub mod ide;
+pub mod ide_setup;
 pub use git_delivery::{DeliveryCandidate, DeliveryReceipt, MergeCandidate};
 
 /// Integration observer for one explicitly selected Git repository and reference.
