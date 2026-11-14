@@ -833,9 +833,20 @@ mod tests {
         let first = started(
             chat,
             &root,
-            "echo up; while [ ! -e go ]; do sleep 0.05; done; echo crashed; exit 2",
+            "while [ ! -e ready ]; do sleep 0.05; done; echo up; \
+             while [ ! -e go ]; do sleep 0.05; done; echo crashed; exit 2",
         );
         assert_eq!(first.status.end, None);
+        assert!(first.output.is_empty(), "readiness waits for the test");
+        // A busy runner may return the first report before the shell prints.
+        // Consume actual startup output before allowing the later exit output.
+        std::fs::write(Path::new(&root).join("ready"), "").unwrap();
+        let mut initial = first.output;
+        assert!(until(|| {
+            initial.push_str(&output(chat, &first.status.id).unwrap().output);
+            initial.ends_with('\n')
+        }));
+        assert_eq!(initial.trim(), "up");
         std::fs::write(Path::new(&root).join("go"), "").unwrap();
         let id = first.status.id;
         assert!(until(|| list(chat)
