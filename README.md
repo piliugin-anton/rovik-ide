@@ -200,7 +200,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   against implementation edits. Exclusions retain the full source snapshot and
   dependency graph. Automatic preparation currently needs Linux x86_64 with working
   Docker or rootless Podman, locally or on a connected host, and an
-  OpenAI-compatible Chat Completions model. Save that model's verification prices
+  OpenAI-compatible Chat Completions model. Rootless Podman also requires the
+  [delegated controller service](docs/design/polyglot-harness.md#rootless-podman-host-requirements);
+  automatic discovery checks host readiness before selecting an engine.
+  Save that model's verification prices
   once in **Model providers → Verification pricing**. Preparation uses ordinary
   chat billing; the review shows separate implementation limits. Stop, continue
   and retry actions remain in the conversation. Review the verified candidate's

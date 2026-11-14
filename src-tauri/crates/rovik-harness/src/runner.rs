@@ -27,7 +27,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod delegation;
 mod engine;
+#[cfg(all(test, target_os = "linux"))]
+mod engine_tests;
 
 /// Identity of the security-relevant runner implementation.
 pub const BACKEND_VERSION: &str = "rovik-docker-v1";
@@ -195,6 +198,16 @@ impl ContainerBackend {
             engine: Arc::new(engine::Podman::new(executable, state)?),
         })
     }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn podman_fixture(executable: &Path, root: &Path) -> Self {
+        let parent = delegation::tests::fixture(root);
+        Self {
+            engine: Arc::new(
+                engine::Podman::with_parent(executable, &root.join("engine-state"), parent)
+                    .unwrap(),
+            ),
+        }
+    }
     /// Exact engine identity to bind into the approved execution environment.
     pub fn version(&self) -> &'static str {
         self.engine.version()
@@ -221,22 +234,58 @@ impl ContainerBackend {
         self.engine.command()
     }
     #[cfg(feature = "preparation")]
+    pub(crate) fn container_options(&self, command: &mut Command) {
+        self.engine.create_options(command);
+    }
+    /// Check the local engine and required host isolation before preparing images.
+    /// Workloads still verify their actual resource limits before executing code.
+    pub fn validate_host(&self, cancel: &Cancellation) -> Result<()> {
+        require(
+            !cancel.is_cancelled(),
+            "Verification preparation was cancelled.",
+        )?;
+        if self.engine.needs_cgroup_probe() {
+            engine::validate_podman_host(
+                &self.checked_with_cancel(&["info", "--format=json"], cancel)?,
+            )
+        } else {
+            require(
+                self.version() == BACKEND_VERSION,
+                "No execution engine is selected.",
+            )?;
+            let report = self.checked_with_cancel(&["info", "--format", "{{.OSType}}"], cancel)?;
+            require(
+                std::str::from_utf8(&report).ok().map(str::trim) == Some("linux"),
+                "Start the local Docker engine with Linux containers, then retry preparation.",
+            )
+        }
+    }
+    #[cfg(feature = "preparation")]
     pub(crate) fn preparation_options(&self, command: &mut Command, output: &Path) -> Result<()> {
         self.engine.preparation_options(command, output)
     }
     fn control(&self, args: &[&str], limit: usize) -> Result<ProcessOutput> {
+        self.control_with_cancel(args, limit, &Cancellation::default())
+    }
+    fn control_with_cancel(
+        &self,
+        args: &[&str],
+        limit: usize,
+        cancel: &Cancellation,
+    ) -> Result<ProcessOutput> {
         let mut command = self.command();
         command.args(args);
-        process(
-            command,
-            Duration::from_secs(120),
-            limit,
-            &Cancellation::default(),
-            || Ok(()),
-        )
+        process(command, Duration::from_secs(120), limit, cancel, || Ok(()))
     }
     fn checked(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let out = self.control(args, 64 * 1024)?;
+        self.checked_with_cancel(args, &Cancellation::default())
+    }
+    fn checked_with_cancel(&self, args: &[&str], cancel: &Cancellation) -> Result<Vec<u8>> {
+        let out = self.control_with_cancel(args, 64 * 1024, cancel)?;
+        require(
+            !out.cancelled && !cancel.is_cancelled(),
+            "Container control was cancelled.",
+        )?;
         require(
             out.code == Some(0) && !out.timed_out && !out.exceeded,
             format!(

@@ -1,6 +1,6 @@
 //! Engine-specific host capabilities. The runner owns all workload policy.
 
-use super::{BACKEND_VERSION, PODMAN_BACKEND_VERSION};
+use super::{delegation::Parent, BACKEND_VERSION, PODMAN_BACKEND_VERSION};
 use crate::{require, Result};
 use std::{fmt::Debug, path::Path, process::Command};
 
@@ -70,10 +70,19 @@ impl Engine for Docker {
 pub(super) struct Podman {
     executable: std::path::PathBuf,
     state: std::path::PathBuf,
+    parent: Parent,
 }
 
 impl Podman {
     pub(super) fn new(executable: &Path, state: &Path) -> Result<Self> {
+        Self::with_parent(executable, state, Parent::discover()?)
+    }
+
+    pub(in crate::runner) fn with_parent(
+        executable: &Path,
+        state: &Path,
+        parent: Parent,
+    ) -> Result<Self> {
         require(
             state.is_absolute(),
             "Podman state must be an absolute private directory",
@@ -108,6 +117,7 @@ impl Podman {
         Ok(Self {
             executable: executable.into(),
             state,
+            parent,
         })
     }
 }
@@ -161,6 +171,8 @@ impl Engine for Podman {
             "--cgroups=enabled",
             "--cgroupns=private",
             "--http-proxy=false",
+            "--cgroup-parent",
+            self.parent.as_str(),
         ]);
     }
     #[cfg(feature = "preparation")]
@@ -214,11 +226,14 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn podman_is_local_and_cannot_inherit_disabled_cgroups_or_another_store() {
         let directory = tempfile::tempdir().unwrap();
-        let engine = Podman::new(
+        let parent = super::super::delegation::tests::fixture(directory.path());
+        let engine = Podman::with_parent(
             Path::new("/usr/bin/podman"),
             &directory.path().join("podman"),
+            parent,
         )
         .unwrap();
         let mut command = engine.command();
@@ -227,6 +242,9 @@ mod tests {
         let args: Vec<_> = command.get_args().map(|s| s.to_string_lossy()).collect();
         assert!(args.contains(&"--remote=false".into()));
         assert!(args.contains(&"--cgroups=enabled".into()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--cgroup-parent", "/service"]));
         assert!(args.contains(&"--cgroupns=private".into()));
         assert!(args.contains(&"--userns=keep-id:uid=65534,gid=65534".into()));
         let environment: std::collections::BTreeMap<_, _> = command.get_envs().collect();

@@ -50,9 +50,30 @@ jobs:
         run: >-
           cargo test --locked -p rovik-harness --features preparation --lib preparation::
           -- --ignored --test-threads=1
-      - name: Prepare a new project and verify its private implementation after exact review
+      - name: Prepare and verify a new project under delegated rootless Podman
         working-directory: src-tauri
-        run: cargo test --locked -p rovik-core --lib harness::ide::preparation::tests::native_automatic_preparation -- --ignored --test-threads=1
+        run: |
+          command -v podman
+          # Match the installed daemon: a persistent controller subgroup leaves
+          # an empty delegated parent for individually bounded Podman jobs.
+          # The fixture requires Podman, so Docker fallback cannot hide a failure.
+          sudo systemd-run --quiet --wait --pipe --collect \
+            --unit="rovik-preparation-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --uid="$(id -u)" --gid="$(id -g)" \
+            --property=Type=exec \
+            --property="WorkingDirectory=$PWD" \
+            --property="Delegate=cpu memory pids" \
+            --property=DelegateSubgroup=rovik-controller \
+            --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
+            --setenv="CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            --setenv="RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_PROFILE_TEST_DEBUG=0 \
+            --setenv=CARGO_INCREMENTAL=0 --setenv=CARGO_TERM_COLOR=always \
+            --setenv=ROVIK_HARNESS_PREPARATION_NATIVE=1 \
+            --setenv=ROVIK_HARNESS_REQUIRE_PODMAN=1 \
+            "$(command -v cargo)" test --locked -p rovik-core --lib \
+            harness::ide::preparation::tests::native_automatic_preparation \
+            -- --ignored --test-threads=1
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 90

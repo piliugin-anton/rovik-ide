@@ -510,8 +510,9 @@ impl ContainerBackend {
         verify_image_identity(&actual, &image_digest, &recipe_digest)?;
         let mut probe = self.command();
         let probe_name = format!("rovik-measure-{}", uuid::Uuid::new_v4().simple());
+        probe.arg("run");
+        self.container_options(&mut probe);
         probe.args([
-            "run",
             "--rm",
             "--name",
             &probe_name,
@@ -651,8 +652,7 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let cache = root.path().join("cache");
             let backend = if podman {
-                ContainerBackend::podman(Path::new("/bin/true"), &root.path().join("podman"))
-                    .unwrap()
+                ContainerBackend::podman_fixture(Path::new("/bin/true"), root.path())
             } else {
                 ContainerBackend::local(Path::new("/bin/true")).unwrap()
             };

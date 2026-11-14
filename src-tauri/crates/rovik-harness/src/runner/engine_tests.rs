@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use rovik_harness::{
+use crate::{
     approvals::Principal,
     controller::Controller,
     fixtures,
@@ -10,6 +10,20 @@ use rovik_harness::{
     state::State,
 };
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+#[test]
+fn cancelled_host_qualification_does_not_start_an_engine_process() {
+    let root = tempfile::tempdir().unwrap();
+    let backend = engine(root.path());
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    assert!(backend
+        .validate_host(&cancel)
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled"));
+    assert!(!root.path().join("commands").exists());
+}
 
 fn engine(root: &Path) -> ContainerBackend {
     let binary = root.join("podman");
@@ -33,7 +47,7 @@ done
 exit 71
 "#).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-    ContainerBackend::podman(&binary, &root.join("engine-state")).unwrap()
+    ContainerBackend::podman_fixture(&binary, root)
 }
 
 #[test]
@@ -85,10 +99,17 @@ fn podman_checks_actual_limits_before_work_and_removes_rejected_containers() {
             "--pull=never",
             "--cap-drop=ALL",
             "--cgroups=enabled",
+            "--cgroup-parent",
+            "/service",
             "org.rovik.harness.backend=rovik-podman-v1",
         ] {
             assert!(commands.lines().any(|line| line == required), "{required}");
         }
+        assert!(!commands.lines().any(|line| line == "--cgroups=split"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("membership")).unwrap(),
+            "0::/service/rovik-controller\n"
+        );
     }
 }
 

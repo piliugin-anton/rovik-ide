@@ -410,28 +410,115 @@ pub async fn preparation_context(
     profile: ModelProfile,
     denied: Denied,
 ) -> Result<PreparationContext> {
-    crate::rt::spawn_blocking(move||{
-        let (project,mut record)=bound_project(&state_root,&project_root,&project_id,&preparation_id,&dialog_id,&profile)?;
-        let active=ActivePreparation::begin(&project,&record.id)?;
-        restrictions(&mut record,denied)?;
+    crate::rt::spawn_blocking(move || {
+        let (project, mut record) = bound_project(
+            &state_root,
+            &project_root,
+            &project_id,
+            &preparation_id,
+            &dialog_id,
+            &profile,
+        )?;
+        let active = ActivePreparation::begin(&project, &record.id)?;
+        restrictions(&mut record, denied)?;
         project.save_active_preparation(&record)?;
         if record.runtime.is_none() {
-            check(cfg!(target_os="linux"),"Choose a connected Linux host for isolated verification.")?;
-            let engine=project.configuration()?.map(|c|c.engine).or_else(||[EngineKind::Podman,EngineKind::Docker].into_iter().find_map(|kind|crate::process::find_on_path(if kind==EngineKind::Docker {"docker"} else {"podman"}).map(|path|Engine{kind,executable:path.to_string_lossy().into_owned()}))).ok_or_else(||Error::new("Start Docker or rootless Podman on this execution host, then retry preparation.".into()))?;
-            let built=project.backend(&engine).and_then(|backend| backend.prepare_environment(&project.state.join("preparation-runtime"),&active.cancel));
-            let current=project.load_preparation(&record.id)?;
-            check(current.status!="cancelled","Preparation was cancelled.")?;
+            let built: Result<_> = (|| {
+                check(
+                    cfg!(target_os = "linux"),
+                    "Choose a connected Linux host for isolated verification.",
+                )?;
+                let candidates = [EngineKind::Podman, EngineKind::Docker]
+                    .into_iter()
+                    .filter_map(|kind| {
+                        crate::process::find_on_path(if kind == EngineKind::Docker {
+                            "docker"
+                        } else {
+                            "podman"
+                        })
+                        .map(|path| Engine {
+                            kind,
+                            executable: path.to_string_lossy().into_owned(),
+                        })
+                    })
+                    .collect();
+                let engine = select_preparation_engine(
+                    project.configuration()?.map(|c| c.engine),
+                    candidates,
+                    &active.cancel,
+                    |engine| project.backend(engine)?.validate_host(&active.cancel),
+                )?;
+                let environment = project.backend(&engine)?.prepare_environment(
+                    &project.state.join("preparation-runtime"),
+                    &active.cancel,
+                )?;
+                Ok((engine, environment))
+            })();
+            let current = project.load_preparation(&record.id)?;
+            check(current.status != "cancelled", "Preparation was cancelled.")?;
             match built {
-                Ok(environment)=>record.runtime=Some(Runtime{engine,assets:environment,dependencies:None,dependency_manifests:BTreeSet::new()}),
-                Err(error)=>{record.status="blocked".into();record.error=Some(error.to_string());project.save_active_preparation(&record)?;return Err(error);}
+                Ok((engine, environment)) => {
+                    record.runtime = Some(Runtime {
+                        engine,
+                        assets: environment,
+                        dependencies: None,
+                        dependency_manifests: BTreeSet::new(),
+                    })
+                }
+                Err(error) => {
+                    record.status = "blocked".into();
+                    record.error = Some(error.to_string());
+                    project.save_active_preparation(&record)?;
+                    return Err(error);
+                }
             }
         }
         project.require_fresh_preparation(&record)?;
-        record.status="preparing".into();record.error=None;project.save_active_preparation(&record)?;
-        let workspace=project.preparation_workspace(&record.id)?;
-        let instructions=write_template(&project,&record,&workspace)?;
-        Ok(PreparationContext{workspace_root:workspace,instructions,deadline_ms:record.deadline_ms})
-    }).await.map_err(|e|Error::new(format!("Preparation task failed: {e}")))?
+        record.status = "preparing".into();
+        record.error = None;
+        project.save_active_preparation(&record)?;
+        let workspace = project.preparation_workspace(&record.id)?;
+        let instructions = write_template(&project, &record, &workspace)?;
+        Ok(PreparationContext {
+            workspace_root: workspace,
+            instructions,
+            deadline_ms: record.deadline_ms,
+        })
+    })
+    .await
+    .map_err(|e| Error::new(format!("Preparation task failed: {e}")))?
+}
+
+fn select_preparation_engine(
+    configured: Option<Engine>,
+    discovered: Vec<Engine>,
+    cancel: &Cancellation,
+    mut qualify: impl FnMut(&Engine) -> Result<()>,
+) -> Result<Engine> {
+    // A reviewed engine is part of the execution identity. Only automatic first
+    // use may choose another engine when an installed client cannot isolate work.
+    check(!cancel.is_cancelled(), "Preparation was cancelled.")?;
+    if let Some(engine) = configured {
+        qualify(&engine)?;
+        check(!cancel.is_cancelled(), "Preparation was cancelled.")?;
+        return Ok(engine);
+    }
+    let mut failures = Vec::new();
+    for engine in discovered {
+        check(!cancel.is_cancelled(), "Preparation was cancelled.")?;
+        match qualify(&engine) {
+            Ok(()) => {
+                check(!cancel.is_cancelled(), "Preparation was cancelled.")?;
+                return Ok(engine);
+            }
+            Err(error) => failures.push(format!("{:?}: {error}", engine.kind)),
+        }
+    }
+    check(!cancel.is_cancelled(), "Preparation was cancelled.")?;
+    Err(Error::new(format!(
+        "Start a local Docker engine or configure delegated rootless Podman on this execution host, then retry preparation. {}",
+        failures.join("; ")
+    )))
 }
 
 fn write_template(
@@ -1037,6 +1124,85 @@ impl Drop for ActivePreparation {
 mod tests {
     use super::*;
 
+    #[test]
+    fn automatic_engine_selection_qualifies_hosts_but_never_replaces_an_explicit_choice() {
+        let podman = Engine {
+            kind: EngineKind::Podman,
+            executable: "/usr/bin/podman".into(),
+        };
+        let docker = Engine {
+            kind: EngineKind::Docker,
+            executable: "/usr/bin/docker".into(),
+        };
+        let qualify = |engine: &Engine| {
+            if engine.kind == EngineKind::Podman {
+                Err(Error::new("missing delegated cgroup parent".into()))
+            } else {
+                Ok(())
+            }
+        };
+        let selected = select_preparation_engine(
+            None,
+            vec![podman.clone(), docker.clone()],
+            &Cancellation::default(),
+            qualify,
+        )
+        .unwrap();
+        assert_eq!(selected.kind, EngineKind::Docker);
+        assert!(select_preparation_engine(
+            Some(podman.clone()),
+            vec![docker],
+            &Cancellation::default(),
+            qualify
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("delegated"));
+        let selected =
+            select_preparation_engine(None, vec![podman.clone()], &Cancellation::default(), |_| {
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(selected.kind, EngineKind::Podman);
+        let missing =
+            select_preparation_engine(None, vec![podman], &Cancellation::default(), qualify)
+                .unwrap_err();
+        assert!(missing.to_string().contains("delegated"));
+        assert!(
+            select_preparation_engine(None, vec![], &Cancellation::default(), |_| panic!(
+                "no engine"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelling_host_qualification_does_not_try_another_engine() {
+        let cancel = Cancellation::default();
+        let engines = vec![
+            Engine {
+                kind: EngineKind::Podman,
+                executable: "/podman".into(),
+            },
+            Engine {
+                kind: EngineKind::Docker,
+                executable: "/docker".into(),
+            },
+        ];
+        let mut attempted = 0;
+        let result = select_preparation_engine(None, engines.clone(), &cancel, |_| {
+            attempted += 1;
+            cancel.cancel();
+            Err(Error::new("probe interrupted".into()))
+        });
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(attempted, 1);
+        assert!(
+            select_preparation_engine(None, engines, &cancel, |_| panic!("already cancelled"))
+                .is_err()
+        );
+    }
+
     fn provider() -> ImplementationProvider {
         serde_json::from_value(json!({"profile":{"id":"local::fixture-scripted","label":"Fixture","model":"fixture-scripted","baseUrl":"http://localhost:8000/v1","apiKey":"must-not-persist","contextTokens":64000,"firstByteTimeoutMs":null},"rates":{"input":0,"cachedInput":0,"output":0}})).unwrap()
     }
@@ -1087,8 +1253,11 @@ mod tests {
         assert!(ActivePreparation::begin(&project, &record.id).is_err());
         project.cancel_preparation(&record.id).unwrap();
         assert!(active.cancel.is_cancelled());
-        record.status = "ready".into();
-        assert!(project.save_active_preparation(&record).is_err());
+        for status in ["ready", "blocked"] {
+            record.status = status.into();
+            record.error = Some("in-flight host qualification failed".into());
+            assert!(project.save_active_preparation(&record).is_err());
+        }
         assert_eq!(
             project.load_preparation(&record.id).unwrap().status,
             "cancelled"
@@ -1099,6 +1268,47 @@ mod tests {
             .unwrap()
             .get(&(project.state.clone(), record.id))
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn host_qualification_failure_persists_a_blocked_retryable_preparation() {
+        let (directory, project, record) = issued();
+        let configuration = super::super::tests::prepared(
+            &project,
+            Digest::of(b"unused image"),
+            &directory.path().join("missing-engine").to_string_lossy(),
+        );
+        project
+            .database()
+            .unwrap()
+            .execute(
+                "INSERT INTO configuration(singleton,value) VALUES(1,?1)",
+                [serde_json::to_string(&configuration).unwrap()],
+            )
+            .unwrap();
+        let project_id = Digest::of(project.root.as_os_str().as_encoded_bytes()).to_string();
+        let error = preparation_context(
+            directory.path().join("private"),
+            project.root.clone(),
+            project_id,
+            record.id.clone(),
+            "chat".into(),
+            provider().profile,
+            Denied::default(),
+        )
+        .await
+        .unwrap_err();
+        let saved = project.load_preparation(&record.id).unwrap();
+        assert_eq!(saved.status, "blocked", "{error}");
+        assert!(error.to_string().contains(if cfg!(target_os = "linux") {
+            "registered container client is missing"
+        } else {
+            "Choose a connected Linux host"
+        }));
+        assert_eq!(saved.error.as_deref(), Some(error.to_string().as_str()));
+        assert!(saved.runtime.is_none());
+        assert!(!project.state.join("preparation-runtime").exists());
+        assert!(ActivePreparation::begin(&project, &record.id).is_ok());
     }
 
     #[test]
@@ -1273,6 +1483,13 @@ mod tests {
         .unwrap();
         let record = project.load_preparation(&id).unwrap();
         let runtime = record.runtime.as_ref().unwrap();
+        if std::env::var("ROVIK_HARNESS_REQUIRE_PODMAN").as_deref() == Ok("1") {
+            assert_eq!(
+                runtime.engine.kind,
+                EngineKind::Podman,
+                "CI must exercise delegated rootless Podman"
+            );
+        }
         let mut proposal: Value = serde_json::from_slice(
             &fs::read(context.workspace_root.join(DRAFTS).join("template.json")).unwrap(),
         )

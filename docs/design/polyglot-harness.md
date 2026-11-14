@@ -327,6 +327,39 @@ which deliberately shares per-user limits, is separate from this verification
 store. The IDE routes verification through the selected Linux chat host; merely
 having project services available does not establish strict readiness.
 
+### Rootless Podman host requirements
+
+Verification uses a stable delegated cgroup parent, with the controller in its
+`rovik-controller` child and bounded jobs alongside it. The runner derives this
+parent from `/proc/self/cgroup`, validates ownership and delegated CPU, memory and
+PID controllers, enables those controllers for its children, and passes the
+parent explicitly to Podman. It accepts no parent path
+from a model, project or environment variable. It never moves the controller or
+disables the in-container resource checks.
+
+On systemd 254 or newer, the Rovik installer and upgrade write these service
+properties; restart the updated daemon before using Podman verification:
+
+```ini
+[Service]
+Delegate=cpu memory pids
+DelegateSubgroup=rovik-controller
+```
+
+The daemon's existing aggregate memory, CPU and task caps still cover all child
+jobs. Older systemd installations retain their compatible service definition and
+Docker support. Rootless Podman verification on those hosts requires an
+administrator-provided equivalent delegated hierarchy, or upgrading systemd;
+Rovik does not add an unsupported directive or silently accept unlimited jobs.
+The same hierarchy is required when running a local IDE or headless controller
+with Podman outside the installed daemon.
+
+Automatic first-use preparation checks installed engines for readiness, preferring
+usable rootless Podman and then usable local Docker. An explicitly selected or
+already reviewed engine never changes automatically. CI runs the preparation
+fixture in a delegated service and requires Podman, so Docker fallback cannot
+hide missing delegation.
+
 Prepare images separately, then import an archive into the selected engine with
 `rovik-harness <absolute-state-dir> load-image <archive.tar>`. The task environment
 must still pin the resulting image configuration digest; loading a tag does not
