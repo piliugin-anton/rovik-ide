@@ -3868,14 +3868,14 @@ export default function ChatPanel(props: ChatProps) {
       activeProfile()?.id === profile?.id &&
       activeProfile()?.model === profile?.model &&
       activeProfile()?.baseUrl === profile?.baseUrl &&
-      !sending() &&
-      !strictActive();
+      !sending();
     retryingLastTurn = true;
     try {
       await store.flush();
       const preparation = await preparationToRetry(dialogId);
       if (!current()) return;
       if (preparation) {
+        if (strictActive()) return;
         if (
           !root ||
           !projectId ||

@@ -26,6 +26,7 @@ async function page(
   options: {
     paginated?: boolean;
     promoted?: boolean;
+    runningImplementation?: boolean;
     deferHistory?: boolean;
   } = {}
 ) {
@@ -111,7 +112,8 @@ async function page(
         };
       if (args.request.action === 'beginPlanPreparation')
         return { ...planPreparation('preparing'), preparationId: 'preparation-2' };
-      if (args.request.action === 'status') return implementationRun();
+      if (args.request.action === 'status')
+        return implementationRun(options.runningImplementation ? 'running' : 'blocked');
       assert.fail(`Unexpected harness operation: ${args.request.action}`);
     }
     return invoke(command, args);
@@ -143,6 +145,8 @@ async function page(
   retry.click();
   await flush();
   return {
+    dialog,
+    messages,
     root,
     calls,
     setRootPath,
@@ -212,6 +216,42 @@ test('ordinary chat Retry still retries the delivered request', async () => {
   assert.deepEqual(result.operations(), []);
   assert.equal(result.starts().length, 1);
   assert.equal(result.starts()[0].start.kind, 'retry');
+});
+
+test('an implementation in another chat does not block an ordinary Retry', async () => {
+  const result = await page('ready', { promoted: true, runningImplementation: true });
+  assert.match(result.root.textContent!, /Implementation running/);
+  const other = { ...result.dialog, id: 'ordinary-other-chat' };
+  const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+  (window as any).__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+    if (command === 'chat_get_messages' && args.dialogId === other.id)
+      return Promise.resolve({
+        messages: result.messages.map((message) => ({
+          ...message,
+          id: `other-${message.id}`,
+          dialogId: other.id,
+          meta: message.role === 'user' ? { mode: 'agent' } : message.meta,
+        })),
+        hasOlder: false,
+        hasNewer: false,
+      });
+    return invoke(command, args);
+  };
+  await chatStore.openChat(other);
+  await flush();
+  const retry = [...result.root.querySelectorAll('button')].find(
+    (button) => button.textContent?.trim() === 'Retry'
+  );
+  assert.ok(retry);
+  retry.click();
+  await flush();
+  assert.equal(result.starts().length, 1);
+  assert.equal(result.starts()[0].dialogId, other.id);
+  assert.equal(result.starts()[0].start.kind, 'retry');
+  assert.deepEqual(
+    result.operations().map((request) => request.action),
+    ['preparationStatus', 'status']
+  );
 });
 
 test('leaving the project while Retry reads history prevents preparation and agent calls', async () => {
