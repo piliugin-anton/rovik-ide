@@ -2,9 +2,8 @@
 mod support;
 use rovik_harness::{
     evidence::Status,
-    identity::Digest,
     normalizer::{self, Inventory},
-    plan::{CheckKind, CheckSpec, Phase},
+    plan::CheckKind,
     registry::{CommandDefinition, CommandRegistry, Limits, Parameter, Parser},
     wire,
 };
@@ -135,35 +134,36 @@ fn structured_inventory_cannot_hide_filtered_or_unobserved_cases() {
     );
 }
 
-// Shared native fixtures deliberately use public API calls, not serialized observations.
-fn spec(definition: &CommandDefinition) -> CheckSpec {
-    CheckSpec {
-        check_id: definition.id.clone(),
-        configuration_digest: Digest::of(b"native-test"),
-        checker_digest: definition.checker_digest.clone(),
-        command_id: definition.id.clone(),
-        validated_parameters: BTreeMap::new(),
-        phase: Phase::Final,
-        required: true,
-        obligation_ids: vec!["isolation".into()],
-        expected_case_ids: vec![],
-        minimum_test_count: 0,
-        success_exit_codes: vec![0],
-        timeout_ms: definition.limits.timeout_ms,
-        output_limit_bytes: definition.limits.output_bytes,
-        dependencies: vec![],
-    }
-}
-
 #[cfg(target_os = "linux")]
 mod docker {
     use super::*;
     use rovik_harness::{
-        identity::EvidenceKey,
+        identity::{Digest, EvidenceKey},
         ledger::Ledger,
+        plan::{CheckSpec, Phase},
         runner::{self, Cancellation, DockerBackend, Environment, ExecutionInput},
         snapshot::{FileEntry, Snapshot},
     };
+
+    // Shared native fixtures deliberately use public API calls, not serialized observations.
+    fn spec(definition: &CommandDefinition) -> CheckSpec {
+        CheckSpec {
+            check_id: definition.id.clone(),
+            configuration_digest: Digest::of(b"native-test"),
+            checker_digest: definition.checker_digest.clone(),
+            command_id: definition.id.clone(),
+            validated_parameters: BTreeMap::new(),
+            phase: Phase::Final,
+            required: true,
+            obligation_ids: vec!["isolation".into()],
+            expected_case_ids: vec![],
+            minimum_test_count: 0,
+            success_exit_codes: vec![0],
+            timeout_ms: definition.limits.timeout_ms,
+            output_limit_bytes: definition.limits.output_bytes,
+            dependencies: vec![],
+        }
+    }
 
     fn fixture(
         script: &str,

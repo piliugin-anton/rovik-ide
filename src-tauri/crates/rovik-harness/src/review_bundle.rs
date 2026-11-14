@@ -311,12 +311,14 @@ impl Controller {
         for exception in &setup.exceptions {
             blobs.extend(exception.replacement_evidence.iter().cloned());
         }
-        let mut directory = std::fs::DirBuilder::new();
+        let directory = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let directory = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut directory = directory;
             directory.mode(0o700);
-        }
+            directory
+        };
         // Exclusive creation prevents a concurrent export from being overwritten.
         directory.create(destination)?;
         let mut files = BTreeMap::new();

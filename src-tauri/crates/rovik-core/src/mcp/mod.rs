@@ -338,7 +338,7 @@ fn instructions_of(result: &Value) -> String {
 impl Session {
     /// A legacy session over `link`, its handshake done; or the link back
     /// with the handshake's failure.
-    async fn legacy(link: Link) -> Result<Session, (Link, Failure)> {
+    async fn legacy(link: Link) -> Result<Session, Box<(Link, Failure)>> {
         match initialize(&link).await {
             Ok((result, version)) => Ok(Session {
                 server: named(result.get("serverInfo")),
@@ -346,7 +346,7 @@ impl Session {
                 era: Era::Legacy(version),
                 link,
             }),
-            Err(failure) => Err((link, failure)),
+            Err(failure) => Err(Box::new((link, failure))),
         }
     }
 
@@ -359,7 +359,7 @@ impl Session {
     async fn open(link: Link) -> Result<Session, String> {
         let (link, refused) = match Session::legacy(link).await {
             Ok(session) => return Ok(session),
-            Err(refused) => refused,
+            Err(refused) => *refused,
         };
         if let (
             Link::Http(http),
@@ -373,8 +373,10 @@ impl Session {
             match sse::Sse::open(url, wire.clone(), START_WITHIN).await {
                 Ok(sse) => {
                     let session = Session::legacy(Link::Sse(sse)).await;
-                    return session
-                        .map_err(|(link, failure)| link.explained(handshake_text(&failure)));
+                    return session.map_err(|refused| {
+                        let (link, failure) = *refused;
+                        link.explained(handshake_text(&failure))
+                    });
                 }
                 // Not its URL: a token may be in it.
                 Err(failure) => {

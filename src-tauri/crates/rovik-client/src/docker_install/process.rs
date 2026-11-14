@@ -88,10 +88,9 @@ pub(super) async fn checked(program: &Path, args: &[String]) -> Result<(), Strin
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     #[tokio::test]
     async fn setup_output_is_bounded_and_a_hung_process_is_stopped() {
         let result = run(
