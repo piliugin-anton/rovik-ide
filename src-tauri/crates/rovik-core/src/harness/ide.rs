@@ -32,8 +32,6 @@ mod architecture;
 mod plan;
 #[path = "ide_preparation.rs"]
 mod preparation;
-#[path = "ide_preparation_log.rs"]
-mod preparation_log;
 pub use preparation::{
     cancel_active_preparation, preparation_context, submit_preparation, PreparationContext,
     PreparationSubmission,

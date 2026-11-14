@@ -2,9 +2,11 @@
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
+    io::{self, Read},
+    path::Path,
 };
+#[cfg(any(windows, test))]
+use std::{io::Write, path::PathBuf};
 
 fn digest(file: &mut File) -> io::Result<String> {
     let mut hash = Sha256::new();
@@ -23,9 +25,18 @@ fn digest(file: &mut File) -> io::Result<String> {
         .collect())
 }
 
+/// Identifies the actual installed executable independently of its release version.
+pub(super) async fn fingerprint(path: &Path) -> io::Result<String> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || digest(&mut File::open(path)?))
+        .await
+        .map_err(io::Error::other)?
+}
+
 /// Publishes a complete content-addressed image without modifying older images.
 /// The caller holds the launch lease. Retention is deliberate: another running
 /// backend may still need an old image, even if its installed source changed.
+#[cfg(any(windows, test))]
 pub(super) fn stage(source: &Path, directory: &Path) -> io::Result<PathBuf> {
     std::fs::create_dir_all(directory)?;
     if std::fs::symlink_metadata(directory)?
@@ -72,6 +83,7 @@ pub(super) fn stage(source: &Path, directory: &Path) -> io::Result<PathBuf> {
 /// executable (or another open handle that denies deletion), so live hosts win
 /// atomically even when they use an image from this directory with other data.
 /// The caller holds the launch lease and has received replacement readiness.
+#[cfg(any(windows, test))]
 pub(super) fn cleanup(directory: &Path, current: &Path) -> io::Result<()> {
     if std::fs::symlink_metadata(directory)?
         .file_type()

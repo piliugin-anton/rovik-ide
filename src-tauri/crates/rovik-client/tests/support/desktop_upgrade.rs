@@ -230,3 +230,158 @@ pub async fn check_launcher(executable: &Path, flag: Option<&str>) {
     #[cfg(not(any(target_os = "linux", windows)))]
     drop(host);
 }
+
+/// Explicit replacement interrupts connected windows while preserving saved chats.
+pub async fn check_restart(executable: &Path) {
+    use rovik_client::{
+        desktop_api::chat::ChatRequest,
+        desktop_connection::DesktopConnection,
+        local_backend::control::{update_status, BackendIdentity},
+    };
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let config = root.path().join("config");
+    desktop_secrets::seed_secrets(&config);
+    let mut old = Daemon(
+        rovik_core::process::command(executable)
+            .arg("--data")
+            .arg(&data)
+            .arg("--config")
+            .arg(&config)
+            .env_remove("ROVIK_REMOTE_CHATS")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let dir = directory(&data);
+    let window = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(window) = DesktopConnection::connect(&dir).await {
+                break window;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    window
+        .desktop(
+            ChatRequest::CreateDialog {
+                id: "restart-chat".into(),
+                title: "Saved before restart".into(),
+                created_at: 1,
+                updated_at: 1,
+                project_id: None,
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let other = DesktopConnection::connect(&dir).await.unwrap();
+    let matching = update_status(executable, &data).await.unwrap().unwrap();
+    assert!(!matching.restart_required);
+    let updated = root.path().join("updated-backend.exe");
+    std::fs::copy(executable, &updated).unwrap();
+    // Native loaders permit trailing bytes. Simulate a distinct same-version build
+    // without requiring a second expensive compile of the complete application.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&updated)
+        .unwrap()
+        .write_all(b"same-version update fixture")
+        .unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        // Apple Silicon validates signatures when loading the changed fixture.
+        let signed = rovik_core::process::command("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&updated)
+            .output()
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+    let status = update_status(&updated, &data).await.unwrap().unwrap();
+    assert!(status.restart_required);
+    assert_ne!(status.backend_build, status.app_build);
+    let expected = BackendIdentity {
+        boot: status.backend_boot,
+        version: status.backend_version,
+        protocol: status.backend_protocol,
+        build: status.backend_build,
+    };
+    // Preparation failures must leave the running owner and other windows alive.
+    assert!(rovik_client::local_backend::restart_backend(
+        &root.path().join("missing.exe"),
+        &data,
+        &config,
+        &expected,
+    )
+    .await
+    .is_err());
+    assert_eq!(connect(&dir).await.unwrap().1.boot, expected.boot);
+    other
+        .request(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap();
+    window
+        .restart_backend(&updated, &data, &config, &expected, None)
+        .await
+        .unwrap();
+    let (stream, replacement) = connect(&dir).await.unwrap();
+    let replacement_guard = desktop_host::Host::peer(&stream);
+    assert_ne!(replacement.boot, expected.boot);
+    assert!(
+        old.0.try_wait().unwrap().is_some(),
+        "the old owner exits before readiness"
+    );
+    assert!(other
+        .request(rovik_protocol::Request::AgentStatus)
+        .await
+        .is_err());
+    let saved = window
+        .desktop(
+            ChatRequest::GetDialog {
+                dialog_id: "restart-chat".into(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    assert!(!saved.is_null());
+    assert!(
+        !update_status(&updated, &data)
+            .await
+            .unwrap()
+            .unwrap()
+            .restart_required
+    );
+    // A stale button in another window cannot stop the replacement.
+    let error = rovik_client::local_backend::restart_backend(&updated, &data, &config, &expected)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("backend changed"));
+    assert_eq!(connect(&dir).await.unwrap().1.boot, replacement.boot);
+    window
+        .request(rovik_protocol::Request::AgentStatus)
+        .await
+        .unwrap();
+    window.close().await.unwrap();
+    drop(stream);
+    drop(replacement_guard);
+    drop(old);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if Lease::acquire(&dir).unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}

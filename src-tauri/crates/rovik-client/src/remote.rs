@@ -878,6 +878,8 @@ impl Remote {
     /// A chat's request, answered by its owner: the core here, or its host.
     /// The mirror takes the writes its owner tells no event of.
     pub async fn route(&self, dialog_id: &str, mut request: Request) -> Result<Response, Fail> {
+        let stopping = matches!(&request, Request::AgentStop { .. });
+        let stopped_start = stopping && self.core.agents.stop_starting(dialog_id);
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
@@ -994,6 +996,7 @@ impl Remote {
             log::warn!("the mirror of {dialog_id} didn't take a write: {e}");
         }
         Ok(match reply {
+            Response::Bool(stopped) if stopping => Response::Bool(stopped || stopped_start),
             // A path on the server means nothing here.
             Response::ClmStatus(mut status) => {
                 status.real_path = None;
@@ -1090,9 +1093,12 @@ impl Remote {
     /// applied (6.9), and the text left out when the host has it already
     /// (K50).
     pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
+        let starting = self.core.agents.begin_start(&request.dialog_id);
+        starting.check().map_err(internal)?;
         if self.host_of(&request.dialog_id).is_none() {
             self.go_home(&request.dialog_id).await?;
         }
+        starting.check().map_err(internal)?;
         let Some(host) = self.host_of(&request.dialog_id) else {
             return rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(request))).await;
         };
@@ -1203,6 +1209,7 @@ impl Remote {
         } else {
             Request::AgentStart(Box::new(request))
         };
+        starting.check().map_err(internal)?;
         client.call(call).await
     }
 

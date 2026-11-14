@@ -49,6 +49,8 @@ test('startup keeps the splash until the project and expanded folders have loade
         case 'desktop_reconnect':
           recoveryProject = args;
           throw new Error('native reconnect boundary');
+        case 'desktop_backend_update_status':
+          return null;
         case 'plugin:event|listen':
           return 0;
         case 'plugin:event|unlisten':

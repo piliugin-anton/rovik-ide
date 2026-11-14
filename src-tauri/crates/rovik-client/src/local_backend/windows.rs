@@ -90,6 +90,16 @@ fn current_user() -> io::Result<String> {
     user(unsafe { GetCurrentProcess() })
 }
 
+pub(super) fn check_owner(process: HANDLE) -> io::Result<()> {
+    if user(process)? != current_user()? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Backend peer belongs to another user",
+        ));
+    }
+    Ok(())
+}
+
 fn check_peer(handle: HANDLE, server: bool) -> io::Result<()> {
     let mut pid = 0;
     unsafe {

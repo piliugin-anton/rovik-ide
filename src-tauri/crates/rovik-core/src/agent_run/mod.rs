@@ -62,6 +62,7 @@ pub mod memory;
 pub mod messages;
 mod parallel;
 pub mod paths;
+mod pending_start;
 pub mod permissions;
 pub mod plan;
 pub mod plan_review;
@@ -105,6 +106,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 
 pub use landing::{checks_would_run, pending_reason, pending_reason_in};
+pub use pending_start::PendingStart;
 pub use rovik_protocol::agent::{
     AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
     RunningSubagent, StartKind, StartRequest, SteerReply, UserMessage,
@@ -280,6 +282,7 @@ struct Inner {
     /// What the server does with a task's result it delivers (D15, H04).
     deliverer: Option<Arc<dyn autopilot::Deliverer>>,
     runs: HashMap<String, RunControl>,
+    starting: HashMap<String, pending_start::Starting>,
     /// Keyed by chat and tool call: providers number calls per reply
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
     approvals: HashMap<WaitKey, Waiting<ApprovalDecision, ApprovalRequest>>,
@@ -736,6 +739,7 @@ impl AgentState {
     /// Registers a run for the chat; None when one is already going there,
     /// or a drain is under way (checked under the lock `drain` sets it in,
     /// so no lead's run starts after the drain has asked the others to pause).
+    #[cfg(test)]
     fn register(
         &self,
         dialog_id: &str,
@@ -771,17 +775,29 @@ impl AgentState {
         profile_id: &str,
         options: Option<OpenAIChatOptions>,
     ) -> Option<Controls> {
+        self.register_with_stop(dialog_id, parent, profile_id, options, None)
+    }
+
+    fn register_with_stop(
+        &self,
+        dialog_id: &str,
+        parent: Option<(&str, &str)>,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+        stop: Option<Arc<StopSignal>>,
+    ) -> Option<Controls> {
         // Held first: another process at work on the chat keeps it.
         let hold = crate::chat_hold::take(dialog_id)?;
         let mut inner = self.lock();
         if inner.runs.contains_key(dialog_id)
             || inner.files_held.contains_key(dialog_id)
             || (parent.is_none() && inner.draining)
+            || stop.as_ref().is_some_and(|stop| stop.is_set())
         {
             return None;
         }
         let run_id = uuid::Uuid::new_v4().to_string();
-        let stop = Arc::new(StopSignal::new());
+        let stop = stop.unwrap_or_else(|| Arc::new(StopSignal::new()));
         let pause = Arc::new(PauseSignal::default());
         let (effort_tx, effort_rx) = watch::channel(EffortPick {
             options,
@@ -1565,6 +1581,8 @@ const DRIVER_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// to do (a Resume with nothing left to run). A Resume of a chat whose
 /// Autopilot task was cut goes on with the task (autopilot/).
 pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
+    let starting = core.agents.begin_start(&request.dialog_id);
+    starting.check()?;
     if let Some(refusal) = mode_refusal(&request) {
         return Err(refusal);
     }
@@ -1572,19 +1590,29 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         if let Some(config) = request.config.clone() {
             core.agents.set_config(config);
         }
-        check_project(&core.db, &request.dialog_id, request.root.as_deref()).await?;
+        starting
+            .wait(check_project(
+                &core.db,
+                &request.dialog_id,
+                request.root.as_deref(),
+            ))
+            .await??;
         if core.agents.draining() {
             return Err(RESTARTING.into());
         }
         // It takes the driver's turn itself, or finds it taken.
-        if let Some(started) = autopilot::resume(core, &request).await? {
+        let resumed = autopilot::resume(core, &request).await?;
+        starting.check()?;
+        if let Some(started) = resumed {
             return Ok(started);
         }
     }
     // A03: the chat's driver may be between two of its task's stages; the
     // start waits for its turn, so the two never interleave. The stage the
     // driver started is running then, and the start finds it.
-    let _driving = autopilot::driver_turn(&request.dialog_id, DRIVER_WAIT).await?;
+    let _driving = starting
+        .wait(autopilot::driver_turn(&request.dialog_id, DRIVER_WAIT))
+        .await??;
     start_run(core, request).await
 }
 
@@ -1635,6 +1663,8 @@ pub(super) async fn start_run(
     mut request: StartRequest,
 ) -> Result<Option<String>, String> {
     let (state, db) = (&core.agents, &core.db);
+    let starting = state.begin_start(&request.dialog_id);
+    starting.check()?;
     if let Some(config) = request.config.clone() {
         state.set_config(config);
     }
@@ -1643,8 +1673,12 @@ pub(super) async fn start_run(
         &mut request,
         &state.config_for(&dialog_id).autopilot,
     )?;
-    check_project(db, &dialog_id, request.root.as_deref()).await?;
-    if autopilot::strict_guard_start(core, &request).await? {
+    starting
+        .wait(check_project(db, &dialog_id, request.root.as_deref()))
+        .await??;
+    let guarded = autopilot::strict_guard_start(core, &request).await?;
+    starting.check()?;
+    if guarded {
         return Ok(None);
     }
     // A message that starts an Autopilot task: its plan's record is written
@@ -1658,7 +1692,7 @@ pub(super) async fn start_run(
     };
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
-        check_attachments(db, message).await?;
+        starting.wait(check_attachments(db, message)).await??;
         // "Implement this plan": the plan's text, from its file (A04), in
         // Agent mode, where a connector's harness has its own tools, not
         // Rovik's `todo` (`run::lead_profile`).
@@ -1668,15 +1702,22 @@ pub(super) async fn start_run(
     // A change to the chat's files outside any run (a server's merge)
     // ends first: the run starts on them as they're left.
     let controls = loop {
-        state.files_let_go(&dialog_id).await;
+        starting.wait(state.files_let_go(&dialog_id)).await?;
         if state.draining() {
             return Err(RESTARTING.into());
         }
         if crate::chat_hold::elsewhere(&dialog_id) {
             return Err(crate::chat_hold::AT_WORK_ELSEWHERE.into());
         }
-        match state.register(&dialog_id, &request.profile.id, request.options.clone()) {
+        match state.register_with_stop(
+            &dialog_id,
+            None,
+            &request.profile.id,
+            request.options.clone(),
+            Some(starting.stop.clone()),
+        ) {
             Some(controls) => break controls,
+            None if starting.stop.is_set() => return starting.check().map(|()| None),
             // A drain began since the check above.
             None if state.draining() => return Err(RESTARTING.into()),
             // Held again since the wait: wait again.
@@ -1994,6 +2035,7 @@ pub async fn waits_for_results(core: &Core, dialog_id: &str) -> Result<bool, Str
 /// stage of its Autopilot task that waits out the provider's rate limit
 /// ends stopped (H07). Whether there was either.
 pub async fn agent_stop(core: &Core, dialog_id: String) -> bool {
+    let starting = core.agents.stop_starting(&dialog_id);
     if stop_now(core, &dialog_id).await {
         return true;
     }
@@ -2001,10 +2043,10 @@ pub async fn agent_stop(core: &Core, dialog_id: String) -> bool {
     // when nothing runs: the stage it starts is stopped once its turn is
     // over. A task it delivers meanwhile has nothing left to stop.
     if !core.agents.is_driving(&dialog_id) {
-        return false;
+        return starting;
     }
     drop(autopilot::drive_lock(&dialog_id).await);
-    stop_now(core, &dialog_id).await
+    stop_now(core, &dialog_id).await || starting
 }
 
 /// Stops the chat's run, or its task's stage that waits out the provider's

@@ -1,7 +1,6 @@
 //! Standalone entry point for the same host used by the desktop executable.
 #[cfg(any(unix, windows))]
 fn main() {
-    rovik_client::local_backend::host::init_log();
     rovik_core::process::adopt_login_shell_path();
     rovik_core::overlay::confine::require();
     let result = rovik_client::local_backend::host::paths(std::env::args_os().skip(1))

@@ -59,6 +59,10 @@ mod memory_tests;
 mod verified_preparation_tests;
 
 #[cfg(test)]
+#[path = "pending_start_e2e_tests.rs"]
+mod pending_start_tests;
+
+#[cfg(test)]
 #[path = "plan_implementation_e2e_tests.rs"]
 mod plan_implementation_tests;
 
@@ -1398,7 +1402,10 @@ async fn a_running_chat_resolves_its_own_conflict() {
     // handed to the running chat, not left for the user.
     let left =
         crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
-    assert!(left.is_empty(), "the conflict was left for the user: {left:?}");
+    assert!(
+        left.is_empty(),
+        "the conflict was left for the user: {left:?}"
+    );
     assert_eq!(crate::overlay::chats::markers_left(&h.dialog_id), ["a.txt"]);
     // The rendezvous: the call couldn't have returned before the change was
     // in and handed over, so the note it gets is the note its own result
@@ -1482,7 +1489,10 @@ async fn an_idle_chats_conflict_is_handed_to_it_when_the_path_is_reported_again_
         "the running chat's conflict was left for the user: {running_left:?}"
     );
     let note = note.expect("the running chat was left no note to read");
-    assert!(note.contains("conflict markers"), "the chat was told: {note}");
+    assert!(
+        note.contains("conflict markers"),
+        "the chat was told: {note}"
+    );
     assert!(
         !note.contains("won't land"),
         "the chat was told its change won't land: {note}"

@@ -22,8 +22,17 @@ use rovik_protocol::{Access, Fail, FailCode, Request, Response, Target};
 /// Serves a request of the Agent, Chat or CLM group. A failure carries the
 /// error text the operation gives, which is what the app's command returns.
 pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
+    let starting = match &request {
+        Request::AgentStart(start) => Some(core.agents.begin_start(&start.dialog_id)),
+        _ => None,
+    };
     if let Some((target, access)) = request.target() {
         check_owner(core, target, access).await?;
+    }
+    if let Some(starting) = &starting {
+        starting
+            .check()
+            .map_err(|error| Fail::new(FailCode::BadRequest, error))?;
     }
     let (db, vfs) = (&core.db, &core.vfs);
     let done = |()| Response::Done;

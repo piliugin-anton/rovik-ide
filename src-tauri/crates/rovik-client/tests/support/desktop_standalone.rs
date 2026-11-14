@@ -24,9 +24,6 @@ pub async fn check(executable: &std::path::Path) {
     );
     let (a, b) = (a.unwrap(), b.unwrap());
     let endpoint = rovik_client::local_backend::directory(&data);
-    assert!(std::fs::read_to_string(endpoint.join("backend.log"))
-        .unwrap()
-        .contains("Backend ready pid="));
     let (stream, first) = connect(&endpoint).await.unwrap();
     let host = super::desktop_attach::desktop_host::Host::peer(&stream);
     drop(stream);
@@ -39,22 +36,12 @@ pub async fn check(executable: &std::path::Path) {
         .request(rovik_protocol::Request::AgentStatus)
         .await
         .is_err());
-    let diagnostic = std::fs::read_to_string(endpoint.join("connection.log")).unwrap();
-    assert!(diagnostic.contains("operation=agent_status"));
-    assert!(diagnostic.contains("outcome=failed"));
-    assert!(diagnostic.contains(&first.boot));
     b.reconnect_backend(executable, &data, &config, None)
         .await
         .unwrap();
     let (stream, next) = connect(&endpoint).await.unwrap();
     let host = super::desktop_attach::desktop_host::Host::peer(&stream);
     assert_ne!(first.boot, next.boot);
-    let diagnostic = std::fs::read_to_string(endpoint.join("connection.log")).unwrap();
-    assert!(diagnostic.contains(&first.boot));
-    assert!(
-        diagnostic.contains(&next.boot),
-        "reconnect retains both backend identities"
-    );
     b.request(rovik_protocol::Request::AgentStatus)
         .await
         .unwrap();

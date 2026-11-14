@@ -545,9 +545,12 @@ pub(in crate::agent_run) async fn guard_start(
     core: &Core,
     request: &StartRequest,
 ) -> Result<bool, String> {
+    let starting = core.agents.begin_start(&request.dialog_id);
+    starting.check()?;
     let Some((task_id, records)) = owned_task(core, &request.dialog_id).await? else {
         return Ok(false);
     };
+    starting.check()?;
     let Some(frozen) = task(&records) else {
         return Ok(false);
     };
@@ -562,6 +565,7 @@ pub(in crate::agent_run) async fn guard_start(
     if !reached {
         let settings = Settings::of(request);
         context(core, &request.dialog_id, frozen, &settings, false).await?;
+        starting.check()?;
         selection(frozen, &settings)?;
         if !matches!(request.start, StartKind::Send { .. }) {
             if let Some(last) = records.last().filter(|r| {
@@ -569,7 +573,7 @@ pub(in crate::agent_run) async fn guard_start(
                     && matches!(r.record.name, Stage::Prepare | Stage::Tests)
             }) {
                 let settings = Settings::of(request);
-                if preparation(
+                let prepared = preparation(
                     core,
                     &request.dialog_id,
                     &records,
@@ -578,8 +582,9 @@ pub(in crate::agent_run) async fn guard_start(
                     &settings,
                     Some(last.id.clone()),
                 )
-                .await?
-                {
+                .await?;
+                starting.check()?;
+                if prepared {
                     advance(core, &request.dialog_id, &task_id, &settings).await?;
                 }
                 return Ok(true);
@@ -596,6 +601,7 @@ pub(in crate::agent_run) async fn guard_start(
         linked(&records).is_some(),
     )
     .await?;
+    starting.check()?;
     if let Some((record, link)) = linked(&records) {
         let status = execute(
             core,
@@ -605,6 +611,7 @@ pub(in crate::agent_run) async fn guard_start(
             },
         )
         .await?;
+        starting.check()?;
         let asked = matches!(
             request.start,
             StartKind::Retry | StartKind::ContinueRun | StartKind::ContinueReply
@@ -619,6 +626,7 @@ pub(in crate::agent_run) async fn guard_start(
                 },
             )
             .await?;
+            starting.check()?;
             if link.stopped {
                 rows::end_stage(core, &request.dialog_id, &record.id, |r| {
                     if let Some(link) = &mut r.strict_run {
@@ -957,6 +965,14 @@ pub async fn reconcile_verified(core: &Core, dialog_id: &str) {
 
 /// Stop only the existing controller; no acceptance or application authority changes.
 pub(in crate::agent_run) async fn stop(core: &Core, dialog_id: &str) -> bool {
+    // Ordinary starts can wait for a driver without owning a strict task. Do
+    // not make their Stop wait behind that driver just to discover no owner.
+    let Ok(Some((_, records))) = owned_task(core, dialog_id).await else {
+        return false;
+    };
+    if task(&records).is_none() {
+        return false;
+    }
     let _guard = driver::drive_lock(dialog_id).await;
     if core.agents.stop(core, dialog_id) {
         return true;
@@ -1292,6 +1308,37 @@ mod tests {
             project_settings: None,
             mcp_secrets: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn stopping_an_accepted_resume_prevents_strict_recovery_from_reviving_its_stage() {
+        let (test, frozen, dialog) = stored(Stage::Prepare, None).await;
+        // Routing accepted Resume before it got as far as the task driver.
+        let accepted = test.core.agents.begin_start(&dialog);
+        assert!(crate::agent_run::agent_stop(&test.core, dialog.clone()).await);
+        let resume = request(
+            &frozen,
+            &dialog,
+            "http://localhost:8000/v1",
+            StartKind::Resume,
+        );
+        let error = driver::go_on(&test.core, &resume).await.unwrap_err();
+        assert!(error.contains("start was stopped"), "{error}");
+        let retry = request(
+            &frozen,
+            &dialog,
+            "http://localhost:8000/v1",
+            StartKind::Retry,
+        );
+        let error = guard_start(&test.core, &retry).await.unwrap_err();
+        assert!(error.contains("start was stopped"), "{error}");
+        let (_, rows) = owned_task(&test.core, &dialog).await.unwrap().unwrap();
+        assert_eq!(rows.len(), 2, "cancellation did not add another stage");
+        let last = &rows.last().unwrap().record;
+        assert_eq!(last.status, Status::Failed);
+        assert_eq!(last.outcome.as_deref(), Some("stopped"));
+        drop(accepted);
+        assert!(test.core.agents.begin_start(&dialog).check().is_ok());
     }
 
     #[tokio::test]

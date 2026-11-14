@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reconnectBackend, onBackendLost, reportBackendFailure } from './backendSession';
+import {
+  backendProject,
+  reconnectBackend,
+  reconnectUpdatedBackend,
+  restartBackend,
+  onBackendLost,
+  onBackendRestored,
+  reportBackendFailure,
+} from './backendSession';
 import { spawnTerminal, writeToTerminal, type TerminalEvent } from './terminal';
 import { subscribeVirtualFiles } from './virtualFiles';
 import { notifications, dismiss } from './notifications';
@@ -203,4 +211,142 @@ test('queued terminal input is never sent into a replacement backend', async () 
   finish();
   await Promise.all([first, queued]);
   assert.deepEqual(calls, ['accepted', 'desktop_reconnect']);
+});
+
+test('backend replacement sends the reviewed identity and restores the latest project without replay', async () => {
+  const target = {
+    expectedBoot: 'reviewed-boot',
+    expectedVersion: '0.2.16',
+    expectedProtocol: 1,
+    expectedBuild: 'reviewed-build',
+  };
+  let project = { root: '/first', projectId: 'first' };
+  const clearProject = backendProject(() => project);
+  const calls: unknown[] = [];
+  let channel: any;
+  let finish!: () => void;
+  const restore = onBackendRestored(() => {
+    calls.push('restore');
+  });
+  backend = async (command, args) => {
+    if (command === 'spawn_terminal') {
+      channel = args.onEvent;
+      return { id: 'old', shell: 'sh' };
+    }
+    calls.push({ command, args });
+    if (command === 'desktop_restart_backend')
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    else assert.equal(command, 'desktop_reconnect');
+  };
+  const events: TerminalEvent[] = [];
+  try {
+    await spawnTerminal(null, 80, 24, (event) => events.push(event));
+    const restarting = restartBackend(target);
+    assert.equal(restartBackend(target), restarting);
+    const reconnecting = reconnectBackend();
+    assert.deepEqual(events, [{ type: 'exit', code: null }]);
+    project = { root: '/second', projectId: 'second' };
+    finish();
+    await Promise.all([restarting, reconnecting]);
+    channel.onmessage({ type: 'output', data: 'old output' });
+    assert.deepEqual(events, [{ type: 'exit', code: null }]);
+    assert.deepEqual(calls, [
+      {
+        command: 'desktop_restart_backend',
+        args: { ...target, root: '/first', projectId: 'first' },
+      },
+      { command: 'desktop_reconnect', args: { root: '/second', projectId: 'second' } },
+      'restore',
+    ]);
+  } finally {
+    clearProject();
+    restore();
+  }
+});
+
+test('an incompatible startup backend can be replaced before the selected folder has an identity', async () => {
+  let project: { root: string | null; projectId: string | null } = {
+    root: '/startup-folder',
+    projectId: null,
+  };
+  const calls: unknown[] = [];
+  const clearProject = backendProject(
+    () => project,
+    async () => {
+      calls.push('resolve-folder');
+      project = { ...project, projectId: 'resolved-project' };
+    }
+  );
+  const restore = onBackendRestored(() => {
+    calls.push('load-history-and-subscriptions');
+  });
+  const target = {
+    expectedBoot: 'incompatible',
+    expectedVersion: '0.2.16',
+    expectedProtocol: 1,
+    expectedBuild: 'old',
+  };
+  backend = async (command, args) => {
+    calls.push({ command, args });
+  };
+  try {
+    await assert.rejects(reconnectBackend(), /project to finish opening/);
+    assert.deepEqual(calls, []);
+    await restartBackend(target);
+    assert.deepEqual(calls, [
+      {
+        command: 'desktop_restart_backend',
+        args: { ...target, root: null, projectId: null },
+      },
+      'resolve-folder',
+      {
+        command: 'desktop_reconnect',
+        args: { root: '/startup-folder', projectId: 'resolved-project' },
+      },
+      'load-history-and-subscriptions',
+    ]);
+  } finally {
+    clearProject();
+    restore();
+  }
+});
+
+test('a project resolution failure after replacement retries setup without stopping the new backend', async () => {
+  let project: { root: string | null; projectId: string | null } = {
+    root: '/startup-folder',
+    projectId: null,
+  };
+  let attempts = 0;
+  const clearProject = backendProject(
+    () => project,
+    async () => {
+      if (++attempts === 1) throw new Error('Folder could not resolve');
+      project = { ...project, projectId: 'resolved-project' };
+    }
+  );
+  const commands: string[] = [];
+  backend = async (command) => {
+    commands.push(command);
+  };
+  try {
+    await assert.rejects(
+      restartBackend({
+        expectedBoot: 'incompatible',
+        expectedVersion: '0.2.16',
+        expectedProtocol: 1,
+        expectedBuild: 'old',
+      }),
+      /Folder could not resolve/
+    );
+    await reconnectUpdatedBackend();
+    assert.deepEqual(commands, [
+      'desktop_restart_backend',
+      'desktop_reconnect',
+      'desktop_reconnect',
+    ]);
+  } finally {
+    clearProject();
+  }
 });

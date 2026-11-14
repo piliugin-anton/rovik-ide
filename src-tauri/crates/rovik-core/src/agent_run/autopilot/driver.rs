@@ -1037,9 +1037,12 @@ pub(in crate::agent_run) async fn go_on(
     request: &StartRequest,
 ) -> Result<Option<Option<String>>, String> {
     let dialog_id = request.dialog_id.as_str();
+    let starting = core.agents.begin_start(dialog_id);
+    starting.check()?;
     let Some((task, records)) = current_task(core, dialog_id).await? else {
         return Ok(None);
     };
+    starting.check()?;
     let next = next_after(&records);
     if next == Next::Over {
         return Ok(None);
@@ -1049,7 +1052,10 @@ pub(in crate::agent_run) async fn go_on(
     let Some(_driving) = try_drive_lock(dialog_id) else {
         return Ok(Some(None));
     };
-    if super::strict::guard_start(core, request).await? {
+    starting.check()?;
+    let guarded = super::strict::guard_start(core, request).await?;
+    starting.check()?;
+    if guarded {
         return Ok(Some(None));
     }
     if core.agents.is_running(dialog_id) || crate::chat_hold::elsewhere(dialog_id) {
@@ -1093,10 +1099,12 @@ pub(in crate::agent_run) async fn go_on(
             r.summary = Some("It didn't finish".into());
         })
         .await?;
+        starting.check()?;
         advance(core, dialog_id, &task, &settings).await?;
         return Ok(Some(None));
     }
     let recent = crate::agent_run::run::recent_messages(&core.db, dialog_id).await?;
+    starting.check()?;
     let waits_for_checks = recent.last().is_some_and(|m| {
         m.meta
             .as_ref()
@@ -1107,7 +1115,9 @@ pub(in crate::agent_run) async fn go_on(
     if waits_for_checks {
         return Ok(Some(None));
     }
-    let start = match recovery::after_crash(core, dialog_id).await? {
+    let recovered = recovery::after_crash(core, dialog_id).await?;
+    starting.check()?;
+    let start = match recovered {
         Recovery::Start(kind) => kind,
         // Paused, and cut before its stage ended. For a move, the run goes
         // on where the chat went. Any other pause is one for a person, who
@@ -1122,11 +1132,13 @@ pub(in crate::agent_run) async fn go_on(
                 return Ok(Some(None));
             }
             end_run_stage(core, dialog_id, &StageRun::of(last), &outcome, &settings).await?;
+            starting.check()?;
             advance(core, dialog_id, &task, &settings).await?;
             return Ok(Some(None));
         }
         Recovery::Interrupted => {
             let started = run_started(core, dialog_id, last).await?;
+            starting.check()?;
             // An implementation by candidates is the IDE's run, which a
             // Retry takes up, as the driver started it (T05).
             if stage == Stage::Implement && !started && last.record.candidates.is_empty() {

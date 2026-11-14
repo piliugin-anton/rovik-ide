@@ -13,6 +13,7 @@ use rovik_core::{EventSink, Paths};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
+mod backend_updates;
 mod commands;
 mod docker_runtime;
 mod filesystem;
@@ -97,6 +98,8 @@ pub fn run() {
                 folder,
                 new_window: std::env::args().any(|a| a == NEW_WINDOW),
             });
+            #[cfg(any(unix, windows))]
+            let installation = rt::block_on(backend_updates::Installation::capture(app.handle()))?;
             #[cfg(unix)]
             let connection = {
                 // Native slots position windows only. Execution slots belong to
@@ -105,16 +108,20 @@ pub fn run() {
                 let mut command = rovik_command().map_err(std::io::Error::other)?;
                 command.arg(rovik_client::local_backend::host::HOST_FLAG);
                 command.stderr(std::process::Stdio::inherit());
-                rt::block_on(DesktopConnection::attach(command, &data, &config))?
+                rt::block_on(backend_updates::attach_or_defer(
+                    DesktopConnection::attach(command, &data, &config),
+                    installation.executable(),
+                    &data,
+                ))?
             };
             #[cfg(windows)]
             let connection = {
                 rovik_core::os_lock::take_slot(&data.join("window-slots"));
-                let executable = windows_backend_path(app.handle())?;
-                rt::block_on(DesktopConnection::attach_backend(
-                    &executable,
+                let executable = installation.executable();
+                rt::block_on(backend_updates::attach_or_defer(
+                    DesktopConnection::attach_backend(executable, &data, &config),
+                    executable,
                     &data,
-                    &config,
                 ))?
             };
             #[cfg(not(any(unix, windows)))]
@@ -133,6 +140,8 @@ pub fn run() {
                 app.manage(EmbeddedHost(backend));
                 connection
             };
+            #[cfg(any(unix, windows))]
+            app.manage(installation);
             let window = app.handle().clone();
             connection.on_event_error(move |message| {
                 let notice = AgentEvent::Notice {
@@ -204,6 +213,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_session_usable,
             desktop_reconnect,
+            backend_updates::desktop_backend_update_status,
+            backend_updates::desktop_restart_backend,
             desktop_poll_events,
             desktop_event_status,
             terminal::spawn_terminal,

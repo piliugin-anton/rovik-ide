@@ -2,6 +2,11 @@ import { backendProject, onBackendRestored } from './lib/backendSession';
 import { startPageRequests } from './lib/pageRequests';
 import { startBackendEvents } from './lib/backendEvents';
 import {
+  backendUpdateAvailable,
+  deferBackendUpdateUntilRelaunch,
+  startBackendUpdates,
+} from './lib/backendUpdates';
+import {
   batch,
   untrack,
   createSignal,
@@ -143,7 +148,7 @@ import { startBrowser } from './lib/browserStartup';
 import { startDocker } from './lib/dockerStartup';
 import { startSandbox } from './lib/sandboxStartup';
 import { startWsl } from './lib/wslStartup';
-import { startUpdates } from './lib/updates';
+import { startUpdates, updateStatus } from './lib/updates';
 import { startHostUpdates } from './lib/hostUpdates';
 import { onShowChat } from './lib/agentRuns';
 import { cloud } from './lib/cloud';
@@ -177,6 +182,7 @@ export default function App() {
   const [openingProject, setOpeningProject] = createSignal(true);
   const [preparingProject, setPreparingProject] = createSignal(false);
   const [loadingChats, setLoadingChats] = createSignal(false);
+  let retryLastProjectAfterUpdate = false;
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -205,20 +211,14 @@ export default function App() {
       ).catch(() => ({ folder: null, newWindow: false }));
       if (startup.newWindow && !startup.folder) return;
       const asked = startup.folder;
-      const projectData = await getLastProject(asked ?? undefined);
+      const projectData = await getLastProject(asked ?? undefined, () => {
+        retryLastProjectAfterUpdate = !asked;
+      });
       if (!projectData) {
         if (asked) await openWithItsTabs(asked);
         return;
       }
-      const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
-      for (const m of monaco.editor.getModels()) m.dispose();
-      tree.presetExpanded(path, expandedPaths);
-      setRootPath(path);
-      setOpenFiles(openFiles);
-      setTerminalCollapsed(terminalCollapsed);
-      if (openFiles.length > 0) {
-        setActivePath(openFiles[openFiles.length - 1].path);
-      }
+      applyLastProject(projectData);
     } finally {
       setRestoringProject(false);
     }
@@ -443,9 +443,10 @@ export default function App() {
   /** The last project, as it was left, if this window may open it; only
    *  `folder` when given (its tabs come back if it was the last). */
   async function getLastProject(
-    folder?: string
+    folder?: string,
+    onFailure?: (error: unknown) => void
   ): Promise<[string, OpenFile[], string[], boolean] | null> {
-    const lastProject = await loadLastProject();
+    const lastProject = await loadLastProject(onFailure);
     if (!lastProject || !lastProject.path) return null;
     if (folder !== undefined && lastProject.path !== folder) return null;
     // Open in another window: this one starts without a project.
@@ -459,6 +460,20 @@ export default function App() {
       lastProject.expandedPaths ?? [],
       lastProject.terminalCollapsed,
     ];
+  }
+
+  function applyLastProject([path, files, expanded, collapsed]: [
+    string,
+    OpenFile[],
+    string[],
+    boolean,
+  ]) {
+    for (const model of monaco.editor.getModels()) model.dispose();
+    tree.presetExpanded(path, expanded);
+    setRootPath(path);
+    setOpenFiles(files);
+    setTerminalCollapsed(collapsed);
+    if (files.length > 0) setActivePath(files[files.length - 1].path);
   }
 
   /** Tabs saved for later, read again from disk. */
@@ -529,6 +544,18 @@ export default function App() {
     });
     void startHostUpdates();
   });
+  onMount(() => onCleanup(startBackendUpdates()));
+  createEffect(() => {
+    // A deferred backend cannot finish loading the project. Keep its explicit
+    // restart action reachable above the initial splash.
+    if (backendUpdateAvailable()) dismissBootSplash();
+  });
+  createEffect(
+    on(updateStatus, (status) => {
+      if (status.kind === 'installing' || status.kind === 'installed')
+        deferBackendUpdateUntilRelaunch();
+    })
+  );
 
   // Closing the window with unsaved tabs asks first.
   onMount(() => {
@@ -2097,7 +2124,40 @@ export default function App() {
   onMount(() => {
     // The chat panel is lazy: its store may never have selected this project.
     onCleanup(
-      backendProject(() => ({ root: rootPath(), projectId: currentProject()?.id ?? null }))
+      backendProject(
+        () => ({ root: rootPath(), projectId: currentProject()?.id ?? null }),
+        async () => {
+          if (retryLastProjectAfterUpdate) {
+            if (!rootPath() && tabs().length === 0) {
+              let failed = false;
+              let failure: unknown;
+              const saved = await getLastProject(undefined, (error) => {
+                failed = true;
+                failure = error;
+              });
+              if (failed) throw failure;
+              // A user-selected folder or draft opened during the read wins.
+              if (saved && !rootPath() && tabs().length === 0) applyLastProject(saved);
+            }
+            retryLastProjectAfterUpdate = false;
+          }
+          for (;;) {
+            const root = rootPath();
+            if (!!root !== !!currentProject()?.id || currentProject() === undefined)
+              await resolveProject(root);
+            if (root !== rootPath()) continue;
+            if (root && !currentProject()?.id) {
+              const blocked = chatsBlocked();
+              throw new Error(
+                blocked?.kind === 'failed'
+                  ? blocked.error
+                  : 'The project could not reopen. Select the folder again, then reconnect.'
+              );
+            }
+            return;
+          }
+        }
+      )
     );
     onCleanup(
       onBackendRestored(async () => {

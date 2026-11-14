@@ -7,36 +7,6 @@ use std::{ffi::OsString, path::PathBuf, sync::Arc};
 /// Selects headless backend hosting before any native window is initialized.
 pub const HOST_FLAG: &str = "--desktop-backend";
 
-/// Enables normal core/client diagnostics in the standalone host, whose stderr
-/// is retained in backend.log by the launcher. An existing app logger is kept.
-pub fn init_log() {
-    struct StderrLog;
-    impl log::Log for StderrLog {
-        fn enabled(&self, metadata: &log::Metadata) -> bool {
-            metadata.level() <= log::max_level()
-        }
-        fn log(&self, record: &log::Record) {
-            if self.enabled(record.metadata()) {
-                eprintln!(
-                    "{} {} {}: {}",
-                    rovik_core::agent_run::log::iso_now(),
-                    record.level(),
-                    record.target(),
-                    record.args()
-                );
-            }
-        }
-        fn flush(&self) {}
-    }
-    let level = std::env::var("ROVIK_LOG")
-        .ok()
-        .and_then(|level| level.parse::<log::LevelFilter>().ok())
-        .unwrap_or(log::LevelFilter::Info);
-    if log::set_logger(&StderrLog).is_ok() {
-        log::set_max_level(level);
-    }
-}
-
 /// Parses the explicit directories supplied by a desktop launcher.
 pub fn paths(args: impl IntoIterator<Item = OsString>) -> Result<Paths, String> {
     let mut args = args.into_iter();
@@ -72,7 +42,6 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         // Another launcher won. It alone initializes the database and mounts.
         return Ok(());
     };
-    log::info!(target: "rovik::backend", "Backend starting pid={} protocol={} version={}", std::process::id(), super::PROTOCOL, env!("CARGO_PKG_VERSION"));
     #[cfg(windows)]
     wait_for_legacy_windows(&paths.data_dir).await?;
     let backend = Arc::new(
@@ -86,12 +55,19 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(std::io::Error::other)?,
     );
     let mut retirement = None;
+    let mut explicit_restart = false;
+    // Capture the loaded image before an installer can replace its source path.
+    #[cfg(target_os = "linux")]
+    let executable = std::path::PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
+    let executable = std::env::current_exe()?;
+    let build = super::image::fingerprint(&executable).await?;
     let result = async {
         backend.start_services().map_err(std::io::Error::other)?;
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
-        log::info!(target: "rovik::backend", "Backend ready pid={} boot={} protocol={} version={}", std::process::id(), listener.boot(), super::PROTOCOL, env!("CARGO_PKG_VERSION"));
         let control = control::Listener::bind(&lease, &directory)?;
-        let hello = control::Hello::new(listener.boot());
+        let mut hello = control::Hello::new(listener.boot());
+        hello.build = build;
         #[cfg(unix)]
         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let termination = async {
@@ -112,8 +88,11 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                             let result = async {
                                 tokio::time::timeout(control::TIMEOUT, control::write(&mut stream, &hello)).await??;
                                 let candidate: control::Candidate = tokio::time::timeout(control::TIMEOUT, control::read(&mut stream)).await??;
+                                let restart = candidate.restarts(&hello)?;
                                 let mut pause = None;
-                                let reply = if !candidate.upgrades(&hello)? {
+                                let reply = if restart {
+                                    control::Reply::Retiring
+                                } else if !candidate.upgrades(&hello)? {
                                     control::Reply::Current
                                 } else {
                                     while let Some(result) = clients.try_join_next() {
@@ -136,11 +115,22 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 };
                                 tokio::time::timeout(control::TIMEOUT, control::write(&mut stream, &reply)).await??;
-                                Ok::<_, std::io::Error>(pause)
+                                if restart {
+                                    // Cover noncooperative client tasks and their
+                                    // destructors as well as backend cleanup.
+                                    std::thread::Builder::new()
+                                        .name("backend-restart-deadline".into())
+                                        .spawn(|| {
+                                            std::thread::sleep(std::time::Duration::from_secs(10));
+                                            std::process::exit(0);
+                                        })?;
+                                }
+                                Ok::<_, std::io::Error>((pause, restart))
                             }.await;
                             match result {
-                                Ok(Some(guard)) => { retirement = Some(guard); break; },
-                                Ok(None) => {},
+                                Ok((guard, true)) => { retirement = guard; explicit_restart = true; break; },
+                                Ok((Some(guard), false)) => { retirement = Some(guard); break; },
+                                Ok((None, false)) => {},
                                 Err(error) => eprintln!("Local backend upgrade: {error}"),
                             }
                         }
@@ -179,8 +169,16 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         Ok::<_, std::io::Error>(())
     }
     .await;
-    log::info!(target: "rovik::backend", "Backend stopping pid={} outcome={}", std::process::id(), if result.is_ok() { "requested" } else { "failed" });
-    backend.shutdown().await;
+    if explicit_restart {
+        // The user explicitly accepted interruption. A retained mount or stuck
+        // operation must not keep the obsolete owner alive indefinitely.
+        backend.shutdown().await;
+        // Keep the lifetime lease until the OS closes this process's handles.
+        // Releasing it before runtime teardown would let two owners overlap.
+        std::process::exit(0);
+    } else {
+        backend.shutdown().await;
+    }
     drop(retirement);
     result?;
     Ok(())

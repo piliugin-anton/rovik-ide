@@ -311,7 +311,7 @@ impl DesktopBackend {
 }
 
 #[cfg(test)]
-mod routing_tests {
+pub(crate) mod routing_tests {
     use super::*;
     use crate::testing::{identity, Fake};
     use rovik_core::agent_run::events::AgentEvent;
@@ -326,7 +326,7 @@ mod routing_tests {
 
     // Core::open avoids process-wide network and overlay initialization,
     // so these routing tests can run beside other client unit tests.
-    fn backend(root: &std::path::Path) -> DesktopBackend {
+    pub(crate) fn backend(root: &std::path::Path) -> DesktopBackend {
         let config = root.join("config");
         let core = Core::open(
             Paths::new(root.join("data"), config.clone()),

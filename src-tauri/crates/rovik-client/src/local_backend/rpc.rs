@@ -1,7 +1,7 @@
 //! Bounded typed RPC over the authenticated local stream. Calls are never
 //! automatically retried: a lost reply may follow a committed mutation.
 
-use super::{connect, diagnostics, Ready, Stream};
+use super::{connect, Ready, Stream};
 use crate::desktop_api::DesktopRequest;
 use crate::desktop_backend::DesktopBackend;
 use crate::desktop_session::{DesktopEvent, SessionEvents};
@@ -10,10 +10,12 @@ use rovik_protocol::Frame;
 use rovik_protocol::{Fail, Request, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{io, path::Path, sync::Arc, time::Duration};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::Mutex,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+mod client;
+mod server;
+pub use client::Client;
+pub use server::serve;
 
 // The desktop accepts images up to 50 MiB, encoded as base64 on this wire.
 // Keep the frame bounded while preserving the desktop attachment limit.
@@ -26,6 +28,9 @@ const MAX_MESSAGE: usize = {
     }
 };
 const IO_WAIT: Duration = Duration::from_secs(60);
+// Cancellation controls keep capacity even while every ordinary call is waiting.
+const ORDINARY_CALLS: usize = 32;
+const CONTROL_CALLS: usize = 4;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -53,40 +58,33 @@ enum ClientFrame {
 }
 
 impl ClientFrame {
-    // Read only closed discriminants. Debug/JSON formatting a request would expose credentials.
-    fn diagnostic(&self) -> (&'static str, bool) {
+    fn is_control(&self) -> bool {
+        use crate::desktop_api::{agent::AgentRequest, chat::ChatRequest};
+        use rovik_protocol::harness::Operation;
+        let harness_control = |operation: &Operation| {
+            matches!(
+                operation,
+                Operation::Cancel { .. } | Operation::CancelPreparation { .. }
+            )
+        };
         match self {
             Self::Call { req, .. } => match req.as_ref() {
-                Request::AgentStart(_) => ("agent_start", true),
-                Request::VerifiedAutopilotStart { .. } => ("verified_autopilot_start", true),
-                Request::AgentStop { .. } => ("agent_stop", true),
-                Request::AgentStatus => ("agent_status", false),
-                Request::Harness { operation, .. } => harness_diagnostic(operation),
-                _ => ("call", false),
+                Request::AgentStop { .. } | Request::BackgroundStop { .. } => true,
+                Request::Harness { operation, .. } => harness_control(operation),
+                _ => false,
             },
             Self::Desktop { req, .. } => match req.as_ref() {
-                DesktopRequest::Harness(request) => harness_diagnostic(&request.request),
-                _ => ("desktop", false),
+                DesktopRequest::Agent(request) => {
+                    matches!(request.as_ref(), AgentRequest::Cancel { .. })
+                }
+                DesktopRequest::Chat(request) => {
+                    matches!(request.as_ref(), ChatRequest::CancelMove { .. })
+                }
+                DesktopRequest::Harness(request) => harness_control(&request.request),
+                _ => false,
             },
-            Self::Ping => ("ping", false),
-            Self::Subscribe { .. } => ("subscribe", false),
-            Self::CloseSession { .. } => ("close_session", false),
-            Self::CancelSink { .. } => ("cancel_sink", false),
+            _ => false,
         }
-    }
-}
-
-fn harness_diagnostic(operation: &rovik_protocol::harness::Operation) -> (&'static str, bool) {
-    use rovik_protocol::harness::Operation;
-    match operation {
-        Operation::BeginPlanPreparation { .. } => ("begin_plan_preparation", true),
-        Operation::PreparationStatus { .. } => ("preparation_status", false),
-        Operation::CancelPreparation { .. } => ("cancel_preparation", true),
-        Operation::StartPreparedImplementation { .. } => ("start_prepared_implementation", true),
-        Operation::Status { .. } | Operation::ArchitectureFeedback { .. } => {
-            ("harness_status", false)
-        }
-        _ => ("harness_management", true),
     }
 }
 
@@ -176,397 +174,18 @@ async fn write(stream: &mut (impl AsyncWrite + Unpin), value: &impl Serialize) -
     stream.write_all(&bytes).await
 }
 
-/// One window's serialized connection. Transport failure or cancellation
-/// invalidates it so a late reply cannot be mistaken for a later call.
-pub struct Client {
-    /// The backend instance and session this connection belongs to.
-    pub ready: Ready,
-    stream: Mutex<Option<Stream>>,
-    directory: std::path::PathBuf,
-    closing: tokio::sync::watch::Sender<bool>,
-}
-
-impl Client {
-    pub(crate) fn usable(&self) -> bool {
-        !*self.closing.borrow()
-            && self
-                .stream
-                .try_lock()
-                .map_or(true, |stream| stream.is_some())
-    }
-
-    /// Discovery directory for an independent read-only event connection.
-    pub(crate) fn directory(&self) -> &Path {
-        &self.directory
-    }
-
-    /// Attaches to an existing backend without constructing a local Core.
-    pub async fn connect(directory: &Path) -> io::Result<Self> {
-        let (stream, ready) = connect(directory).await?;
-        Self::from_connected(directory, stream, ready).await
-    }
-
-    pub(crate) async fn from_connected(
-        directory: &Path,
-        stream: Stream,
-        ready: Ready,
-    ) -> io::Result<Self> {
-        let client = Self {
-            ready,
-            stream: Mutex::new(Some(stream)),
-            directory: directory.to_path_buf(),
-            closing: tokio::sync::watch::channel(false).0,
-        };
-        // The owner session must exist before its separate event connection
-        // can attach. A reply also proves the server has entered its dispatcher.
-        client.exchange(ClientFrame::Ping).await?;
-        diagnostics::record(
-            directory,
-            &format!(
-                "connected boot={:?} session={:?} protocol={} version={:?}",
-                client.ready.boot,
-                client.ready.session,
-                client.ready.protocol,
-                client.ready.version
-            ),
-        );
-        Ok(client)
-    }
-
-    /// Releases this client's resources without stopping backend-owned work.
-    /// An independent control connection can detach even during a stalled call.
-    pub async fn close(&self) -> io::Result<()> {
-        self.closing.send_replace(true);
-        // A caller may retain an unpolled in-flight future holding this mutex.
-        // Its cancellation disposes of the stream when polled or dropped; the
-        // separate control must not wait for that caller to run again.
-        if let Ok(mut stream) = self.stream.try_lock() {
-            stream.take();
-        }
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let control = Self::connect(&self.directory).await?;
-            control
-                .exchange(ClientFrame::CloseSession {
-                    session: self.ready.session.clone(),
-                })
-                .await?;
-            Ok(())
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Desktop client detachment timed out",
-            )
-        })?
-    }
-
-    /// Attaches an independent event stream, so output never waits behind a call.
-    pub async fn events(&self) -> io::Result<EventStream> {
-        if *self.closing.borrow() {
-            return Err(detached());
-        }
-        let (mut stream, _) = connect(&self.directory).await?;
-        tokio::time::timeout(IO_WAIT, async {
-            write(
-                &mut stream,
-                &ClientFrame::Subscribe {
-                    session: self.ready.session.clone(),
-                },
-            )
-            .await?;
-            match read(&mut stream).await? {
-                ServerFrame::Subscribed { result: Ok(()) } => Ok(EventStream {
-                    stream,
-                    directory: self.directory.clone(),
-                    ready: self.ready.clone(),
-                }),
-                ServerFrame::Subscribed { result: Err(error) } => Err(io::Error::other(error)),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected event subscription reply",
-                )),
-            }
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Desktop event subscription timed out",
-            )
-        })?
-    }
-
-    /// Sends exactly one call. An IO error leaves completion uncertain;
-    /// callers must refresh state before deciding whether to retry.
-    pub async fn call(&self, request: Request) -> io::Result<Result<Response, Fail>> {
-        self.call_on(None, request).await
-    }
-
-    /// Sends a host-specific operation (for example connector setup) to
-    /// the named remote host, as the desktop's host commands do.
-    pub async fn call_host(
-        &self,
-        host: &str,
-        request: Request,
-    ) -> io::Result<Result<Response, Fail>> {
-        if host.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "A remote host ID is required",
-            ));
-        }
-        self.call_on(Some(host.to_string()), request).await
-    }
-
-    async fn call_on(
-        &self,
-        host: Option<String>,
-        request: Request,
-    ) -> io::Result<Result<Response, Fail>> {
-        match self
-            .exchange(ClientFrame::Call {
-                id: 1,
-                req: Box::new(request),
-                host,
-            })
-            .await?
-        {
-            ServerFrame::Reply { id: 1, res } => Ok(*res),
-            _ => {
-                self.stream.lock().await.take();
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected backend reply",
-                ))
-            }
-        }
-    }
-
-    /// Runs a desktop-only operation without changing cloud protocol routing.
-    pub async fn desktop(
-        &self,
-        request: DesktopRequest,
-    ) -> io::Result<Result<serde_json::Value, serde_json::Value>> {
-        match self
-            .exchange(ClientFrame::Desktop {
-                id: 1,
-                req: Box::new(request),
-            })
-            .await?
-        {
-            ServerFrame::DesktopReply { id: 1, res } => Ok(res),
-            _ => {
-                self.stream.lock().await.take();
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected desktop reply",
-                ))
-            }
-        }
-    }
-
-    async fn exchange(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
-        self.exchange_with_wait(frame, IO_WAIT).await
-    }
-
-    async fn exchange_with_wait(
-        &self,
-        frame: ClientFrame,
-        wait: Duration,
-    ) -> io::Result<ServerFrame> {
-        let (operation, verbose) = frame.diagnostic();
-        let mut trace =
-            diagnostics::Exchange::begin(&self.directory, &self.ready, operation, verbose);
-        let mut closing = self.closing.subscribe();
-        let is_closing = *closing.borrow();
-        let result = if is_closing {
-            Err(detached())
-        } else {
-            tokio::select! {
-                biased;
-                _ = closing.changed() => Err(detached()),
-                reply = self.exchange_open(frame, &mut trace, wait) => reply,
-            }
-        };
-        trace.finish(&result);
-        result
-    }
-
-    async fn exchange_open(
-        &self,
-        frame: ClientFrame,
-        trace: &mut diagnostics::Exchange<'_>,
-        wait: Duration,
-    ) -> io::Result<ServerFrame> {
-        let mut slot = self.stream.lock().await;
-        trace.stage("acquire_connection");
-        let mut stream = slot.take().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotConnected,
-                "Backend connection lost; refresh state before retrying",
-            )
-        })?;
-        // Restore only after a complete matching response. Cancellation leaves
-        // the connection unusable and never retries a possibly completed write.
-        let uncertain = || {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Backend reply timed out; operation completion is unknown",
-            )
-        };
-        let result = async {
-            trace.wait("write_request", wait);
-            tokio::time::timeout(wait, write(&mut stream, &frame))
-                .await
-                .map_err(|_| uncertain())??;
-            // Deployments and other desktop operations already own their
-            // deadlines. Do not cut them off at the framing timeout. Dropping
-            // the caller still invalidates this connection without a retry.
-            let reply: ServerFrame = if matches!(frame, ClientFrame::Desktop { .. }) {
-                trace.stage("await_desktop_reply");
-                read(&mut stream).await?
-            } else {
-                trace.wait("await_reply", wait);
-                tokio::time::timeout(wait, read(&mut stream))
-                    .await
-                    .map_err(|_| uncertain())??
-            };
-            trace.stage("validate_reply");
-            let matches = matches!(
-                (&frame, &reply),
-                (ClientFrame::Ping, ServerFrame::Pong)
-                    | (ClientFrame::CloseSession { .. }, ServerFrame::SessionClosed)
-                    | (
-                        ClientFrame::Call { id: 1, .. },
-                        ServerFrame::Reply { id: 1, .. }
-                    )
-                    | (
-                        ClientFrame::Desktop { id: 1, .. },
-                        ServerFrame::DesktopReply { id: 1, .. }
-                    )
-            );
-            if !matches {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected backend reply",
-                ));
-            }
-            Ok(reply)
-        }
-        .await;
-        if result.is_ok() {
-            *slot = Some(stream);
-        }
-        result
-    }
-}
-
-fn detached() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::NotConnected,
-        "Desktop client detached; an accepted operation may still complete",
-    )
-}
-
-/// Serves requests after the listener has authenticated the peer. A
-/// disconnected client does not cancel an already accepted operation.
-pub async fn serve(
-    mut stream: Stream,
-    backend: Arc<DesktopBackend>,
-    session_id: String,
+async fn write_reply(
+    stream: &mut (impl AsyncWrite + Unpin),
+    value: &impl Serialize,
 ) -> io::Result<()> {
-    let lease = backend
-        .sessions
-        .register(session_id)
-        .map_err(io::Error::other)?;
-    loop {
-        let received = tokio::select! {
-            biased;
-            _ = lease.session.closed() => return Ok(()),
-            frame = read_after_idle(&mut stream, IO_WAIT) => frame,
-        };
-        let frame: ClientFrame = match received {
-            Ok(frame) => frame,
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        // Close can also race the completed frame. Only operations already
-        // accepted by the dispatcher may outlive the client's session.
-        if lease.session.is_closed() {
-            return Ok(());
-        }
-        let (operation, traced) = frame.diagnostic();
-        let started = std::time::Instant::now();
-        if traced {
-            log::info!(target: "rovik::backend", "{} pid={} rpc session={:?} operation={operation} stage=dispatch outcome=started",
-                rovik_core::agent_run::log::iso_now(), std::process::id(), lease.session.id());
-        }
-        let reply = match frame {
-            ClientFrame::Call { id, req, host } => ServerFrame::Reply {
-                id,
-                res: Box::new(match host {
-                    Some(host) => backend.remote.host_call(&host, *req).await,
-                    None => backend.dispatch(*req).await,
-                }),
-            },
-            ClientFrame::Desktop { id, req } => ServerFrame::DesktopReply {
-                id,
-                res: req.dispatch_in(&backend, Some(&lease.session)).await,
-            },
-            ClientFrame::Subscribe { session } => {
-                let events = backend
-                    .sessions
-                    .get(&session)
-                    .and_then(|session| session.events());
-                let result = events.as_ref().map(|_| ()).map_err(Clone::clone);
-                tokio::time::timeout(
-                    IO_WAIT,
-                    write(&mut stream, &ServerFrame::Subscribed { result }),
-                )
-                .await
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::TimedOut, "Event client stopped reading")
-                })??;
-                return match events {
-                    Ok(events) => serve_events(stream, events).await,
-                    Err(_) => Ok(()),
-                };
-            }
-            ClientFrame::CancelSink { .. } => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Callback cancellation requires the event connection",
-                ))
-            }
-            ClientFrame::CloseSession { session } => {
-                // Authenticated same-user control, like Subscribe. Closing a
-                // missing session is safe to repeat after losing the first ack.
-                backend.sessions.close(&session, "Desktop client detached");
-                ServerFrame::SessionClosed
-            }
-            ClientFrame::Ping => ServerFrame::Pong,
-        };
-        let operation_failed = matches!(&reply, ServerFrame::Reply { res, .. } if res.is_err())
-            || matches!(&reply, ServerFrame::DesktopReply { res: Err(_), .. });
-        let sent = tokio::time::timeout(IO_WAIT, write(&mut stream, &reply))
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Backend client stopped reading"))
-            .and_then(|result| result);
-        if traced || sent.is_err() {
-            log::info!(target: "rovik::backend", "{} pid={} rpc session={:?} operation={operation} stage=send_reply outcome={} operation_failed={operation_failed} elapsed_ms={} io_kind={:?}",
-                rovik_core::agent_run::log::iso_now(), std::process::id(), lease.session.id(),
-                if sent.is_ok() { "completed" } else { "failed" }, started.elapsed().as_millis(), sent.as_ref().err().map(io::Error::kind));
-        }
-        sent?;
-    }
+    tokio::time::timeout(IO_WAIT, write(stream, value))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Local RPC peer stopped reading"))?
 }
 
 /// The private event connection of one desktop client.
 pub struct EventStream {
     stream: Stream,
-    directory: std::path::PathBuf,
-    ready: Ready,
 }
 
 impl EventStream {
@@ -583,25 +202,10 @@ impl EventStream {
 
     /// Reads in source order. Loss is explicit and requires a new client session.
     pub async fn next(&mut self) -> Result<DesktopEvent, String> {
-        let incoming = read(&mut self.stream).await;
-        let reason = match &incoming {
-            Err(_) => Some("read_failed"),
-            Ok(ServerFrame::EventFailure { .. }) => Some("server_ended_stream"),
-            Ok(ServerFrame::Event { .. }) => None,
-            _ => Some("unexpected_frame"),
-        };
-        if let Some(reason) = reason {
-            diagnostics::record(
-                &self.directory,
-                &format!(
-                    "event_connection_lost boot={:?} session={:?} reason={reason} io_kind={:?}",
-                    self.ready.boot,
-                    self.ready.session,
-                    incoming.as_ref().err().map(io::Error::kind)
-                ),
-            );
-        }
-        match incoming.map_err(|e| format!("Desktop event connection failed: {e}"))? {
+        match read(&mut self.stream)
+            .await
+            .map_err(|e| format!("Desktop event connection failed: {e}"))?
+        {
             ServerFrame::Event { event } => Ok(event),
             ServerFrame::EventFailure { message } => Err(message),
             _ => Err("Unexpected desktop event frame".into()),
@@ -665,7 +269,7 @@ async fn serve_events(stream: Stream, mut events: SessionEvents) -> io::Result<(
 mod tests {
     use super::*;
 
-    async fn stream_pair() -> (Stream, Stream) {
+    pub(super) async fn stream_pair() -> (Stream, Stream) {
         let root = tempfile::tempdir().unwrap();
         let endpoint = super::super::platform::Endpoint::bind(root.path(), "rpc").unwrap();
         let (server, client) = tokio::join!(
@@ -774,29 +378,26 @@ mod tests {
         );
     }
 
-    async fn pair() -> (Client, Stream) {
+    pub(super) async fn pair() -> (Client, Stream) {
         let (client, server) = stream_pair().await;
         (
-            Client {
-                ready: Ready {
+            Client::start(
+                Path::new(""),
+                client,
+                Ready {
                     protocol: super::super::PROTOCOL,
                     boot: "test".into(),
                     version: "test".into(),
                     session: "test".into(),
                 },
-                stream: Mutex::new(Some(client)),
-                directory: std::path::PathBuf::new(),
-                closing: tokio::sync::watch::channel(false).0,
-            },
+            ),
             server,
         )
     }
 
     #[tokio::test]
     async fn a_lost_reply_invalidates_the_connection_without_retrying() {
-        let (mut client, mut server) = pair().await;
-        let logs = tempfile::tempdir().unwrap();
-        client.directory = logs.path().into();
+        let (client, mut server) = pair().await;
         let peer = tokio::spawn(async move {
             let request: Frame = read(&mut server).await.unwrap();
             assert!(matches!(
@@ -814,10 +415,6 @@ mod tests {
             client.call(Request::AgentStatus).await.unwrap_err().kind(),
             io::ErrorKind::NotConnected
         );
-        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
-        assert!(diagnostic.contains("operation=agent_status stage=await_reply outcome=failed"));
-        assert!(diagnostic.contains("io_kind=Some(UnexpectedEof)"));
-        assert!(diagnostic.contains("stage=acquire_connection outcome=failed"));
     }
 
     #[tokio::test]
@@ -847,148 +444,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reply_timeout_records_the_actual_deadline_without_replaying_the_call() {
-        let (mut client, mut server) = pair().await;
-        let logs = tempfile::tempdir().unwrap();
-        client.directory = logs.path().into();
-        let peer = tokio::spawn(async move {
-            assert!(matches!(
-                read::<ClientFrame>(&mut server).await.unwrap(),
-                ClientFrame::Call { .. }
-            ));
-            assert_eq!(
-                read::<ClientFrame>(&mut server).await.err().unwrap().kind(),
-                io::ErrorKind::UnexpectedEof
-            );
-        });
-        let result = client
-            .exchange_with_wait(
-                ClientFrame::Call {
-                    id: 1,
-                    req: Box::new(Request::AgentStatus),
-                    host: None,
-                },
-                Duration::from_millis(20),
-            )
-            .await;
-        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::TimedOut);
-        peer.await.unwrap();
-        assert_eq!(
-            client.call(Request::AgentStatus).await.unwrap_err().kind(),
-            io::ErrorKind::NotConnected
-        );
-        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
-        assert!(diagnostic.contains("stage=await_reply outcome=failed"));
-        assert!(diagnostic.contains("timeout_ms=Some(20) io_kind=Some(TimedOut)"));
+    async fn cancelling_an_inflight_call_preserves_other_calls_and_discards_its_late_reply() {
+        cancelled_reply(false).await;
     }
 
     #[tokio::test]
-    async fn cancelling_an_inflight_call_invalidates_the_connection() {
-        let (mut client, mut server) = pair().await;
-        let logs = tempfile::tempdir().unwrap();
-        client.directory = logs.path().into();
-        let client = Arc::new(client);
-        let calling = client.clone();
-        let task = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
-        let _: Frame = read(&mut server).await.unwrap();
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        assert_eq!(
-            client.call(Request::AgentStatus).await.unwrap_err().kind(),
-            io::ErrorKind::NotConnected
-        );
-        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
-        assert!(diagnostic.contains("stage=await_reply outcome=cancelled_completion_unknown"));
+    async fn cancelling_a_desktop_operation_preserves_other_calls_and_discards_its_late_reply() {
+        cancelled_reply(true).await;
     }
 
-    #[tokio::test]
-    async fn preparation_rpc_logs_lifecycle_without_credentials_paths_or_response_content() {
-        let (mut client, mut server) = pair().await;
-        let logs = tempfile::tempdir().unwrap();
-        client.directory = logs.path().into();
-        let request = serde_json::from_value::<crate::desktop_api::harness::HarnessRequest>(serde_json::json!({
-            "root":"/private-project", "executionHost":"chat", "dialogId":"private-chat",
-            "request":{"action":"beginPlanPreparation", "dialogId":"private-chat", "planPath":"private-plan.md", "savedBuffers":true,
-                "provider":{"profile":{"id":"provider::worker", "label":"Worker", "model":"worker", "baseUrl":"https://private-provider/v1", "apiKey":"secret-api-key"},
-                    "rates":{"input":0,"cachedInput":0,"output":0}}}
-        })).unwrap();
-        let peer = tokio::spawn(async move {
-            assert!(matches!(
-                read::<ClientFrame>(&mut server).await.unwrap(),
-                ClientFrame::Desktop { .. }
-            ));
-            write(
-                &mut server,
-                &ServerFrame::DesktopReply {
-                    id: 1,
-                    res: Ok(serde_json::json!({"content":"private response"})),
-                },
-            )
-            .await
-            .unwrap();
-        });
-        client.desktop(request.into()).await.unwrap().unwrap();
-        peer.await.unwrap();
-        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
-        assert!(diagnostic.contains(
-            "operation=begin_plan_preparation stage=wait_for_connection outcome=started"
-        ));
-        assert!(diagnostic.contains("stage=validate_reply outcome=completed"));
-        for private in [
-            "private-project",
-            "private-chat",
-            "private-plan",
-            "private-provider",
-            "secret-api-key",
-            "private response",
-        ] {
-            assert!(!diagnostic.contains(private), "{private}");
-        }
-    }
-
-    #[tokio::test]
-    async fn event_connection_loss_is_retained_without_the_server_message() {
-        let (client, mut server) = pair().await;
-        let logs = tempfile::tempdir().unwrap();
-        let mut events = EventStream {
-            stream: client.stream.lock().await.take().unwrap(),
-            directory: logs.path().into(),
-            ready: client.ready.clone(),
-        };
-        write(
-            &mut server,
-            &ServerFrame::EventFailure {
-                message: "private diagnostic".into(),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(events.next().await.is_err());
-        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
-        assert!(diagnostic.contains("event_connection_lost"));
-        assert!(diagnostic.contains("reason=server_ended_stream"));
-        assert!(!diagnostic.contains("private diagnostic"));
-    }
-
-    #[tokio::test]
-    async fn cancelling_a_desktop_operation_invalidates_its_connection() {
+    async fn cancelled_reply(desktop: bool) {
         let (client, mut server) = pair().await;
         let client = Arc::new(client);
         let calling = client.clone();
         let task = tokio::spawn(async move {
-            calling
-                .desktop(DesktopRequest::from(
-                    crate::desktop_api::hosts::HostsRequest::Upgrade { id: "host".into() },
-                ))
-                .await
+            if desktop {
+                calling
+                    .desktop(crate::desktop_api::vfs::VfsRequest::Status.into())
+                    .await
+                    .map(|_| ())
+            } else {
+                calling.call(Request::AgentStatus).await.map(|_| ())
+            }
         });
         let _: ClientFrame = read(&mut server).await.unwrap();
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
+        let calling = client.clone();
+        let next = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
+        assert!(matches!(
+            read::<ClientFrame>(&mut server).await.unwrap(),
+            ClientFrame::Call { id: 2, .. }
+        ));
+        let late = if desktop {
+            ServerFrame::DesktopReply {
+                id: 1,
+                res: Ok(serde_json::json!("late")),
+            }
+        } else {
+            ServerFrame::Reply {
+                id: 1,
+                res: Box::new(Ok(Response::Done)),
+            }
+        };
+        write(&mut server, &late).await.unwrap();
+        write(
+            &mut server,
+            &ServerFrame::Reply {
+                id: 2,
+                res: Box::new(Err(Fail::new(
+                    rovik_protocol::FailCode::Busy,
+                    "second reply",
+                ))),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            client.call(Request::AgentStatus).await.unwrap_err().kind(),
-            io::ErrorKind::NotConnected
+            next.await.unwrap().unwrap().unwrap_err().message,
+            "second reply"
         );
+        assert!(client.usable());
     }
 
     #[tokio::test]
@@ -1030,3 +546,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "rpc/concurrency_tests.rs"]
+mod concurrency_tests;
