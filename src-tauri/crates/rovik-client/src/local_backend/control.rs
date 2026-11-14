@@ -496,44 +496,59 @@ mod tests {
         assert!(Lease::acquire(&directory).unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn self_restart_retires_idle_hosts_but_preserves_busy_hosts() {
+        assert_retirement_preserves_busy_hosts(true).await;
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn legacy_macos_retires_idle_hosts_but_preserves_busy_hosts() {
+        assert_retirement_preserves_busy_hosts(false).await;
+    }
+
+    async fn assert_retirement_preserves_busy_hosts(restart: bool) {
         for busy in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let directory = super::super::directory(root.path());
             let lease = Lease::acquire(&directory).unwrap().unwrap();
             let listener = Listener::bind(&lease, &directory).unwrap();
-            let mut host = Hello::new("legacy");
+            let mut host = Hello::new("backend");
             host.protocol -= 1;
-            host.restart = false;
+            host.restart = restart;
             let expected = host.identity();
-            let server = async {
-                let mut stream = listener.accept().await.unwrap();
-                write(&mut stream, &host).await.unwrap();
-                let candidate: Candidate = read(&mut stream).await.unwrap();
-                assert!(candidate.upgrades(&host).unwrap());
-                write(
-                    &mut stream,
-                    &if busy {
-                        Reply::Busy("running work".into())
-                    } else {
-                        Reply::Retiring
-                    },
-                )
-                .await
-                .unwrap();
+            let stopping = tokio::spawn({
+                let directory = directory.clone();
+                async move { stop(&directory, &expected, "new").await }
+            });
+            let mut stream = listener.accept().await.unwrap();
+            write(&mut stream, &host).await.unwrap();
+            let candidate: Candidate = read(&mut stream).await.unwrap();
+            assert!(candidate.upgrades(&host).unwrap());
+            write(
+                &mut stream,
+                &if busy {
+                    Reply::Busy("running work".into())
+                } else {
+                    Reply::Retiring
+                },
+            )
+            .await
+            .unwrap();
+            if !busy {
                 drop(listener);
                 drop(lease);
-            };
-            let (_, result) = tokio::join!(server, stop(&directory, &expected, "new"));
+            }
+            let result = stopping.await.unwrap();
             if busy {
                 assert!(result
                     .unwrap_err()
                     .to_string()
                     .contains("cannot be stopped safely while busy"));
+                assert!(Lease::acquire(&directory).unwrap().is_none());
             } else {
                 result.unwrap();
+                assert!(Lease::acquire(&directory).unwrap().is_some());
             }
         }
     }
