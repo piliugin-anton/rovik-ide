@@ -35,7 +35,14 @@ pub(super) fn check() -> Result<i32> {
         "-Wextra",
         "-Werror",
     ]);
-    let sanitizer = args(&["-fsanitize=address,undefined", "-fno-sanitize-recover=all"]);
+    // GCC 12's ASan allocator can collide with randomized PIE mappings on
+    // high-entropy ASLR hosts. Fix only these fixture executable addresses;
+    // sanitizer instrumentation and host ASLR remain enabled.
+    let sanitizer = args(&[
+        "-fsanitize=address,undefined",
+        "-fno-sanitize-recover=all",
+        "-fno-pie",
+    ]);
     let cwd = Path::new("/build");
     let mut results = vec![];
     for (name, contents) in variants {
@@ -120,6 +127,7 @@ pub(super) fn check() -> Result<i32> {
                 command.extend(flags.clone());
                 command.extend(extra);
                 command.extend(args(&[
+                    "-no-pie",
                     "-I/oracle",
                     "/oracle/consumer.c",
                     &producer,

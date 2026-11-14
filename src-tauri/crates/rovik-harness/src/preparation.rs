@@ -79,6 +79,39 @@ struct Receipt {
     facts: BTreeMap<String, String>,
 }
 
+fn image_digest(bytes: &[u8]) -> Result<Digest> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Error::new("prepared image identity is not UTF-8".into()))?
+        .trim();
+    // Podman's inspect .Id omits the algorithm prefix; Docker includes it.
+    // Normalize only that representation, preserving the complete config hash.
+    Digest::parse(&format!(
+        "sha256:{}",
+        text.strip_prefix("sha256:").unwrap_or(text)
+    ))
+}
+
+fn image_inspect_format() -> String {
+    format!("{{{{.Id}}}} {{{{index .Config.Labels \"{RECIPE_LABEL}\"}}}}")
+}
+
+fn verify_image_identity(bytes: &[u8], image: &Digest, recipe: &Digest) -> Result<()> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Error::new("prepared image inspection is not UTF-8".into()))?;
+    let mut fields = text.split_whitespace();
+    let actual = fields
+        .next()
+        .ok_or_else(|| Error::new("prepared image inspection has no identity".into()))?;
+    require(
+        image_digest(actual.as_bytes())? == *image,
+        "verifier image differs from its measured identity",
+    )?;
+    require(
+        fields.next() == Some(recipe.as_str()) && fields.next().is_none(),
+        "verifier image differs from its trusted recipe",
+    )
+}
+
 fn recipe() -> Result<String> {
     let native = std::str::from_utf8(source("fixtures/native/Dockerfile")?)
         .map_err(|_| Error::new("bundled verifier recipe is not UTF-8".into()))?;
@@ -385,18 +418,14 @@ impl ContainerBackend {
                 "image",
                 "inspect",
                 "--format",
-                "{{.Id}}",
+                &image_inspect_format(),
                 receipt.image_digest.as_str(),
             ]);
             let output = execute(command, CONTROL_LIMIT, METADATA_LIMIT as usize)?;
             cancelled(cancel)?;
             if output.code == Some(0) {
                 let inspected = successful(output, "Inspecting the prepared environment")?;
-                require(
-                    std::str::from_utf8(&inspected).ok().map(str::trim)
-                        == Some(receipt.image_digest.as_str()),
-                    "the cached verifier image identity changed",
-                )?;
+                verify_image_identity(&inspected, &receipt.image_digest, &recipe_digest)?;
                 return Ok(PreparedEnvironment {
                     image_digest: receipt.image_digest,
                     toolchain_manifest: manifest_path,
@@ -465,27 +494,20 @@ impl ContainerBackend {
         )?;
         drop(certificate_file);
         cancelled(cancel)?;
-        let image_digest = Digest::parse(
-            std::str::from_utf8(&bounded_read(&image_id)?)
-                .map_err(|_| Error::new("prepared image identity is not UTF-8".into()))?
-                .trim(),
-        )?;
+        let image_digest = image_digest(&bounded_read(&image_id)?)?;
         let mut inspect = self.command();
         inspect.args([
             "image",
             "inspect",
             "--format",
-            "{{.Id}}",
+            &image_inspect_format(),
             image_digest.as_str(),
         ]);
         let actual = successful(
             execute(inspect, CONTROL_LIMIT, METADATA_LIMIT as usize)?,
             "Inspecting the built verifier",
         )?;
-        require(
-            std::str::from_utf8(&actual).ok().map(str::trim) == Some(image_digest.as_str()),
-            "built verifier image differs from its measured identity",
-        )?;
+        verify_image_identity(&actual, &image_digest, &recipe_digest)?;
         let mut probe = self.command();
         let probe_name = format!("rovik-measure-{}", uuid::Uuid::new_v4().simple());
         probe.args([
@@ -572,6 +594,33 @@ mod tests {
         assert!(facts(b"node_version=\n").is_err());
     }
 
+    #[test]
+    fn image_identity_normalization_preserves_the_full_hash_and_trusted_recipe() {
+        let image = Digest::of(b"verifier config");
+        let recipe = Digest::of(b"trusted recipe");
+        for id in [image.as_str(), image.hex()] {
+            assert_eq!(image_digest(format!("{id}\n").as_bytes()).unwrap(), image);
+            verify_image_identity(format!("{id} {recipe}\n").as_bytes(), &image, &recipe).unwrap();
+        }
+        for invalid in [
+            format!("{} {recipe}", Digest::of(b"another config")),
+            format!("{} {recipe}", &image.hex()[..12]),
+            format!("sha512:{} {recipe}", image.hex()),
+            format!("{image} {}", Digest::of(b"another recipe")),
+            format!("{image} <no value>"),
+            format!("{image} {recipe} unexpected"),
+            image.to_string(),
+            String::new(),
+        ] {
+            assert!(
+                verify_image_identity(invalid.as_bytes(), &image, &recipe).is_err(),
+                "accepted invalid inspection: {invalid}"
+            );
+        }
+        assert!(image_digest(b"\xff").is_err());
+        assert!(verify_image_identity(b"\xff", &image, &recipe).is_err());
+    }
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     mod linux {
         use super::*;
@@ -590,10 +639,29 @@ mod tests {
 
         #[test]
         fn preparation_builds_only_bundled_sources_then_reuses_the_measured_immutable_image() {
+            builds_and_reuses_the_measured_image(false);
+        }
+
+        #[test]
+        fn podman_preparation_accepts_unprefixed_inspect_ids_on_first_build_and_cache_reuse() {
+            builds_and_reuses_the_measured_image(true);
+        }
+
+        fn builds_and_reuses_the_measured_image(podman: bool) {
             let root = tempfile::tempdir().unwrap();
             let cache = root.path().join("cache");
-            let backend = ContainerBackend::local(Path::new("/bin/true")).unwrap();
+            let backend = if podman {
+                ContainerBackend::podman(Path::new("/bin/true"), &root.path().join("podman"))
+                    .unwrap()
+            } else {
+                ContainerBackend::local(Path::new("/bin/true")).unwrap()
+            };
             let image = Digest::of(b"built verifier");
+            let recipe = recipe_digest(&recipe().unwrap()).unwrap();
+            let inspected = format!(
+                "{} {recipe}\n",
+                if podman { image.hex() } else { image.as_str() }
+            );
             let mut calls = Vec::new();
             let mut execute =
                 |command: Command, timeout: Duration, limit: usize| -> Result<ProcessOutput> {
@@ -601,10 +669,21 @@ mod tests {
                         .get_args()
                         .map(|v| v.to_string_lossy().into_owned())
                         .collect::<Vec<_>>();
-                    calls.push(args.clone());
-                    assert_eq!(args[0], "--host=unix:///var/run/docker.sock");
+                    let operation = args
+                        .iter()
+                        .find(|arg| matches!(arg.as_str(), "build" | "image" | "run"))
+                        .unwrap();
+                    calls.push(operation.clone());
+                    assert_eq!(
+                        args[0],
+                        if podman {
+                            "--remote=false"
+                        } else {
+                            "--host=unix:///var/run/docker.sock"
+                        }
+                    );
                     assert!(timeout <= BUILD_LIMIT && limit <= OUTPUT_LIMIT);
-                    match args[1].as_str() {
+                    match operation.as_str() {
                         "build" => {
                             let context = Path::new(args.last().unwrap());
                             assert_eq!(
@@ -615,7 +694,11 @@ mod tests {
                             fs::write(&args[id + 1], image.as_str())?;
                             Ok(output(b"built\n"))
                         }
-                        "image" => Ok(output(image.as_str().as_bytes())),
+                        "image" => {
+                            assert_eq!(args.last().unwrap(), image.as_str());
+                            assert!(args.contains(&image_inspect_format()));
+                            Ok(output(inspected.as_bytes()))
+                        }
                         "run" => {
                             assert!(args.contains(&"--network=none".into()));
                             assert!(args.contains(&image.to_string()));
@@ -634,19 +717,61 @@ mod tests {
             assert_eq!(first.image_digest, second.image_digest);
             assert_eq!(first.facts["node_version"], "22.17.0");
             assert!(first.toolchain_manifest.is_file());
-            assert_eq!(
-                calls
-                    .iter()
-                    .map(|args| args[1].as_str())
-                    .collect::<Vec<_>>(),
-                ["build", "image", "run", "image"]
-            );
+            assert_eq!(calls, ["build", "image", "run", "image"]);
+            for invalid in [
+                format!("{} {recipe}", Digest::of(b"another image")),
+                format!("{image} {}", Digest::of(b"another recipe")),
+            ] {
+                assert!(backend
+                    .prepare_environment_with(&cache, &Cancellation::default(), |command, _, _| {
+                        assert!(command.get_args().any(|arg| arg == "inspect"));
+                        Ok(output(invalid.as_bytes()))
+                    })
+                    .is_err());
+            }
             fs::write(&first.toolchain_manifest, b"changed").unwrap();
             assert!(backend
                 .prepare_environment_with(&cache, &Cancellation::default(), |_, _, _| panic!(
                     "changed metadata must not execute"
                 ))
                 .is_err());
+        }
+
+        #[test]
+        fn a_mismatched_image_or_recipe_is_never_probed_or_cached() {
+            let image = Digest::of(b"built verifier");
+            let recipe = recipe_digest(&recipe().unwrap()).unwrap();
+            for invalid in [
+                format!("{} {recipe}", Digest::of(b"another image")),
+                format!("{image} {}", Digest::of(b"another recipe")),
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                let cache = root.path().join("cache");
+                let backend = ContainerBackend::local(Path::new("/bin/true")).unwrap();
+                let result = backend.prepare_environment_with(
+                    &cache,
+                    &Cancellation::default(),
+                    |command, _, _| {
+                        let args = command
+                            .get_args()
+                            .map(|arg| arg.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>();
+                        match args[1].as_str() {
+                            "build" => {
+                                let id = args.iter().position(|arg| arg == "--iidfile").unwrap();
+                                fs::write(&args[id + 1], image.as_str())?;
+                                Ok(output(b"built\n"))
+                            }
+                            "image" => Ok(output(invalid.as_bytes())),
+                            operation => panic!("untrusted image must not run: {operation}"),
+                        }
+                    },
+                );
+                assert!(result.is_err());
+                let directory = cache.join(BACKEND_VERSION).join(recipe.hex());
+                assert!(!directory.join("environment.json").exists());
+                assert!(!directory.join("toolchain.json").exists());
+            }
         }
 
         #[test]

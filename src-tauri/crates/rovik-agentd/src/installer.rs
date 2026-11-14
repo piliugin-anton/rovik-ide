@@ -1350,13 +1350,8 @@ mod tests {
         assert!(out.status.success(), "{said}");
     }
 
-    /// The units as systemd reads them, where `systemd-analyze` is there:
-    /// no warning about any line.
-    #[test]
-    fn systemd_takes_the_units() {
-        if !on_path("systemd-analyze") {
-            return;
-        }
+    /// Our unit files and the minimal boot targets their default dependencies need.
+    fn systemd_fixture() -> rovik_core::testing::TempDir {
         let dir = rovik_core::testing::temp_dir();
         let mut file = AdminFile::sized_for("ann", 16 << 30);
         file.cpu_quota = Some("200%".into());
@@ -1371,14 +1366,98 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.0.join("rovik.slice"), slice(&file)).unwrap();
-        let out = Command::new("systemd-analyze")
-            .arg("verify")
+        for target in [
+            "sysinit.target",
+            "basic.target",
+            "shutdown.target",
+            "multi-user.target",
+        ] {
+            std::fs::write(
+                dir.0.join(target),
+                "[Unit]\nDescription=Fixture boot target\nDefaultDependencies=no\n",
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// Replace the child process's ambient unit search path without changing
+    /// process-wide environment or suppressing diagnostics from our own files.
+    fn verify_systemd_units(dir: &Path, mut command: Command) -> std::process::Output {
+        command
+            // No trailing colon: it would append the host's default unit paths.
+            .env("SYSTEMD_UNIT_PATH", dir)
+            .args(["--generators=no", "verify"])
+            .arg(dir.join("rovik.slice"))
+            .arg(dir.join("rovik-agentd@ann.service"))
+            .output()
+            .unwrap()
+    }
+
+    /// The units as systemd reads them, where `systemd-analyze` is there:
+    /// no warning about any line.
+    #[test]
+    fn systemd_takes_the_units() {
+        if !on_path("systemd-analyze") {
+            return;
+        }
+        let dir = systemd_fixture();
+        let out = verify_systemd_units(&dir.0, Command::new("systemd-analyze"));
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.trim().is_empty(), "{said}");
+    }
+
+    #[test]
+    fn systemd_verification_excludes_host_units_but_reports_our_own_warnings() {
+        if !on_path("systemd-analyze") {
+            return;
+        }
+        let dir = systemd_fixture();
+        let ambient = rovik_core::testing::temp_dir();
+        std::fs::write(
+            ambient.0.join("host-only.service"),
+            "[Service]\nExecStart=/bin/true\nRovikInvalidAmbientOption=yes\n",
+        )
+        .unwrap();
+        // An optional dependency exposes a host unit when ambient paths leak in.
+        std::fs::write(
+            dir.0.join("rovik-agentd@ann.service.d/ambient.conf"),
+            "[Unit]\nWants=host-only.service\n",
+        )
+        .unwrap();
+        let inherited = || {
+            let mut command = Command::new("systemd-analyze");
+            command.env(
+                "SYSTEMD_UNIT_PATH",
+                std::env::join_paths([&dir.0, &ambient.0]).unwrap(),
+            );
+            command
+        };
+        let control = inherited()
+            .args(["--generators=no", "verify"])
             .arg(dir.0.join("rovik.slice"))
             .arg(dir.0.join("rovik-agentd@ann.service"))
             .output()
             .unwrap();
-        let said = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success() && said.trim().is_empty(), "{said}");
+        let warning = String::from_utf8_lossy(&control.stderr);
+        assert!(warning.contains("RovikInvalidAmbientOption"), "{warning}");
+
+        let isolated = verify_systemd_units(&dir.0, inherited());
+        let said = String::from_utf8_lossy(&isolated.stderr);
+        assert!(
+            isolated.status.success() && said.trim().is_empty(),
+            "{said}"
+        );
+
+        std::fs::write(
+            dir.0.join("rovik-agentd@ann.service.d/warning.conf"),
+            "[Service]\nRovikInvalidOwnOption=yes\n",
+        )
+        .unwrap();
+        let invalid = verify_systemd_units(&dir.0, inherited());
+        let said = String::from_utf8_lossy(&invalid.stderr);
+        assert!(said.contains("RovikInvalidOwnOption"), "{said}");
+        assert!(!said.contains("RovikInvalidAmbientOption"), "{said}");
     }
 
     /// An upgrade needs --allow-downgrade for an older build, and for one
