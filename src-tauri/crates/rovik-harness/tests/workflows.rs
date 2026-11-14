@@ -470,6 +470,7 @@ fn context_prefers_cited_source_after_the_first_twelve_paths_and_keeps_exact_pro
         "behavior",
         &["source29.rs".into()],
         None,
+        &[],
     )
     .unwrap();
     assert_eq!(ranked.len(), 30);
@@ -613,4 +614,48 @@ fn setup_validation_cannot_collapse_two_profile_matrices_into_one_configuration(
         .unwrap_err()
         .message
         .contains("ambiguous configuration"));
+}
+
+#[test]
+fn preparation_trials_reject_changed_source_authority_and_budgets_before_execution() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut controller = controller(&directory.path().join("state"));
+    let setup = setup(&controller.ledger, "trial-authority");
+    assert!(!controller.ledger.contains_run(&setup.run_id).unwrap());
+    Preparation {
+        schema_version: 1,
+        run_id: setup.run_id.clone(),
+        repository_id: setup.repository_id.clone(),
+        request: "Verify boundary behavior".into(),
+        base: setup.base.clone(),
+        registry: registry(&setup),
+        authority: setup.authority.clone(),
+        worker: setup.worker.clone(),
+        budgets: setup.budgets.clone(),
+        deadline_ms: setup.deadline_ms,
+    }
+    .create(&mut controller.ledger)
+    .unwrap();
+    assert!(controller.ledger.contains_run(&setup.run_id).unwrap());
+    let principal = Principal::current().unwrap();
+    let mut changed = setup.clone();
+    changed.base.base_revision = "another-revision".into();
+    assert!(controller
+        .trial_preparation(&principal, &changed, &Cancellation::default())
+        .is_err());
+    changed = setup.clone();
+    changed.budgets.insert("checks".into(), 9999);
+    assert!(controller
+        .trial_preparation(&principal, &changed, &Cancellation::default())
+        .is_err());
+    assert!(controller
+        .ledger
+        .operations(&setup.run_id)
+        .unwrap()
+        .is_empty());
+    assert!(controller
+        .ledger
+        .approval_history(&setup.run_id)
+        .unwrap()
+        .is_empty());
 }

@@ -134,6 +134,41 @@ pub fn normalize_verified_autopilot(
     deny_unknown_fields
 )]
 pub enum Operation {
+    /// Capture a saved plan and issue a private workspace for automatic preparation.
+    BeginPlanPreparation {
+        /// Owning chat, also checked when the preparation agent starts.
+        dialog_id: String,
+        /// Saved plan in the selected project.
+        plan_path: String,
+        /// Selected IDE provider and saved prices; credentials remain ephemeral.
+        provider: ImplementationProvider,
+        /// The editor has saved its current buffers.
+        saved_buffers: bool,
+        /// Explicit source selection; empty discovers all nonignored untracked files.
+        #[serde(default)]
+        untracked: Vec<String>,
+    },
+    /// Read automatic preparation progress and its compact, exact review.
+    PreparationStatus {
+        /// Service-issued preparation identity.
+        preparation_id: String,
+    },
+    /// Cancel an automatic preparation and invalidate later submissions.
+    CancelPreparation {
+        /// Service-issued preparation identity.
+        preparation_id: String,
+    },
+    /// Approve the exact prepared inputs together and begin verified implementation.
+    StartPreparedImplementation {
+        /// Service-issued preparation identity.
+        preparation_id: String,
+        /// Exact compact review the operator accepted.
+        expected_review_digest: String,
+        /// The editor has saved its current buffers.
+        saved_buffers: bool,
+        /// Same provider identity and saved prices; keys may rotate.
+        provider: ImplementationProvider,
+    },
     /// Prepare the exact accepted patch and destination for separate delivery approval.
     PrepareApplication {
         /// Durable accepted controller run.
@@ -308,6 +343,9 @@ impl Operation {
     pub fn requires_current_source(&self) -> bool {
         match self {
             Self::PrepareApplication { .. }
+            | Self::BeginPlanPreparation { .. }
+            | Self::PreparationStatus { .. }
+            | Self::StartPreparedImplementation { .. }
             | Self::ApplyApplication { .. }
             | Self::InspectPlan { .. }
             | Self::PrepareWorkspace { .. }
@@ -324,6 +362,7 @@ impl Operation {
             | Self::ArchitectureFeedback { .. }
             | Self::Resume { .. } => true,
             Self::ApplicationState
+            | Self::CancelPreparation { .. }
             | Self::ReleaseApplication { .. }
             | Self::RecoverApplication { .. }
             | Self::ImportSetup { .. }
@@ -364,6 +403,10 @@ impl Operation {
             | Self::RecoverApplication { .. }
             | Self::ReleaseApplication { .. }
             | Self::ApplicationState => crate::features::POLYGLOT_APPLICATION,
+            Self::BeginPlanPreparation { .. }
+            | Self::PreparationStatus { .. }
+            | Self::CancelPreparation { .. }
+            | Self::StartPreparedImplementation { .. } => crate::features::POLYGLOT_PREPARATION,
             Self::InspectPlan { .. }
             | Self::PrepareWorkspace { .. }
             | Self::ImplementPlan { .. }
@@ -424,6 +467,44 @@ mod tests {
                 operation
             );
             assert!(!format!("{operation:?}").contains("ephemeral-test-key"));
+        }
+    }
+
+    #[test]
+    fn automatic_preparation_requires_its_own_capability_and_exact_review() {
+        let provider = implementation_provider();
+        let requests = [
+            serde_json::json!({"action":"beginPlanPreparation","dialogId":"chat","planPath":"plan.md","provider":provider,"savedBuffers":true}),
+            serde_json::json!({"action":"preparationStatus","preparationId":"prep"}),
+            serde_json::json!({"action":"cancelPreparation","preparationId":"prep"}),
+            serde_json::json!({"action":"startPreparedImplementation","preparationId":"prep","expectedReviewDigest":"review","provider":provider,"savedBuffers":true}),
+        ];
+        for request in requests {
+            let operation: Operation = serde_json::from_value(request.clone()).unwrap();
+            assert_eq!(
+                operation.required_feature(),
+                crate::features::POLYGLOT_PREPARATION
+            );
+            assert_eq!(
+                operation.requires_current_source(),
+                request["action"] != "cancelPreparation"
+            );
+            assert!(!format!("{operation:?}").contains("ephemeral-test-key"));
+            assert_eq!(
+                serde_json::from_slice::<Operation>(&serde_json::to_vec(&operation).unwrap())
+                    .unwrap(),
+                operation
+            );
+            let mut forged = request.clone();
+            forged["approved"] = serde_json::json!(true);
+            assert!(serde_json::from_value::<Operation>(forged).is_err());
+            for field in ["savedBuffers", "expectedReviewDigest"] {
+                if request.get(field).is_some() {
+                    let mut missing = request.clone();
+                    missing.as_object_mut().unwrap().remove(field);
+                    assert!(serde_json::from_value::<Operation>(missing).is_err());
+                }
+            }
         }
     }
 

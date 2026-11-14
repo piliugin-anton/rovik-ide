@@ -41,6 +41,48 @@ fn config_args(config: &Configuration) -> Vec<String> {
     }
     flags
 }
+fn stage_oracle_tests(paths: &[String], oracle: &Path, root: &Path) -> Result<()> {
+    for path in paths {
+        let source = oracle.join(path);
+        let target = root.join(path);
+        match std::fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                return Err(Error::new(
+                    "protected integration tests cannot overwrite existing or generated source"
+                        .into(),
+                ))
+            }
+        }
+        let metadata = std::fs::symlink_metadata(&source)?;
+        require(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "protected native test is not a regular oracle file",
+        )?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| Error::new("protected native test has no parent".into()))?;
+        std::fs::create_dir_all(parent)?;
+        for directory in parent
+            .ancestors()
+            .take_while(|directory| directory.starts_with(root))
+        {
+            let metadata = std::fs::symlink_metadata(directory)?;
+            require(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "protected integration-test directories cannot traverse generated symlinks",
+            )?;
+        }
+        let mut source = std::fs::File::open(source)?;
+        let mut target = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)?;
+        std::io::copy(&mut source, &mut target)?;
+    }
+    Ok(())
+}
 fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory, i32)> {
     let root = Path::new("/build/workspace");
     copy_tree(Path::new("/snapshot"), root)?;
@@ -116,6 +158,22 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
     };
     let compiler = "/usr/local/cargo/bin/cargo";
     let invoke = |command: &[String]| run(command, &cwd, &environment);
+    if !input.oracle_test_files.is_empty() {
+        // A new oracle cannot supply missing production code through include!
+        // or a custom Cargo target. Build the unchanged project with this exact
+        // configuration before making independently authored tests visible.
+        let mut command = args(&[compiler, "check", "--workspace", "--all-targets"]);
+        command.extend(config_args(config));
+        let output = invoke(&command)?;
+        std::io::Write::write_all(&mut std::io::stderr(), &output.stdout)?;
+        let code = output.code.ok_or_else(|| {
+            Error::new("original Cargo check terminated without exit status".into())
+        })?;
+        if code != 0 {
+            return Ok((inventory, code));
+        }
+        stage_oracle_tests(&input.oracle_test_files, Path::new("/oracle"), root)?;
+    }
     if matches!(
         input.check,
         NativeCheck::CargoFmt | NativeCheck::CargoCheck | NativeCheck::CargoClippy
@@ -380,4 +438,56 @@ pub(super) fn check(input: &NativeCheckInput) -> Result<NativeCheckOutput> {
         inventory,
         exit_code,
     })
+}
+
+#[cfg(test)]
+mod oracle_overlay_tests {
+    use super::*;
+
+    #[test]
+    fn staging_preserves_existing_custom_targets_and_generated_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        let oracle = directory.path().join("oracle");
+        std::fs::create_dir_all(project.join("tests")).unwrap();
+        std::fs::create_dir_all(oracle.join("tests")).unwrap();
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[lib]\npath='tests/custom.rs'\n",
+        )
+        .unwrap();
+        for path in ["tests/custom.rs", "tests/generated.rs"] {
+            std::fs::write(project.join(path), "original production source").unwrap();
+            std::fs::write(oracle.join(path), "replacement").unwrap();
+            assert!(stage_oracle_tests(&[path.into()], &oracle, &project)
+                .unwrap_err()
+                .message
+                .contains("cannot overwrite"));
+            assert_eq!(
+                std::fs::read_to_string(project.join(path)).unwrap(),
+                "original production source"
+            );
+        }
+        std::fs::write(
+            oracle.join("tests/acceptance.rs"),
+            "#[test] fn independent() {}\n",
+        )
+        .unwrap();
+        stage_oracle_tests(&["tests/acceptance.rs".into()], &oracle, &project).unwrap();
+        assert_eq!(
+            std::fs::read(project.join("tests/acceptance.rs")).unwrap(),
+            std::fs::read(oracle.join("tests/acceptance.rs")).unwrap()
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                directory.path().join("missing.rs"),
+                project.join("tests/dangling.rs"),
+            )
+            .unwrap();
+            std::fs::write(oracle.join("tests/dangling.rs"), "replacement").unwrap();
+            assert!(stage_oracle_tests(&["tests/dangling.rs".into()], &oracle, &project).is_err());
+            assert!(!directory.path().join("missing.rs").exists());
+        }
+    }
 }

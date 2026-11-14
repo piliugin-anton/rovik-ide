@@ -49,14 +49,11 @@ pub(super) fn versions(language: Language) -> Result<BTreeMap<String, String>> {
     }
     Ok(result)
 }
-fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<()> {
-    let root = Path::new(PROJECT);
-    let manifest: Value = read(root.join("package.json"))?;
+pub(crate) fn validate_node_lock(manifest: &Value, lock: &Value) -> Result<()> {
     require(
         manifest.get("type").and_then(Value::as_str) == Some("module"),
         "Node profile requires an explicit ESM package",
     )?;
-    let lock: Value = read(root.join("package-lock.json"))?;
     require(
         lock.get("lockfileVersion").and_then(Value::as_u64) == Some(3),
         "npm lockfile v3 is required",
@@ -79,6 +76,14 @@ fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<
             "runtime dependencies require locked integrity; workspace links are unsupported",
         )?;
     }
+    Ok(())
+}
+
+fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<()> {
+    let root = Path::new(PROJECT);
+    let manifest: Value = read(root.join("package.json"))?;
+    let lock: Value = read(root.join("package-lock.json"))?;
+    validate_node_lock(&manifest, &lock)?;
     if Path::new("/dependencies/npm").is_dir() {
         copy_tree(
             Path::new("/dependencies/npm"),
@@ -152,7 +157,7 @@ fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<
     Ok(())
 }
 
-fn validate_python_lock(lock: &str) -> Result<()> {
+pub(crate) fn validate_python_lock(lock: &str) -> Result<()> {
     for line in lock
         .lines()
         .map(str::trim)
@@ -171,7 +176,19 @@ fn validate_python_lock(lock: &str) -> Result<()> {
                     .all(|b| b.is_ascii_alphanumeric() || b"._-+!".contains(&b))
         };
         require(
-            safe(name) && safe(version),
+            safe(name)
+                && name
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && name
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+                && safe(version),
             "unsupported Python requirement; use one pinned wheel per line",
         )?;
         let hashes: Vec<_> = fields.collect();
@@ -318,6 +335,19 @@ mod tests {
     fn python_locks_require_pinned_hashed_wheels_and_reject_options_and_urls() {
         validate_python_lock("").unwrap();
         validate_python_lock(&format!("example==1.0.0 --hash=sha256:{}", "a".repeat(64))).unwrap();
+        for name in [
+            "--trusted-host",
+            "--index-url",
+            ".relative",
+            "trailing-",
+            "invalid+name",
+        ] {
+            assert!(
+                validate_python_lock(&format!("{name}==1.0.0 --hash=sha256:{}", "a".repeat(64)))
+                    .is_err(),
+                "{name}"
+            );
+        }
         for bad in [
             "example>=1",
             "example==1",

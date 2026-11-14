@@ -43,10 +43,26 @@ pub struct NativeCheckInput {
     pub native: NativeInput,
     /// Closed operation selection.
     pub check: NativeCheck,
+    /// Approved acceptance files copied from the read-only oracle into the build copy.
+    /// These assets never alter candidate source or the user's checkout.
+    #[serde(default)]
+    pub oracle_test_files: Vec<String>,
 }
 impl NativeCheckInput {
     /// Reject language/operation mismatches before executing candidate build code.
     pub fn validate(&self) -> Result<()> {
+        require(
+            self.oracle_test_files.len() <= 128,
+            "too many protected native test files",
+        )?;
+        crate::unique(self.oracle_test_files.iter().map(String::as_str))?;
+        require(
+            self.oracle_test_files.is_empty() || self.native.profile.language == Language::Rust,
+            "protected native overlays require Cargo integration tests",
+        )?;
+        for path in &self.oracle_test_files {
+            validate_oracle_test_path(&self.native.profile.build_root, path)?;
+        }
         Request {
             protocol_version: 1,
             request_id: "workspace-validation".into(),
@@ -78,6 +94,44 @@ impl NativeCheckInput {
             )?;
         }
         Ok(())
+    }
+}
+
+fn validate_oracle_test_path(build_root: &str, path: &str) -> Result<()> {
+    crate::scope::validate_path(path)?;
+    let prefix = if build_root.is_empty() || build_root == "." {
+        "tests/".into()
+    } else {
+        format!("{build_root}/tests/")
+    };
+    require(
+        path.strip_prefix(&prefix).is_some_and(|name| !name.contains('/') && name.ends_with(".rs"))
+            && !path.split('/').any(|part| part.eq_ignore_ascii_case(".git")),
+        "protected Cargo overlays must be new direct-child .rs integration tests in the selected crate's tests directory; production source and build inputs cannot be replaced",
+    )
+}
+
+#[cfg(test)]
+mod oracle_tests {
+    use super::*;
+
+    #[test]
+    fn protected_overlays_can_only_add_integration_tests_in_the_selected_crate() {
+        assert!(validate_oracle_test_path("", "tests/acceptance.rs").is_ok());
+        assert!(validate_oracle_test_path("backend", "backend/tests/acceptance.rs").is_ok());
+        for path in [
+            "src/lib.rs",
+            "Cargo.toml",
+            "build.rs",
+            "tests/Cargo.toml",
+            "tests/../src/lib.rs",
+            "tests/.GIT/evil.rs",
+            "other/tests/test.rs",
+            "tests/fixture/src/lib.rs",
+        ] {
+            assert!(validate_oracle_test_path(".", path).is_err(), "{path}");
+        }
+        assert!(validate_oracle_test_path("backend", "tests/acceptance.rs").is_err());
     }
 }
 /// Complete image-side observation, independently checked by the controller.

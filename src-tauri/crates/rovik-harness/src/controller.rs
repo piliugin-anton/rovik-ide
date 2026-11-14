@@ -202,6 +202,7 @@ impl TaskSetup {
     /// Validate shape, references and all mandatory coverage before model execution.
     pub fn validate(&self, ledger: &Ledger) -> Result<()> {
         require(self.schema_version == 1, "unsupported task setup version")?;
+        self.policy.validate_reads()?;
         crate::id(&self.run_id)?;
         crate::id(&self.repository_id)?;
         let registry = ContractRegistry {
@@ -841,6 +842,7 @@ impl Controller {
         setup: &TaskSetup,
         candidate: &Snapshot,
     ) -> Result<context::ContextBundle> {
+        setup.policy.validate_reads()?;
         let now = runner::now_ms()?;
         let revision = candidate.digest()?;
         let mut items = Vec::new();
@@ -909,9 +911,12 @@ impl Controller {
             source_revision: revision.clone(),
             mandatory: true,
         });
-        let index =
-            self.ledger
-                .store_json("context", &candidate.files.keys().collect::<Vec<_>>(), now)?;
+        let visible_paths = candidate
+            .files
+            .keys()
+            .filter(|path| crate::policy::readable(&setup.policy.deny_read, path))
+            .collect::<Vec<_>>();
+        let index = self.ledger.store_json("context", &visible_paths, now)?;
         items.push(ContextItem {
             item_id: "source-index".into(),
             text: String::from_utf8(self.ledger.read(&index.digest)?)
@@ -936,8 +941,13 @@ impl Controller {
             .cloned()
             .collect();
         // A prior snapshot's graph is retrieval guidance only. It cannot skip final checks.
+        // Graph artifacts may contain declarations or strings from hidden source;
+        // without complete provenance they remain verification evidence only.
         let mut graphed = BTreeSet::new();
-        for snapshot in [&setup.base, candidate] {
+        for snapshot in [&setup.base, candidate]
+            .into_iter()
+            .filter(|_| setup.policy.deny_read.is_empty())
+        {
             if !graphed.insert(snapshot.digest()?) {
                 continue;
             }
@@ -976,6 +986,7 @@ impl Controller {
             &setup.contract.intent,
             &relevant.into_iter().collect::<Vec<_>>(),
             Some(&setup.contract.scope),
+            &setup.policy.deny_read,
         )?);
         context::build(
             &self.ledger,
@@ -1005,11 +1016,14 @@ impl Controller {
             ("plan".into(), Digest::of_json(&setup.plan)?),
         ]);
         if let Some(binding) = self.ledger.run(&setup.run_id)?.binding_digest {
-            let evidence = self.ledger.store_json(
-                "report",
-                &self.candidate_results(&setup.run_id, &binding)?,
-                runner::now_ms()?,
-            )?;
+            let observations = self.candidate_results(&setup.run_id, &binding)?;
+            let feedback = observations
+                .iter()
+                .map(|result| context::check_feedback(&setup.policy, result))
+                .collect::<Result<Vec<_>>>()?;
+            let evidence = self
+                .ledger
+                .store_json("report", &feedback, runner::now_ms()?)?;
             artifacts.insert("native-evidence".into(), evidence.digest);
         }
         Ok(artifacts)
@@ -1149,7 +1163,12 @@ impl Controller {
                     format!("semantic decision required: {}", turn.questions.join("; ")),
                 ));
             }
-            let broker = Broker::new(&self.ledger, &candidate, diagnostics.clone());
+            let broker = Broker::new(
+                &self.ledger,
+                &candidate,
+                diagnostics.clone(),
+                &setup.policy.deny_read,
+            );
             if let Some(proposal) = turn.proposal {
                 return broker.propose(
                     &setup.base,
@@ -1179,11 +1198,15 @@ impl Controller {
                     let result =
                         self.check(setup, &candidate, &key, matches[0], "advisory", cancel)?;
                     diagnostics.extend(result.evidence.iter().cloned());
-                    feedback
-                        .push(serde_json::to_value(result).map_err(|e| Error::new(e.to_string()))?);
+                    feedback.push(context::check_feedback(&setup.policy, &result)?);
                     continue;
                 }
-                let broker = Broker::new(&self.ledger, &candidate, diagnostics.clone());
+                let broker = Broker::new(
+                    &self.ledger,
+                    &candidate,
+                    diagnostics.clone(),
+                    &setup.policy.deny_read,
+                );
                 if matches!(
                     tool,
                     crate::broker::ToolRequest::RequestScopeChange { .. }
@@ -1218,7 +1241,7 @@ impl Controller {
             .collect();
         let approvals = self.approvals_current(&setup, Some(&candidate), runner::now_ms()?)?;
         let prior_failures = {
-            let mut statement=self.ledger.connection.prepare("SELECT c.result_id FROM check_results c JOIN operations o ON c.operation_id=o.operation_id WHERE o.run_id=?1 AND o.kind NOT IN ('negative_control','baseline') AND (o.state!='completed' OR c.status!='pass')")?;
+            let mut statement=self.ledger.connection.prepare("SELECT c.result_id FROM check_results c JOIN operations o ON c.operation_id=o.operation_id WHERE o.run_id=?1 AND o.kind NOT IN ('negative_control','baseline','preparation_baseline','preparation_negative_control') AND (o.state!='completed' OR c.status!='pass')")?;
             let rows = statement.query_map([run_id], |r| r.get::<_, String>(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
                 .into_iter()
@@ -1743,7 +1766,7 @@ impl Controller {
                     let results = self.ledger.completed_results(&setup.run_id, &binding)?;
                     let feedback = results
                         .into_iter()
-                        .map(|r| serde_json::to_value(r).map_err(|e| Error::new(e.to_string())))
+                        .map(|r| context::check_feedback(&setup.policy, &r))
                         .collect::<Result<Vec<_>>>()?;
                     let input = self.ledger.store_json(
                         "operation",

@@ -13,7 +13,120 @@ use crate::{
     wire, Error, Result,
 };
 
+fn trial_feedback(
+    controller: &Controller,
+    setup: &TaskSetup,
+    result: &crate::evidence::CheckResult,
+) -> Result<serde_json::Value> {
+    let mut value = crate::context::check_feedback(&setup.policy, result)?;
+    if setup.policy.deny_read.is_empty() {
+        // Adapter output includes real discovery even when a proposed case ID is wrong.
+        let mut remaining = 16 * 1024;
+        let mut output = Vec::new();
+        for digest in &result.evidence {
+            if remaining == 0 {
+                break;
+            }
+            let bytes = controller.ledger.read(digest)?;
+            let count = bytes.len().min(remaining);
+            output.push(String::from_utf8_lossy(&bytes[..count]).into_owned());
+            remaining -= count;
+        }
+        value["output"] = serde_json::json!(output);
+    }
+    Ok(value)
+}
+
 impl Controller {
+    /// Exercise a proposed oracle before review without granting approvals or accepting code.
+    /// Every attempt consumes the preparation's durable check budget; promotion keeps it.
+    pub fn trial_preparation(
+        &mut self,
+        principal: &Principal,
+        setup: &TaskSetup,
+        cancel: &runner::Cancellation,
+    ) -> Result<serde_json::Value> {
+        let current = self.ledger.run(&setup.run_id)?;
+        require(
+            current.state == State::Intake,
+            "preparation is not at intake",
+        )?;
+        let preparation: Preparation = wire::decode(&self.ledger.read(&current.input_digest)?)?;
+        preparation.authority.authorize(principal, "operate")?;
+        require(
+            setup.repository_id == preparation.repository_id
+                && setup.base == preparation.base
+                && setup.budgets == preparation.budgets
+                && setup.deadline_ms <= preparation.deadline_ms
+                && Digest::of_json(&setup.authority)? == Digest::of_json(&preparation.authority)?,
+            "trial changed the preparation's immutable authority or input",
+        )?;
+        setup.validate(&self.ledger)?;
+        self.register_setup(setup, runner::now_ms()?)?;
+        let baseline_key = self.select_binding(setup, &setup.base)?;
+        let mut observations = Vec::new();
+        let mut ready = true;
+        for spec in setup.plan.required_final() {
+            require(!cancel.is_cancelled(), "preparation trial cancelled")?;
+            let result = self.check(
+                setup,
+                &setup.base,
+                &baseline_key,
+                spec,
+                "preparation_baseline",
+                cancel,
+            )?;
+            let expected = setup.baseline.expected_failures.iter().find(|expected| {
+                expected.check_id == spec.check_id
+                    && expected.configuration_digest == spec.configuration_digest
+            });
+            let matches = match expected {
+                Some(expected) => expected.matches(&result)?,
+                None => result.status == crate::evidence::Status::Pass,
+            };
+            ready &= matches;
+            observations
+                .push(serde_json::json!({"stage":"baseline", "matches":matches, "result":trial_feedback(self, setup, &result)?}));
+        }
+        let spec = setup
+            .plan
+            .required_final()
+            .find(|spec| {
+                setup
+                    .registry
+                    .get(&spec.command_id)
+                    .is_ok_and(|command| command.kind == crate::plan::CheckKind::Behavioral)
+                    && setup
+                        .negative_control_cases
+                        .iter()
+                        .all(|case| spec.expected_case_ids.contains(case))
+            })
+            .ok_or_else(|| Error::new("no behavioral check covers the negative control".into()))?;
+        require(!cancel.is_cancelled(), "preparation trial cancelled")?;
+        let control_key = self.select_binding(setup, &setup.negative_control)?;
+        let result = self.check(
+            setup,
+            &setup.negative_control,
+            &control_key,
+            spec,
+            "preparation_negative_control",
+            cancel,
+        )?;
+        let matches = result.status == crate::evidence::Status::Fail
+            && setup
+                .negative_control_cases
+                .iter()
+                .all(|case| result.failed_case_ids.contains(case));
+        ready &= matches;
+        observations.push(
+            serde_json::json!({"stage":"negative_control", "matches":matches, "result":trial_feedback(self, setup, &result)?}),
+        );
+        let report = serde_json::json!({"ready":ready,"observations":observations});
+        self.ledger
+            .store_json("report", &report, runner::now_ms()?)?;
+        Ok(report)
+    }
+
     /// Promote a preparation intake into an executable setup without resetting its budget.
     /// Contract/design/oracle approvals are still checked at BASELINE before execution.
     pub fn promote_preparation(

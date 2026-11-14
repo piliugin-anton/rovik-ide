@@ -41,38 +41,93 @@ implementation, Autopilot integration and editor architecture feedback.
 
 ## Verified plan implementation
 
-Open a saved plan in `.rovik/plans/`, select **Require verified result**, then
-**Implement this plan**. Review the exact saved plan, execution host and model.
-Choose a **Prepared verification setup** or expand **Create a verification setup
-from this project**. Save editable buffers and explicitly select any untracked
-inputs. On a cloud host, Git-ignored plans must be made available explicitly;
-they are not silently synchronized.
+Open a saved plan in `.rovik/plans/` and choose **Implement this plan**.
+**Require verified result** is selected by default; clearing it uses ordinary
+Agent implementation. Save editor buffers first. Verified preparation uses the
+plan's existing chat, selected model and execution host. Its progress, tool calls
+and questions appear in the conversation. A small status card leaves the messages
+and composer available; setup forms are no longer required for this plan action.
+On a cloud host, Git-ignored plans must be made available explicitly; they are not
+silently synchronized.
 
-Review the **Input rate**, **Cached input rate** and **Output rate** in microunits
-per million tokens. Enter zero explicitly for a free model. Confirm that the
-acceptance criteria cover the plan, then choose **Start verified implementation**.
-The trusted controller owns implementation and bounded repair. This route currently
-supports OpenAI-compatible Chat Completions providers; connector agents, Responses
-and direct Anthropic API routes need separate adapters. Credentials come from the
-selected host's trusted provider configuration and stay outside candidate assets.
+Save **Input price**, **Cached input price** and **Output price** under
+**Model providers → Verification pricing** once for each model. Enter the provider's
+price per million tokens in its billing currency, for example `2.50`. Prices accept
+up to six decimal places without rounding. All three prices are required. Enter
+zero explicitly for a free model; a blank price is unknown. Plans and verified
+Autopilot reuse these saved prices. This
+implementation route currently supports OpenAI-compatible Chat Completions models
+with Rovik's tools; connector agents, Responses and direct Anthropic API routes
+need separate adapters. Credentials come from the selected host's trusted provider
+configuration and stay outside candidate assets. Existing saved prices retain their
+exact value; only their display and entry units change.
 
-Guided preparation supports Rust, C, C++, JavaScript, TypeScript and Python. It
-requires explicit profile and configuration facts, committed protected tests with
-real case IDs, a known failing Git revision, and a prepared immutable image and
-offline dependencies. It does not infer domain requirements or install those
-inputs. Each invariant maps to protected cases in every required configuration.
-TypeScript `extends` and project references require a separately prepared
+The agent inspects a private captured source copy and drafts the requirements,
+design, scope, protected acceptance tests and a relevant negative control. It asks
+in chat when the plan and project do not establish a required decision. Existing
+tests may be selected, or new tests may be staged privately; a pre-existing failing
+Git revision is not required. The negative control must change real implementation
+source while preserving build inputs and protected tests. It must compile and fail
+the intended behavioral cases. The service validates staged inputs and runs native
+baseline/control trials; invalid inputs or unexpected results return to the agent
+for correction. A compiler failure alone cannot demonstrate test sensitivity.
+Preparation does not change production source in the checkout or grant acceptance.
+
+On first use, the trusted backend builds the verifier from its bundled recipe,
+measures the installed tools and prepares compatible locked dependencies. These
+assets are cached on the execution host and checked before reuse. Preparation can
+download pinned image/build inputs and locked packages; strict verification uses
+the resulting immutable image and offline assets with network access disabled.
+The model cannot supply the verifier executable or replace its build recipe.
+Every observed build root must be selected or explicitly proposed in
+`excludedBuildRoots` with its manifest and rationale. The review identifies each
+excluded root as unverified and protects its whole directory against edits or
+deletions, including when the proposed write scope is broad. Repository roots
+and ancestors of selected roots cannot be excluded. This permits unrelated
+checked-in examples and fixtures without silently dropping build roots; the full
+source snapshot and native dependency graphs remain intact. Dependency setup
+uses the selected manifests, and cache reuse is bound to that selection.
+Automatic preparation currently requires a Linux x86_64 execution host with usable
+Docker or rootless Podman. Other desktops can use a connected compatible Linux
+host. Installing Docker locally is a separate prerequisite described below.
+
+Preparation covers the registered Rust, C, C++, JavaScript, TypeScript and Python
+profiles within their existing limits. Automatic dependency setup requires a Cargo
+lockfile for Rust, an ESM package with an npm v3 integrity lock for JavaScript or
+TypeScript, and exact versions with SHA-256 hashes in `requirements.lock` for Python
+wheels. Linked npm workspaces and unsupported dependency formats need an explicit
+adapter. Each invariant maps to protected cases in every required configuration.
+TypeScript `extends` and project references still require a separately prepared
 single-project compiler configuration; many Vite/Tauri defaults need this step.
 Runtime oracle tests exercise `/build/project` (TypeScript output is under
-`/build/project/dist`). Public API changes require protected tests in each
+`/build/project/dist`). Mixed roots do not imply support for every bundler, browser,
+Tauri packaging or IPC check. Public API changes require protected tests in each
 configuration and a separate design review. Unsafe, FFI, resource and concurrency
-risks require their dedicated evidence routes; incomplete routes block preparation.
+risks require dedicated evidence routes; incomplete routes block preparation.
 
-Review each exact requested approval before **Resume verified implementation**.
-**Recover interrupted implementation** restores interrupted work without resetting
-accounting; **Cancel implementation** stops it. Preparation-role drafts are advisory
-and must be transferred into reviewed setup decisions explicitly. Reopening the
-same unchanged plan exposes its saved **Open implementation …** entries.
+When preparation is ready, review the compact summary, requirements, checks, change
+scope and implementation limits, then choose **Implement plan**. The backend binds
+that decision to the exact saved plan, captured source, prepared inputs and provider
+prices. A changed plan, source, model or review requires fresh preparation. The
+trusted controller then owns implementation and bounded repair; a second ordinary
+agent loop does not edit the candidate alongside it. The completed preparation
+trials do not substitute for the implementation's final verification.
+
+Preparation model calls use ordinary chat accounting and are billed separately
+from the strict implementation limits shown in the review. Native trial checks use
+the preparation's durable check allowance, which carries into the promoted run;
+promotion does not reset that spending. **Stop preparation** cancels active work,
+**Continue preparation** resumes a still-current session, and **Prepare again**
+captures a new session when the earlier one is cancelled, stale or blocked. Normal
+chat retry/continuation also preserves the current preparation binding when valid.
+After implementation starts, **Recover interrupted implementation** and
+**Cancel implementation** operate on its durable run and accounting. Any additional
+required approval remains an explicit blocked decision.
+
+Project read restrictions apply to preparation context, implementation context and
+worker read/search tools. Restricted source remains in the immutable verification
+snapshot, while opaque diagnostics and graph details that might quote it are kept
+out of model feedback. Write restrictions protect source and staged targets.
 
 **Accepted — verified candidate** identifies a private candidate that passed the
 reviewed gate. **Review verified changes** opens its diff; **Export review bundle**
@@ -83,7 +138,7 @@ index. Applying a candidate requires the separate delivery review described belo
 
 Enable **Settings → Autopilot → Require verified delivery**. This also applies to
 hosts set to **Works on its own**. Before sending each task, review its prepared
-setup, execution host, model and explicit provider rates, then select **Start
+setup, execution host, model and prices saved in Model providers, then select **Start
 reviewed verified Autopilot task**. The option defaults off for existing settings.
 
 **Plan** generates the saved plan. **Prepare** checks the pinned local image and
@@ -370,8 +425,8 @@ do not apply a patch to the user's checkout, commit, merge or deploy.
 `4` for invalid input or policy, `5` for cancelled, and `1` for unexpected
 controller failure. Management commands return zero when their action completes;
 that is not an acceptance verdict. Errors include a machine-readable category.
-Existing IDE chat verification retains its current behavior; this is the opt-in
-strict workflow shared by the core and the new headless entry point.
+Existing ordinary chat verification retains its current behavior. The strict
+workflow is shared by the core and the headless entry point.
 
 Build the statically linked Rust sandbox tool with `bash scripts/build-harness-tool.sh`
 on x86_64 Linux (Rust and a C compiler with static libc are required). Then build
@@ -411,10 +466,11 @@ never replaced merely because their daemon is stopped or inaccessible.
 
 Readiness uses explicit local endpoints and checks for a running Linux container
 daemon. An installed executable alone is insufficient. This installs the local
-prerequisite only: the strict runner still executes on Linux, approved toolchain
-images and dependency assets still need preparation, and macOS/Windows desktops
-need a supported Linux execution host for the current strict harness. Cloud
-hosts retain their rootless Podman setup.
+prerequisite only: the strict runner still executes on Linux. Automatic plan
+preparation builds its trusted image and supported locked dependencies on a Linux
+x86_64 execution host; imported setups still need their own pinned assets.
+macOS/Windows desktops need a supported Linux execution host for the current strict
+harness. Cloud hosts retain their rootless Podman setup.
 
 ## IDE integration roadmap
 
@@ -424,6 +480,14 @@ described above. Editor architecture feedback reuses authenticated graph evidenc
 and approved rules without granting acceptance. The
 [integration plan](polyglot-ide-integration.md) records their acceptance criteria
 and implementation status.
+
+Automatic preparation negotiates the separate `POLYGLOT_PREPARATION`
+(`polyglot-preparation`) host capability for beginning, reading, cancelling and
+promoting a preparation. Ordinary chat continuations carrying a preparation
+identity require that capability too. Update an older host before using this flow;
+support for basic verification alone is insufficient. The local desktop IPC
+protocol is 22. The cloud wire protocol and harness document schemas remain v1;
+their version numbers are independent of the desktop IPC revision.
 
 An approved bug-fix or API-refactor plan with explicit behavioral acceptance
 criteria is the intended first implementation use case. Strict tasks use one

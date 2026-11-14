@@ -246,7 +246,8 @@ fn review_exports_bind_patch_source_history_approvals_and_file_hashes() {
         },
     );
     let context =
-        rovik_harness::context::ranked_sources(&c.ledger, &candidate, "quota", &[], None).unwrap();
+        rovik_harness::context::ranked_sources(&c.ledger, &candidate, "quota", &[], None, &[])
+            .unwrap();
     assert!(
         context
             .iter()

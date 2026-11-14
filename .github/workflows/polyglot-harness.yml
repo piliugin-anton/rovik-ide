@@ -6,6 +6,7 @@ on:
       - 'src-tauri/crates/rovik-harness/**'
       - 'src-tauri/crates/rovik-core/src/harness.rs'
       - 'src-tauri/crates/rovik-core/src/harness/**'
+      - 'src-tauri/crates/rovik-core/src/agent_run/verified_preparation*.rs'
       - 'src-tauri/crates/rovik-headless/src/bin/rovik-harness.rs'
       - 'src-tauri/crates/rovik-headless/Cargo.toml'
       - 'src-tauri/Cargo.toml'
@@ -23,6 +24,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  automatic-preparation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      ROVIK_REAL_PREPARATION: '1'
+      ROVIK_HARNESS_PREPARATION_NATIVE: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate locked verifier build inputs
+        run: node --test src-tauri/crates/rovik-harness/src/preparation/verify-lock.test.mjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: polyglot-preparation
+      - name: Build the bundled verifier and fetch locked dependencies without project hooks
+        working-directory: src-tauri
+        run: >-
+          cargo test --locked -p rovik-harness --features preparation --lib preparation::
+          -- --ignored --test-threads=1
+      - name: Prepare a new project and verify its private implementation after exact review
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-core --lib harness::ide::preparation::tests::native_automatic_preparation -- --ignored --test-threads=1
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 90

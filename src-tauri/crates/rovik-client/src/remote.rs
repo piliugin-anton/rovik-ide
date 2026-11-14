@@ -1100,6 +1100,13 @@ impl Remote {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
         let client = self.client(&host)?;
+        if agent_run::requires_preparation(&self.core, &request)
+            .await
+            .map_err(internal)?
+            && !self.serves(&host, features::POLYGLOT_PREPARATION)
+        {
+            return Err(Fail::new(FailCode::BadRequest, "This host cannot prepare verified plans; update the host before starting or continuing preparation."));
+        }
         agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
             .await
             .map_err(internal)?;

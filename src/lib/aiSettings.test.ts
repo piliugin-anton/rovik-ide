@@ -5,6 +5,7 @@ import {
   createAiSettingsHolder,
   loadAiSettings,
   mergeRemoteModels,
+  resolveProfile,
   saveAiSettings,
   saveKeepingSubagents,
   type PersistedAiSettings,
@@ -12,6 +13,7 @@ import {
 import { DEFAULT_PERMISSIONS } from './permissions';
 import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './subagentSettings';
 import type { McpServer } from './mcpServers';
+import type { Provider } from '../types';
 
 /* The backend's commands, answered here: none unless a test says so. */
 let backend: (cmd: string, args: any) => Promise<unknown> = async (cmd) => {
@@ -69,6 +71,43 @@ const edited = {
   subagents: DEFAULT_SUBAGENT_SETTINGS,
   mcpServers: [] as McpServer[],
 };
+
+test('saved model prices survive refresh and reload and resolve only when complete', async () => {
+  const rates = { input: 2_000_000, cachedInput: 0, output: 8_000_000 };
+  const provider: Provider = {
+    id: 'prices',
+    name: 'Priced provider',
+    baseUrl: 'https://provider.example/v1',
+    apiKey: '',
+    stream: true,
+    models: [
+      { id: 'priced', enabled: true, harnessRates: rates },
+      { id: 'unknown', enabled: true, harnessRates: { input: 0, output: 0 } },
+    ],
+  };
+  const refreshed = mergeRemoteModels(provider.models, [{ id: 'priced', context_length: 100_000 }]);
+  let stored = '';
+  backend = async (command, args) => {
+    if (command === 'save_ai_settings') stored = args.json;
+    if (command === 'load_ai_settings') return stored;
+  };
+  await saveAiSettings({
+    ...edited,
+    version: 2,
+    providers: [{ ...provider, models: refreshed.models }],
+    active: { providerId: provider.id, modelId: 'priced' },
+  });
+  const settings = await loadAiSettings();
+  const profile = resolveProfile(settings.providers, settings.active);
+  assert.deepEqual(profile?.harnessRates, rates);
+  assert.notEqual(profile?.harnessRates, settings.providers[0].models[0].harnessRates);
+  assert.equal(
+    resolveProfile(settings.providers, { providerId: provider.id, modelId: 'unknown' })
+      ?.harnessRates,
+    undefined,
+    'a missing cached price must not become zero'
+  );
+});
 const docs: McpServer = {
   id: 's1',
   name: 'docs',

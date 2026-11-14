@@ -10,10 +10,10 @@ use rovik_protocol::harness::{DraftRole, ImplementationProvider, ModelRates};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ProviderBinding {
-    profile_id: String,
-    model: String,
-    endpoint: String,
-    rates: ModelRates,
+    pub(super) profile_id: String,
+    pub(super) model: String,
+    pub(super) endpoint: String,
+    pub(super) rates: ModelRates,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ pub(super) struct PlanBinding {
     pub provider: ProviderBinding,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct SavedPlan {
     pub path: String,
@@ -275,7 +275,7 @@ impl IdeProject {
         provider: &ProviderBinding,
     ) -> Result<TaskSetup> {
         let mut setup = self.load_setup(&configuration.setup_id)?;
-        check(self.integration()?.snapshot(&self.ledger()?)?.digest()? == setup.base.digest()?, "The destination revision changed. Prepare a new reviewed setup for its current baseline.")?;
+        self.require_setup_baseline(&setup)?;
         check(
             setup.deadline_ms > runner::now_ms()?,
             "The prepared task deadline expired. Review a new execution budget.",
@@ -378,7 +378,7 @@ impl IdeProject {
             .authorize(&Principal::current()?, "operate")?;
         let state = controller.ledger.run(run_id)?.state;
         check(
-            matches!(state, State::Intake | State::Blocked),
+            matches!(state, State::Intake | State::Baseline | State::Blocked),
             "Only a reviewed intake or blocked implementation can resume.",
         )?;
         if role.is_some() {

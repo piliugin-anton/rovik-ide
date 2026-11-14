@@ -49,8 +49,11 @@ pub struct WorkspaceSetupInput {
     pub write_paths: Vec<String>,
     /// Additional paths which implementation must preserve.
     pub protected_paths: Vec<String>,
-    /// Every discovered build root needs an explicit resolved selection.
+    /// Every build root needs a resolved selection or an explicit scoped exclusion.
     pub profiles: Vec<WorkspaceProfileInput>,
+    /// Explicitly unverified build roots, frozen outside the implementation scope.
+    #[serde(default)]
+    pub excluded_build_roots: Vec<WorkspaceBuildExclusion>,
     /// Required behavior and cases for each configuration.
     pub requirements: Vec<WorkspaceRequirement>,
     /// Reviewed ownership and reuse decisions.
@@ -70,6 +73,98 @@ pub struct WorkspaceSetupInput {
     pub budgets: BTreeMap<String, u64>,
     /// Maximum run lifetime; registration never creates an unlimited deadline.
     pub duration_ms: u64,
+}
+
+/// A proposed build-root exclusion which remains visible in the human review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceBuildExclusion {
+    /// Exact manifest observed in the captured project.
+    pub manifest: String,
+    /// Why this immutable root is unrelated to the requested implementation.
+    pub rationale: String,
+}
+
+pub(super) fn scoped_inventory(
+    inventory: &onboarding::Inventory,
+    input: &WorkspaceSetupInput,
+) -> Result<(onboarding::Inventory, BTreeSet<String>)> {
+    let selected: BTreeSet<_> = input
+        .profiles
+        .iter()
+        .map(|profile| &profile.manifest)
+        .collect();
+    ensure(
+        selected.len() == input.profiles.len(),
+        "duplicate selected build manifest",
+    )?;
+    let selected_roots = selected
+        .iter()
+        .map(|manifest| {
+            inventory
+                .units
+                .iter()
+                .find(|unit| &unit.manifest == *manifest)
+                .map(|unit| unit.root.as_str())
+                .ok_or_else(|| Error::new(format!("selected build manifest is absent: {manifest}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure(
+        input.excluded_build_roots.len() <= 128,
+        "too many excluded build roots",
+    )?;
+    let mut excluded = BTreeSet::new();
+    let mut protected = BTreeSet::new();
+    for exclusion in &input.excluded_build_roots {
+        ensure(
+            !exclusion.rationale.trim().is_empty() && exclusion.rationale.len() <= 4096,
+            "each excluded build root needs a bounded review rationale",
+        )?;
+        ensure(
+            excluded.insert(exclusion.manifest.clone()) && !selected.contains(&exclusion.manifest),
+            "duplicate or selected build-root exclusion",
+        )?;
+        let unit = inventory
+            .units
+            .iter()
+            .find(|unit| unit.manifest == exclusion.manifest)
+            .ok_or_else(|| {
+                Error::new(format!(
+                    "excluded build manifest is absent: {}",
+                    exclusion.manifest
+                ))
+            })?;
+        ensure(
+            !unit.root.is_empty(),
+            "the repository-root build cannot be excluded",
+        )?;
+        ensure(
+            !selected_roots
+                .iter()
+                .any(|root| *root == unit.root || root.starts_with(&format!("{}/", unit.root))),
+            "an excluded build root cannot contain a selected build root",
+        )?;
+        let pattern = format!("{}/**", unit.root);
+        ensure(
+            !unit.root.contains(['*', '?', '[', ']', '{', '}']),
+            "excluded build roots cannot contain glob metacharacters",
+        )?;
+        rovik_harness::scope::validate_path(&unit.root)?;
+        rovik_harness::scope::validate_pattern(&pattern)?;
+        protected.insert(pattern);
+    }
+    let mut scoped = inventory.clone();
+    scoped
+        .units
+        .retain(|unit| !excluded.contains(&unit.manifest));
+    ensure(
+        scoped
+            .units
+            .iter()
+            .all(|unit| selected.contains(&unit.manifest)),
+        "an observed build root is unresolved; select it or propose an explicit scoped exclusion",
+    )?;
+    Ok((scoped, protected))
 }
 
 /// One explicitly configured build root and its independently protected tests.
@@ -191,6 +286,28 @@ pub fn build(
     baseline: &Snapshot,
     input: &WorkspaceSetupInput,
 ) -> Result<TaskSetup> {
+    build_with_assets(
+        project_root,
+        ledger,
+        repository_id,
+        baseline,
+        input,
+        &BTreeMap::new(),
+        None,
+    )
+}
+
+/// Build from independently staged acceptance assets and a concrete control snapshot.
+/// The assets remain outside candidate source and require the same exact approvals.
+pub(super) fn build_with_assets(
+    project_root: &Path,
+    ledger: &Ledger,
+    repository_id: &str,
+    baseline: &Snapshot,
+    input: &WorkspaceSetupInput,
+    staged_oracle: &BTreeMap<String, FileEntry>,
+    staged_control: Option<Snapshot>,
+) -> Result<TaskSetup> {
     baseline.validate(ledger, true)?;
     input.worker.validate()?;
     ensure(
@@ -230,6 +347,7 @@ pub fn build(
     )?;
     let dependency_digest = ledger.store_json("snapshot", &dependencies, now)?.digest;
     let inventory = onboarding::inspect(ledger, baseline)?;
+    let (inventory, excluded_paths) = scoped_inventory(&inventory, input)?;
     let mut selected = Vec::new();
     let mut configuration_keys = BTreeMap::new();
     for choice in &input.profiles {
@@ -241,6 +359,7 @@ pub fn build(
             !choice.id.contains('/'),
             "profile ID cannot contain a slash",
         )?;
+        ensure(!matches!(choice.language, Language::C | Language::Cpp) || !choice.protected_test_paths.iter().any(|path| staged_oracle.contains_key(path)), "C/C++ preparation currently requires existing protected tests; new CMake oracle files need an independently reviewed build configuration")?;
         let unit = inventory
             .units
             .iter()
@@ -282,6 +401,7 @@ pub fn build(
     }
     let profiles = onboarding::resolve(ledger, &inventory, &selected)?;
     let mut protected: BTreeSet<String> = input.protected_paths.iter().cloned().collect();
+    protected.extend(excluded_paths);
     // Build scripts and manifests can change which tests execute. The initial
     // wizard keeps them fixed; a separately reviewed setup can admit build edits.
     protected.extend(
@@ -305,15 +425,20 @@ pub fn build(
             .chain(choice.typescript_project.iter())
         {
             rovik_harness::scope::validate_path(path)?;
+            ensure(choice.language!=Language::Rust || !staged_oracle.contains_key(path) || !baseline.files.contains_key(path),
+                "staged Cargo integration tests must be new files; existing source and custom library targets cannot be overwritten")?;
             ensure(
                 !path.starts_with("requests/"),
                 "protected tests cannot occupy reserved request paths",
             )?;
-            let entry = baseline.files.get(path).ok_or_else(|| {
-                Error::new(format!(
-                    "protected test/configuration must exist in the committed baseline: {path}"
+            let entry = staged_oracle
+                .get(path)
+                .or_else(|| baseline.files.get(path))
+                .ok_or_else(|| {
+                    Error::new(format!(
+                    "protected test/configuration must exist in the source or staged oracle: {path}"
                 ))
-            })?;
+                })?;
             protected.insert(path.clone());
             oracle.files.insert(path.clone(), entry.clone());
         }
@@ -324,7 +449,9 @@ pub fn build(
                 .typescript_project
                 .as_deref()
                 .ok_or_else(|| Error::new("TypeScript needs a selected compiler project".into()))?;
-            let bytes = rebase_typescript_project(ledger, baseline, profile, path)?;
+            let mut compiler_source = baseline.clone();
+            compiler_source.files.extend(staged_oracle.clone());
+            let bytes = rebase_typescript_project(ledger, &compiler_source, profile, path)?;
             let content = ledger.store("source", "application/json", &bytes, now)?;
             oracle.files.insert(
                 path.into(),
@@ -412,7 +539,7 @@ pub fn build(
                 &Digest::of(format!("{}/{}", profile.id, config.id).as_bytes()).hex()[..24]
             );
             let (request, mut command) =
-                check_request(profile, choice, config, &request_id, &cases)?;
+                check_request(profile, choice, config, &request_id, &cases, staged_oracle)?;
             command.id = format!(
                 "workspace-tests-{}",
                 &Digest::of(profile.id.as_bytes()).hex()[..16]
@@ -483,7 +610,8 @@ pub fn build(
             },
         )]),
     };
-    let policy = EffectivePolicy {
+    let mut policy = EffectivePolicy {
+        deny_read: vec![],
         commands: registry.commands.iter().map(|c| c.id.clone()).collect(),
         obligations: BTreeSet::new(),
         limits: input.budgets.clone(),
@@ -493,6 +621,13 @@ pub fn build(
         )]),
         scopes: vec![scope],
     };
+    if !input.excluded_build_roots.is_empty() {
+        policy.facts.insert(
+            "ide.excluded_build_roots".into(),
+            serde_json::to_string(&input.excluded_build_roots)
+                .map_err(|error| Error::new(error.to_string()))?,
+        );
+    }
     let run_id = format!("prepared-{}", uuid::Uuid::new_v4());
     let plan = PlanningInput {
         run_id: run_id.clone(),
@@ -519,8 +654,10 @@ pub fn build(
         }),
         "negative control cases must belong to one configured behavioral check",
     )?;
-    let negative_control =
-        revision_snapshot(project_root, ledger, &input.negative_control_revision)?;
+    let negative_control = match staged_control {
+        Some(control) => control,
+        None => revision_snapshot(project_root, ledger, &input.negative_control_revision)?,
+    };
     for choice in &input.profiles {
         if matches!(
             choice.language,
@@ -705,6 +842,7 @@ fn check_request(
     config: &Configuration,
     request_id: &str,
     cases: &BTreeSet<String>,
+    staged_oracle: &BTreeMap<String, FileEntry>,
 ) -> Result<(Request, rovik_harness::registry::CommandDefinition)> {
     let requests = BTreeSet::from([request_id.to_string()]);
     let (operation, payload, command) = match profile.language {
@@ -744,6 +882,16 @@ fn check_request(
                 NativeCheck::Ctest
             };
             let input = NativeCheckInput {
+                oracle_test_files: if profile.language == Language::Rust {
+                    choice
+                        .protected_test_paths
+                        .iter()
+                        .filter(|path| staged_oracle.contains_key(*path))
+                        .cloned()
+                        .collect()
+                } else {
+                    vec![]
+                },
                 native: NativeInput {
                     snapshot_handle: "snapshot:active".into(),
                     profile: profile.clone(),
@@ -1141,6 +1289,237 @@ mod tests {
             "budgets":{"model_calls":16, "tokens":262144, "cost_microunits":1000000, "checks":128}, "durationMs":3600000
         })).unwrap();
         (directory, ledger, baseline, input)
+    }
+
+    #[test]
+    fn unrelated_build_roots_require_reviewed_exclusions_and_remain_immutable() {
+        let (directory, ledger, mut baseline, mut input) = fixture();
+        for (path, bytes) in [
+            (
+                "examples/toy/Cargo.toml",
+                "[package]\nname='toy'\nversion='0.1.0'\n",
+            ),
+            ("examples/toy/src/lib.rs", "pub fn unrelated() {}\n"),
+        ] {
+            baseline.files.insert(
+                path.into(),
+                FileEntry {
+                    mode: 0o100644,
+                    content: ledger
+                        .store(
+                            "source",
+                            "text/plain",
+                            bytes.as_bytes(),
+                            runner::now_ms().unwrap(),
+                        )
+                        .unwrap(),
+                },
+            );
+        }
+        let build = |input: &WorkspaceSetupInput| {
+            build_with_assets(
+                &directory.path().join("project"),
+                &ledger,
+                "project",
+                &baseline,
+                input,
+                &BTreeMap::new(),
+                Some(baseline.clone()),
+            )
+        };
+        assert!(build(&input).unwrap_err().message.contains("unresolved"));
+        input.excluded_build_roots.push(WorkspaceBuildExclusion {
+            manifest: "examples/toy/Cargo.toml".into(),
+            rationale: "An unrelated example fixture outside the requested implementation.".into(),
+        });
+        input.write_paths = vec!["**".into()];
+        let setup = build(&input).unwrap();
+        assert_eq!(
+            setup.base, baseline,
+            "exclusion must retain the complete source evidence"
+        );
+        assert_eq!(setup.negative_control, baseline);
+        for path in [
+            "examples/toy/src/lib.rs",
+            "examples/toy/new.rs",
+            "examples/toy/Cargo.toml",
+        ] {
+            assert!(setup.contract.scope.check(path).is_err());
+            assert!(setup.policy.check_write(path).is_err());
+        }
+        assert!(setup.policy.facts["ide.excluded_build_roots"].contains("unrelated example"));
+        assert!(setup.policy.check_write("backend/src/lib.rs").is_ok());
+    }
+
+    #[test]
+    fn exclusions_cannot_hide_repository_roots_selected_ancestors_or_unknown_manifests() {
+        let (_directory, ledger, mut baseline, mut input) = fixture();
+        let inventory = onboarding::inspect(&ledger, &baseline).unwrap();
+        input
+            .profiles
+            .retain(|profile| profile.manifest != "package.json");
+        input.excluded_build_roots = vec![WorkspaceBuildExclusion {
+            manifest: "package.json".into(),
+            rationale: "Not relevant".into(),
+        }];
+        assert!(scoped_inventory(&inventory, &input)
+            .unwrap_err()
+            .message
+            .contains("repository-root"));
+        input.excluded_build_roots[0].manifest = "unknown/Cargo.toml".into();
+        assert!(scoped_inventory(&inventory, &input)
+            .unwrap_err()
+            .message
+            .contains("absent"));
+        let duplicate = input.profiles[0].clone();
+        input.profiles.push(duplicate);
+        assert!(scoped_inventory(&inventory, &input)
+            .unwrap_err()
+            .message
+            .contains("duplicate selected"));
+        input.profiles.pop();
+        baseline.files.insert(
+            "backend/nested/Cargo.toml".into(),
+            FileEntry {
+                mode: 0o100644,
+                content: ledger
+                    .store(
+                        "source",
+                        "text/plain",
+                        b"[package]\nname='nested'\nversion='0.1.0'\n",
+                        runner::now_ms().unwrap(),
+                    )
+                    .unwrap(),
+            },
+        );
+        input.profiles[0].manifest = "backend/nested/Cargo.toml".into();
+        input.excluded_build_roots[0].manifest = "backend/Cargo.toml".into();
+        let inventory = onboarding::inspect(&ledger, &baseline).unwrap();
+        assert!(scoped_inventory(&inventory, &input)
+            .unwrap_err()
+            .message
+            .contains("cannot contain"));
+        let (_directory, ledger, mut baseline, mut input) = fixture();
+        baseline.files.insert(
+            "examples/[toy]/Cargo.toml".into(),
+            FileEntry {
+                mode: 0o100644,
+                content: ledger
+                    .store(
+                        "source",
+                        "text/plain",
+                        b"[package]\nname='toy'\nversion='0.1.0'\n",
+                        runner::now_ms().unwrap(),
+                    )
+                    .unwrap(),
+            },
+        );
+        input.excluded_build_roots.push(WorkspaceBuildExclusion {
+            manifest: "examples/[toy]/Cargo.toml".into(),
+            rationale: "An unrelated fixture".into(),
+        });
+        let inventory = onboarding::inspect(&ledger, &baseline).unwrap();
+        assert!(scoped_inventory(&inventory, &input)
+            .unwrap_err()
+            .message
+            .contains("glob metacharacters"));
+    }
+
+    #[test]
+    fn automatic_preparation_binds_staged_oracle_and_real_control_without_a_git_revision() {
+        let (directory, ledger, baseline, mut input) = fixture();
+        input.negative_control_revision = "not-a-revision".into();
+        input.profiles[0]
+            .protected_test_paths
+            .push("backend/tests/acceptance.rs".into());
+        let case = "example@0.1.0/test/acceptance::boundary".to_string();
+        input.requirements[0]
+            .cases_by_configuration
+            .get_mut("backend/tests")
+            .unwrap()
+            .push(case.clone());
+        input.baseline_failures[0].case_ids.insert(case);
+
+        let content = ledger.store("source", "text/plain", b"#[test] fn boundary() { assert!(example::classify(0)); }\n// independently prepared acceptance\n", runner::now_ms().unwrap()).unwrap();
+        let oracle = BTreeMap::from([(
+            "backend/tests/acceptance.rs".into(),
+            FileEntry {
+                mode: 0o100644,
+                content: content.clone(),
+            },
+        )]);
+        let mut control = baseline.clone();
+        control.files.get_mut("backend/src/lib.rs").unwrap().content = ledger
+            .store(
+                "source",
+                "text/plain",
+                b"pub fn classify(value: i32) -> bool { value > 10 }\n",
+                runner::now_ms().unwrap(),
+            )
+            .unwrap();
+        let setup = build_with_assets(
+            &directory.path().join("project"),
+            &ledger,
+            "project",
+            &baseline,
+            &input,
+            &oracle,
+            Some(control.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            setup.oracle.files["backend/tests/acceptance.rs"].content,
+            content
+        );
+        assert_eq!(setup.base, baseline);
+        assert_eq!(setup.negative_control, control);
+        let check = setup
+            .plan
+            .required_final()
+            .find(|check| {
+                check
+                    .expected_case_ids
+                    .iter()
+                    .any(|id| id.contains("example@"))
+            })
+            .unwrap();
+        let request_id = &check.validated_parameters["request_id"];
+        let request: Request = wire::decode(
+            &ledger
+                .read(
+                    &setup.oracle.files[&format!("requests/{request_id}.json")]
+                        .content
+                        .digest,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            rovik_harness::native_checks::input(&request)
+                .unwrap()
+                .oracle_test_files,
+            ["backend/tests/acceptance.rs"]
+        );
+        input.profiles[0].protected_test_paths = vec!["backend/src/lib.rs".into()];
+        let bad_oracle = BTreeMap::from([(
+            "backend/src/lib.rs".into(),
+            FileEntry {
+                mode: 0o100644,
+                content,
+            },
+        )]);
+        assert!(build_with_assets(
+            &directory.path().join("project"),
+            &ledger,
+            "project",
+            &baseline,
+            &input,
+            &bad_oracle,
+            Some(control)
+        )
+        .unwrap_err()
+        .message
+        .contains("integration tests"));
     }
 
     #[test]

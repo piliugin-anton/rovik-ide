@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { DialogSummary } from '../types';
 import type { HarnessPlanOperation, HarnessRates } from './polyglotPlan';
+import type { PlanPreparationOperation } from './planPreparation';
 
 /** A known chat on the currently selected project's execution host. */
 export interface HarnessChatContext {
@@ -187,7 +188,7 @@ export function onHarnessInputsChanged(listener: (target: HarnessTarget) => void
 /** The same RPC reaches the local backend or the selected chat's cloud host. */
 export function harnessRequest<T>(
   target: HarnessTarget,
-  request: HarnessOperation | HarnessPlanOperation
+  request: HarnessOperation | HarnessPlanOperation | PlanPreparationOperation
 ): Promise<T> {
   if (['configure', 'importSetup', 'prepareWorkspace'].includes(request.action))
     for (const listener of inputListeners) listener(target);

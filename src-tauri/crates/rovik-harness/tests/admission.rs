@@ -44,6 +44,7 @@ fn complete_tree_admission_checks_deletions_renames_modes_and_build_inputs() {
             allow_write: vec!["**".into()],
             protected: vec!["acceptance/**".into()],
         }],
+        deny_read: vec![],
     };
     let rules = AdmissionRules::default();
     assert!(snapshot::admit(&ledger, &base, &base, &policy, &rules)

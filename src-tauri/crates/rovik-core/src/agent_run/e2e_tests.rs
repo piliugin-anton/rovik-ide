@@ -55,6 +55,10 @@ mod mcp_tests;
 mod memory_tests;
 
 #[cfg(test)]
+#[path = "verified_preparation_e2e_tests.rs"]
+mod verified_preparation_tests;
+
+#[cfg(test)]
 #[path = "plan_implementation_e2e_tests.rs"]
 mod plan_implementation_tests;
 

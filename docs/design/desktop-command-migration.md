@@ -990,13 +990,18 @@ and recovered the draft after clean retirement and replacement. The WSL
 acceptance harness is compiled and its PowerShell syntax is checked in CI; its
 real WSL2 execution and mount checks remain unrun without a compatible host.
 
-## Local IPC protocol 21
+## Local IPC protocol 22
 
-Docker installation and polyglot IDE actions extend the desktop request wire
-format. Local protocol 21 prevents a rebuilt app from reusing a protocol-20
-backend that cannot decode those requests, even when both binaries have the same
-application version. An idle older backend retires through the existing guarded
+Automatic plan preparation extends the desktop requests added for Docker
+installation and polyglot IDE actions. Local protocol 22 prevents a rebuilt app
+from reusing an older backend that cannot decode those requests, even when both
+binaries have the same application version. An idle older backend retires through the existing guarded
 upgrade flow; a busy backend keeps its work and reports that the upgrade must wait.
 Reconnecting cannot silently attach the new app to that incompatible owner.
 The polyglot harness artifact schemas remain protocol v1; their version is
 independent of this local IPC boundary.
+
+Connected hosts advertise `polyglot-preparation` separately. The desktop checks
+that capability before forwarding preparation requests, model credentials or a
+continued preparation chat to the host. Update an older host before using this
+workflow; ordinary chat support does not imply support for private preparation.

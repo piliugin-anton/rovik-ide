@@ -167,7 +167,7 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   is never replayed automatically. Changed inputs invalidate reusable results;
   successful checks are reused only when reuse is enabled and their inputs
   still match. Final integrity and acceptance checks still run.
-- **Strict polyglot verification (opt-in, Linux).** The `rovik-harness` headless
+- **Strict polyglot verification (Linux).** The `rovik-harness` headless
   command binds proposed edits to approved contracts, protected acceptance
   tests, immutable snapshots and sandbox receipts. C, C++, Rust, Node.js JavaScript,
   strict TypeScript and Python/pytest fixtures exercise the workflow, with
@@ -188,14 +188,25 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   and whether a result is stale. Verification preserves the checkout and index
   and makes no model calls. See the
   [IDE integration plan](docs/design/polyglot-ide-integration.md).
-- **Verified plan implementation.** Select **Require verified result** when
-  implementing a saved plan. Guided setup covers Rust, C, C++, JavaScript,
-  TypeScript and Python with explicit protected tests and execution inputs.
-  Review exact approvals, provider prices and the resulting private candidate;
-  cancellation and recovery preserve the same run and budget. This path needs a
-  supported Linux execution host and an OpenAI-compatible Chat Completions model.
+- **Verified plan implementation.** **Require verified result** is selected by
+  default on **Implement this plan**. The ordinary chat agent prepares checks in
+  a private source copy, reports progress and asks about missing requirements in
+  the conversation. Review one compact summary, then choose **Implement plan**.
+  Protected tests and a real failing control are staged outside your checkout;
+  native preparation trials must succeed before the review becomes ready. The
+  trusted backend prepares its verifier image and supported locked dependencies
+  on first use. Unrelated example or fixture build roots can be explicitly
+  excluded in the proposal; the review lists the reason and freezes those roots
+  against implementation edits. Exclusions retain the full source snapshot and
+  dependency graph. Automatic preparation currently needs Linux x86_64 with working
+  Docker or rootless Podman, locally or on a connected host, and an
+  OpenAI-compatible Chat Completions model. Save that model's verification prices
+  once in **Model providers → Verification pricing**. Preparation uses ordinary
+  chat billing; the review shows separate implementation limits. Stop, continue
+  and retry actions remain in the conversation. Review the verified candidate's
+  diff separately before applying it. See the [workflow and language limits](docs/design/polyglot-harness.md#verified-plan-implementation).
 - **Verified Autopilot delivery.** Enable **Require verified delivery** in
-  Autopilot settings and review the task's prepared setup and provider prices.
+  Autopilot settings and review the task's prepared setup and saved model prices.
   The controller owns implementation and repairs; restart, budget and approval
   decisions stay with the task. Applying accepted changes needs an exact delivery
   approval and a current destination. Cloud tasks can apply and keep results on
@@ -1793,12 +1804,17 @@ never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 18 provides private client event connections alongside
+use the adapter. Local protocol 22 provides private client event connections alongside
 explicit desktop requests. VFS subscriptions now use this transport in both
 embedded and IPC modes. Each client owns its subscriptions; disconnecting it
 cleans up only its resources. Bounded queues fail explicitly if a consumer falls
 behind, and native callback loss cancels its producer. See the
 [desktop backend migration](docs/design/desktop-command-migration.md).
+
+Automatic verified-plan preparation requires the host's `polyglot-preparation`
+capability. Its desktop IPC revision is independent of the cloud wire protocol and
+harness document schemas, which remain v1. Update older hosts before using the new
+preparation workflow.
 
 Chat data and drafts, attachments, CLM tools, memory, AI/project/network settings,
 host operations, and non-browser MCP operations now run behind that boundary.

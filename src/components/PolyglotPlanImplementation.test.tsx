@@ -6,7 +6,7 @@ import { createSignal } from 'solid-js';
 import PolyglotPlanImplementation from './PolyglotPlanImplementation';
 import {
   implementationRun,
-  planInspection,
+  planPreparation,
   planProfile,
   savedHarnessPlan,
 } from '../test/polyglotPlanFixtures';
@@ -35,28 +35,10 @@ function button(root: HTMLElement, label: string) {
   assert.ok(value, label);
   return value;
 }
-function field(root: HTMLElement, label: string, value: string) {
-  const node = root.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
-  assert.ok(node, label);
-  node.value = value;
-  node.dispatchEvent(new Event('input', { bubbles: true }));
-}
-function reviewed(root: HTMLElement) {
-  const label = [...root.querySelectorAll('label')].find((entry) =>
-    entry.textContent?.includes('these exact saved plan bytes')
-  )!;
-  const node = label.querySelector<HTMLInputElement>('input')!;
-  node.checked = true;
-  node.dispatchEvent(new Event('change', { bubbles: true }));
-}
 function reset() {
   calls = [];
   respond = (request) =>
-    request.action === 'inspectPlan'
-      ? savedHarnessPlan
-      : request.action === 'inspect'
-        ? planInspection()
-        : implementationRun();
+    request.action === 'beginPlanPreparation' ? planPreparation() : implementationRun();
 }
 async function page(unsavedFiles: readonly string[] | undefined = []) {
   reset();
@@ -79,71 +61,51 @@ async function page(unsavedFiles: readonly string[] | undefined = []) {
   await flush();
   return root;
 }
-function ready(root: HTMLElement) {
-  for (const name of ['Input rate', 'Cached input rate', 'Output rate']) field(root, name, '0');
-  reviewed(root);
-}
-
-test('review controls remain outside the scrollable evidence before and during implementation', async () => {
+test('automatic preparation keeps its review controls outside the scrollable evidence', async () => {
   const root = await page();
-  const body = root.querySelector<HTMLElement>('.polyglot-review-body')!;
-  const footer = root.querySelector('.polyglot-review-actions')!;
-  assert.ok(body.contains(root.querySelector('pre')), 'the exact plan is in the evidence region');
-  assert.equal(body.tabIndex, 0, 'the evidence can receive keyboard scrolling');
+  const body = root.querySelector<HTMLElement>('.plan-preparation-body')!;
+  const footer = root.querySelector('.plan-preparation-actions')!;
+  assert.equal(body.tabIndex, 0);
   assert.equal(body.getAttribute('role'), 'region');
-  assert.ok(footer.contains(button(root, 'Start verified implementation')));
-  assert.ok(footer.contains(button(root, 'Close verified implementation')));
-  assert.equal(body.contains(footer), false, 'scrolling long evidence cannot hide the controls');
-
-  respond = (request) =>
-    request.action === 'inspectPlan'
-      ? savedHarnessPlan
-      : request.action === 'inspect'
-        ? planInspection()
-        : implementationRun('running');
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  assert.ok(footer.contains(button(root, 'Implement plan')));
+  assert.equal(body.contains(footer), false);
+  assert.equal(root.querySelectorAll('input, textarea, select').length, 0);
+  respond = () => implementationRun('running');
+  button(root, 'Implement plan').click();
   await flush();
-  assert.ok(footer.contains(button(root, 'Cancel implementation')));
+  const resultFooter = root.querySelector('.polyglot-review-actions')!;
+  assert.ok(resultFooter.contains(button(root, 'Cancel implementation')));
   assert.equal(button(root, 'Close verified implementation').disabled, true);
 });
 
-test('plan review starts only the trusted controller with saved bytes and explicit rates', async () => {
+test('plan implementation consumes the exact preparation review and saved provider prices', async () => {
   const root = await page();
   assert.match(root.textContent!, /Build host/);
   assert.match(root.textContent!, /Preserve quota on failure/);
   assert.match(root.textContent!, /remaining >= 0/);
-  assert.equal(button(root, 'Start verified implementation').disabled, true);
-  assert.deepEqual(calls.map((entry) => entry.args.request.action).sort(), [
-    'inspect',
-    'inspectPlan',
-  ]);
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  assert.deepEqual(
+    calls.map((entry) => entry.args.request.action),
+    ['beginPlanPreparation']
+  );
+  button(root, 'Implement plan').click();
   await flush();
-  const request = calls.find((entry) => entry.args.request.action === 'implementPlan')!;
+  const request = calls.find(
+    (entry) => entry.args.request.action === 'startPreparedImplementation'
+  )!;
   assert.equal(request.command, 'polyglot_harness');
   assert.equal(request.args.dialogId, 'cloud');
-  assert.equal(request.args.request.expectedPlanDigest, savedHarnessPlan.digest);
-  assert.equal(request.args.request.expectedSnapshotDigest, 'sha256:source');
-  assert.equal(request.args.request.planCriteriaReviewed, true);
+  assert.equal(request.args.request.expectedReviewDigest, 'sha256:review');
+  assert.equal(request.args.request.preparationId, 'preparation-1');
+  assert.deepEqual(request.args.request.provider.rates, planProfile.harnessRates);
   assert.match(root.textContent!, /Implementation blocked/);
-  assert.equal(
-    calls.some((entry) => entry.command === 'chat_send'),
-    false
-  );
   assert.doesNotMatch(root.textContent!, /ephemeral-secret/);
 });
 
-test('unsaved editor inputs block verified implementation even after plan review', async () => {
+test('unsaved editor inputs block automatic preparation before any model or controller request', async () => {
   const root = await page(['src/unsaved.ts']);
-  ready(root);
-  assert.equal(button(root, 'Start verified implementation').disabled, true);
+  assert.equal(button(root, 'Prepare plan').disabled, true);
   assert.match(root.textContent!, /Save or undo/);
-  assert.equal(
-    calls.some((entry) => entry.args.request.action === 'implementPlan'),
-    false
-  );
+  assert.equal(calls.length, 0);
 });
 
 test('implementation approval requires inspecting actual subject and resumes with provider reentry', async () => {
@@ -173,8 +135,7 @@ test('implementation approval requires inspecting actual subject and resumes wit
     },
   };
   respond = () => ({ ...implementationRun(), pendingApprovals: [approval] });
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  button(root, 'Implement plan').click();
   await flush();
   assert.equal(
     calls.some((entry) => entry.args.request.action === 'approve'),
@@ -201,8 +162,7 @@ test('implementation approval requires inspecting actual subject and resumes wit
 test('a rejected freshness read stops claiming the current implementation is verified', async () => {
   const root = await page();
   respond = () => implementationRun('verified');
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  button(root, 'Implement plan').click();
   await flush();
   assert.match(root.textContent!, /Accepted — verified candidate/);
   respond = () => {
@@ -212,70 +172,6 @@ test('a rejected freshness read stops claiming the current implementation is ver
   await flush();
   assert.doesNotMatch(root.textContent!, /Accepted — verified candidate/);
   assert.match(root.textContent!, /Implementation stale/);
-});
-
-test('preparation role drafts are labelled advisory and never grant approvals', async () => {
-  const root = await page();
-  ready(root);
-  button(root, 'Start verified implementation').click();
-  await flush();
-  respond = () => ({
-    ...implementationRun(),
-    drafts: [
-      {
-        role: 'domain_analyst',
-        draft: { intent: 'Preserve quota', unresolved_questions: ['Who owns retries?'] },
-        advisory: true,
-        requiresReview: true,
-      },
-    ],
-  });
-  button(root, 'Draft domain preparation').click();
-  await flush();
-  assert.match(root.textContent!, /domain_analyst — advisory draft; review required/);
-  assert.match(root.textContent!, /Who owns retries/);
-  assert.equal(
-    calls.some((entry) => entry.args.request.action === 'approve'),
-    false
-  );
-  assert.doesNotMatch(root.textContent!, /Accepted — verified candidate/);
-});
-
-test('late plan reads from a previous execution context never replace the selected saved plan', async () => {
-  reset();
-  let finishOld: ((value: unknown) => void) | undefined;
-  respond = (request) =>
-    request.action === 'inspectPlan'
-      ? request.planPath === 'old.md'
-        ? new Promise((resolve) => {
-            finishOld = resolve;
-          })
-        : { ...savedHarnessPlan, content: '# New host plan', path: 'new.md' }
-      : planInspection();
-  const [path, setPath] = createSignal('old.md');
-  const root = container();
-  cleanups.push(
-    render(
-      () => (
-        <PolyglotPlanImplementation
-          target={{ root: '/project', dialogId: path() }}
-          planPath={path()}
-          profile={planProfile}
-          unsavedFiles={[]}
-          executionLabel="Selected host"
-          onClose={() => {}}
-        />
-      ),
-      root
-    )
-  );
-  await flush();
-  setPath('new.md');
-  await flush();
-  finishOld!({ ...savedHarnessPlan, content: '# Old host plan' });
-  await flush();
-  assert.match(root.textContent!, /New host plan/);
-  assert.doesNotMatch(root.textContent!, /Old host plan/);
 });
 
 test('a late implementation poll cannot overwrite a newer cancellation', async () => {
@@ -293,8 +189,7 @@ test('a late implementation poll cannot overwrite a newer cancellation', async (
   });
   const root = await page();
   respond = () => implementationRun('running');
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  button(root, 'Implement plan').click();
   await flush();
   assert.ok(poll);
   let finishStatus: ((value: unknown) => void) | undefined;
@@ -312,30 +207,6 @@ test('a late implementation poll cannot overwrite a newer cancellation', async (
   await flush();
   assert.match(root.textContent!, /Implementation cancelled/);
   assert.doesNotMatch(root.textContent!, /Implementation running/);
-});
-
-test('changing selected input files invalidates criteria review before inspection finishes', async () => {
-  const root = await page();
-  ready(root);
-  assert.equal(button(root, 'Start verified implementation').disabled, false);
-  let finish: ((value: unknown) => void) | undefined;
-  respond = (request) =>
-    request.action === 'inspect'
-      ? new Promise((resolve) => {
-          finish = resolve;
-        })
-      : savedHarnessPlan;
-  const file = [...root.querySelectorAll('label')]
-    .find((entry) => entry.textContent?.includes('src/new.ts'))!
-    .querySelector<HTMLInputElement>('input')!;
-  file.checked = true;
-  file.dispatchEvent(new Event('change', { bubbles: true }));
-  assert.equal(button(root, 'Start verified implementation').disabled, true);
-  finish!({ ...planInspection(), snapshotDigest: 'sha256:with-new-file' });
-  await flush();
-  assert.equal(button(root, 'Start verified implementation').disabled, true);
-  reviewed(root);
-  assert.equal(button(root, 'Start verified implementation').disabled, false);
 });
 
 test('changing project context preserves historical evidence but blocks actions and current verified claims', async () => {
@@ -360,8 +231,7 @@ test('changing project context preserves historical evidence but blocks actions 
   );
   await flush();
   respond = () => implementationRun('verified');
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  button(root, 'Implement plan').click();
   await flush();
   assert.match(root.textContent!, /Accepted — verified candidate/);
   setProblem('The selected project changed. Return to the original project.');
@@ -400,8 +270,7 @@ test('a start response arriving after the chat changes owners cannot claim an ac
     new Promise((resolve) => {
       finish = resolve;
     });
-  ready(root);
-  button(root, 'Start verified implementation').click();
+  button(root, 'Implement plan').click();
   setProblem('The chat execution host changed. Reopen verified implementation.');
   await flush();
   finish!(implementationRun('verified'));
@@ -443,8 +312,8 @@ test('reopening a durable strict run uses its current bound credentials and neve
     ['status']
   );
   assert.equal(calls[0].args.request.runId, 'durable-run');
-  assert.equal(root.querySelector<HTMLInputElement>('[aria-label="Input rate"]')!.value, '3');
-  assert.equal(root.querySelector<HTMLInputElement>('[aria-label="Input rate"]')!.disabled, true);
+  assert.equal(root.querySelector('[aria-label="Input rate"]'), null);
+  assert.match(root.textContent!, /Bound provider identity/);
   setCredential('newest-secret');
   button(root, 'Resume verified implementation').click();
   await flush();

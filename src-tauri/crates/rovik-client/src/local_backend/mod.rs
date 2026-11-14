@@ -35,7 +35,7 @@ pub use platform::{Lease, Stream};
 
 /// Version of local desktop requests and readiness, independent of remote RPC
 /// and the polyglot harness's v1 artifact schemas.
-pub const PROTOCOL: u32 = 21;
+pub const PROTOCOL: u32 = 22;
 #[cfg(any(unix, windows))]
 const MAX_HANDSHAKE: usize = 4096;
 

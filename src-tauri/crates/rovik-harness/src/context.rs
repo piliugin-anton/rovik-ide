@@ -56,7 +56,9 @@ pub fn ranked_sources(
     query: &str,
     preferred: &[String],
     scope: Option<&crate::scope::Scope>,
+    deny_read: &[String],
 ) -> Result<Vec<ContextItem>> {
+    crate::policy::validate_read_patterns(deny_read)?;
     let revision = snapshot.digest()?;
     let terms: std::collections::BTreeSet<_> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -66,6 +68,9 @@ pub fn ranked_sources(
         .collect();
     let mut ranked = Vec::new();
     for (path, file) in &snapshot.files {
+        if !crate::policy::readable(deny_read, path) {
+            continue;
+        }
         // Assets stay in the verified snapshot, but cannot fit a model message.
         if file.content.byte_count > crate::wire::MAX_JSON_BYTES as u64
             || ledger.is_binary(&file.content.digest)?
@@ -108,6 +113,27 @@ pub fn ranked_sources(
     }
     ranked.sort_by(|(a, x), (b, y)| b.cmp(a).then_with(|| x.item_id.cmp(&y.item_id)));
     Ok(ranked.into_iter().map(|(_, item)| item).collect())
+}
+
+/// Native output may quote restricted source or values derived from it. Keep only
+/// trusted check identities and outcomes when the project excludes source reads;
+/// the full immutable evidence still determines verification and remains in the ledger.
+pub(crate) fn check_feedback(
+    policy: &crate::policy::EffectivePolicy,
+    result: &crate::evidence::CheckResult,
+) -> Result<serde_json::Value> {
+    if policy.deny_read.is_empty() {
+        return serde_json::to_value(result).map_err(|error| Error::new(error.to_string()));
+    }
+    Ok(serde_json::json!({
+        "check_id": result.check_id,
+        "configuration_digest": result.configuration_digest,
+        "status": result.status,
+        "failure_category": result.failure_category,
+        "exit_code": result.exit_code,
+        "executed_test_count": result.executed_test_count,
+        "details": "Native output is withheld because it may contain source excluded by project read permissions. Full evidence remains available to verification."
+    }))
 }
 
 /// Resolve every item from the trusted artifact store, retaining exact mandatory text.
@@ -156,3 +182,7 @@ pub fn build(
     )?;
     Ok(bundle)
 }
+
+#[cfg(test)]
+#[path = "context_read_tests.rs"]
+mod read_tests;

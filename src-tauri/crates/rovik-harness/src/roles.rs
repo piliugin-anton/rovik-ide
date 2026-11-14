@@ -287,6 +287,15 @@ pub fn generate(
     )?;
     input.limits.validate()?;
     input.snapshot.validate(ledger, true)?;
+    let policy = input
+        .artifacts
+        .get("policy")
+        .map(|digest| wire::decode::<crate::policy::EffectivePolicy>(&ledger.read(digest)?))
+        .transpose()?;
+    let deny_read = policy
+        .as_ref()
+        .map_or(&[][..], |policy| policy.deny_read.as_slice());
+    crate::policy::validate_read_patterns(deny_read)?;
     let (active_cancel, _monitor) = crate::controller::ExecutionMonitor::start(
         ledger.root(),
         input.run_id,
@@ -341,6 +350,7 @@ pub fn generate(
         &query,
         &[],
         None,
+        deny_read,
     )?);
     let context = context::build(
         ledger,

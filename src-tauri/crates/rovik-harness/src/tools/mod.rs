@@ -1,11 +1,12 @@
 //! Sandbox-side native adapters. These binaries cannot grant controller authority.
 mod consumer;
+pub(crate) mod dependencies;
 mod evaluation;
 mod imports;
 mod interop;
 mod native;
 mod native_checks;
-mod runtime;
+pub(crate) mod runtime;
 
 use crate::{
     process::{process, ProcessOutput},
@@ -20,19 +21,21 @@ pub const EXECUTABLE: &str = "/usr/local/bin/rovik-harness-tool";
 const LIMIT: usize = 8 * 1024 * 1024;
 
 fn run(argv: &[String], cwd: &Path, environment: &[(&str, &str)]) -> Result<ProcessOutput> {
+    run_with_timeout(argv, cwd, environment, Duration::from_secs(120))
+}
+fn run_with_timeout(
+    argv: &[String],
+    cwd: &Path,
+    environment: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<ProcessOutput> {
     require(!argv.is_empty(), "missing native command")?;
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
         .current_dir(cwd)
         .envs(environment.iter().copied());
-    let output = process(
-        command,
-        Duration::from_secs(120),
-        LIMIT,
-        &Cancellation::default(),
-        || Ok(()),
-    )?;
+    let output = process(command, timeout, LIMIT, &Cancellation::default(), || Ok(()))?;
     require(
         !output.timed_out && !output.cancelled && !output.exceeded,
         "native process exceeded its resource bounds",
@@ -109,8 +112,9 @@ pub fn execute(arguments: &[String]) -> Result<i32> {
         Some("quota") if arguments.len() == 1 => consumer::quota(),
         Some("interop") if arguments.len() == 1 => interop::check(),
         Some("evaluate") if arguments.len() == 1 => evaluation::check(),
+        Some("prepare-dependencies") if arguments.len() == 1 => dependencies::prepare(),
         _ => Err(Error::new(
-            "usage: rovik-harness-tool pack <request-id|-> | quota | interop | evaluate".into(),
+            "usage: rovik-harness-tool pack <request-id|-> | quota | interop | evaluate | prepare-dependencies".into(),
         )),
     }
 }

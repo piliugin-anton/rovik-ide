@@ -16,6 +16,7 @@ fn request(ledger: &Ledger, check: NativeCheck) -> Request {
         request_id: "workspace".into(),
         operation: Operation::NativeCheck,
         payload: serde_json::to_value(NativeCheckInput {
+            oracle_test_files: vec![],
             check,
             native: NativeInput {
                 snapshot_handle: "snapshot:active".into(),
@@ -153,7 +154,12 @@ fn real_workspace_checks_cover_every_rust_package_and_configured_c_and_cpp_tests
                     protocol_version: 1,
                     request_id: "workspace".into(),
                     operation: Operation::NativeCheck,
-                    payload: serde_json::to_value(NativeCheckInput { native, check }).unwrap(),
+                    payload: serde_json::to_value(NativeCheckInput {
+                        native,
+                        check,
+                        oracle_test_files: vec![],
+                    })
+                    .unwrap(),
                 };
                 let request_text = format!("{}\n", serde_json::to_string(&request).unwrap());
                 let oracle = fixtures::snapshot(

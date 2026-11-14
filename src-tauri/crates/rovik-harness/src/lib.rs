@@ -32,6 +32,8 @@ pub mod packs;
 pub mod plan;
 pub mod planning;
 pub mod policy;
+#[cfg(feature = "preparation")]
+pub mod preparation;
 mod process;
 pub mod profile;
 pub mod provider;

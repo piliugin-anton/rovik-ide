@@ -111,6 +111,7 @@ const MAX_CHECKLIST_NUDGES: u32 = 2;
 pub(super) const CLM_STEP_COMPACT_MIN: u32 = 35;
 
 pub struct Run {
+    pub(super) preparation: Option<super::verified_preparation::Preparation>,
     pub(super) landing: super::landing::LandingState,
     pub(super) verification: super::verify::VerificationState,
     pub(super) tests: super::test_writer::TestsState,
@@ -480,10 +481,16 @@ impl Run {
     ) -> Result<Option<(Run, Entry)>, String> {
         let dialog_id = request.dialog_id.clone();
         let mut recent = recent_messages(&core.db, &dialog_id).await?;
+        let preparation =
+            super::verified_preparation::load(core, &request, &recent, &controls.stop).await?;
         let config = core.agents.config_for(&dialog_id);
-        let mode = run_mode_for(&recent)
-            .or(request.mode.clone())
-            .unwrap_or_else(|| "agent".into());
+        let mode = if preparation.is_some() {
+            "agent".into()
+        } else {
+            run_mode_for(&recent)
+                .or(request.mode.clone())
+                .unwrap_or_else(|| "agent".into())
+        };
         // An Autopilot task's run carries out one of its stages: its plan
         // in Plan mode, the stages after it in Agent mode.
         let autopilot = mode == super::autopilot::MODE;
@@ -551,8 +558,13 @@ impl Run {
         let isolate = request
             .isolate
             .unwrap_or_else(crate::overlay::chats::enabled);
-        let root = match &project_root {
-            Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
+        let root = match (&project_root, &preparation) {
+            (_, Some(preparation)) => {
+                Some(preparation.workspace_root.to_string_lossy().into_owned())
+            }
+            (Some(r), None)
+                if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) =>
+            {
                 let (core_, chat) = (core.clone(), dialog_id.clone());
                 let on_warn = Box::new(move |used: u64, limit: u64| {
                     core_.emit(AgentEvent::Notice {
@@ -593,18 +605,19 @@ impl Run {
         // `tool_choice`): "Implement this plan" in Agent mode. Explicit
         // `meta.implementsPlan` wins; the `Implement the plan…` line is the
         // fallback for messages sent before the frontend marked them.
-        let implements_plan = match &request.start {
-            StartKind::Send { message } => {
-                message
-                    .meta
-                    .as_ref()
-                    .and_then(|m| m.get("implementsPlan"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                    || message.content.starts_with("Implement the plan")
-            }
-            _ => false,
-        };
+        let implements_plan = preparation.is_none()
+            && match &request.start {
+                StartKind::Send { message } => {
+                    message
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.get("implementsPlan"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                        || message.content.starts_with("Implement the plan")
+                }
+                _ => false,
+            };
 
         let mut start_at = 0;
         let mut settle_message = None;
@@ -910,7 +923,7 @@ impl Run {
         // Q04, Q06 (mcp-plan.md): the tools of the user's MCP servers, as
         // they are now, for the whole run; none for a model that takes no
         // tools.
-        let mcp = match request.profile.no_tools {
+        let mcp = match request.profile.no_tools || preparation.is_some() {
             true => None,
             false => {
                 let files = project_mcp_files(core, &dialog_id, &root, &settings_root).await;
@@ -998,9 +1011,14 @@ impl Run {
             stage,
             history_window,
             tests: super::test_writer::TestsState::new(test_writer_files),
-            context_mode: request
-                .context_mode
-                .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
+            context_mode: if preparation.is_some() {
+                crate::clm::MODE_TRIMMING.into()
+            } else {
+                request
+                    .context_mode
+                    .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into())
+            },
+            preparation,
             root,
             project_root,
             current_user_content,
@@ -1047,7 +1065,10 @@ impl Run {
         }
         // The project's prior work, recalled for this request: the prompt's
         // section, and the chat's panel (memory.rs).
-        if let Some(settings_root) = settings_root.as_deref() {
+        if let Some(settings_root) = settings_root
+            .as_deref()
+            .filter(|_| run.preparation.is_none())
+        {
             run.recall_memory(settings_root).await;
         }
         Ok(Some((run, entry)))
@@ -1066,6 +1087,7 @@ impl Run {
         role: Role,
     ) -> Run {
         Run {
+            preparation: None,
             landing: Default::default(),
             verification: Default::default(),
             tests: Default::default(),
@@ -1260,7 +1282,10 @@ impl Run {
         // mode: it can't edit files to resolve them). The guard takes that
         // back, and any hold on writing commands, however the run ends,
         // a panic included.
-        let _running = RunningGuard::new(&self.dialog_id, !self.plan_mode);
+        let _running = RunningGuard::new(
+            &self.dialog_id,
+            !self.plan_mode && self.preparation.is_none(),
+        );
         let _harness = HarnessGuard::new(&self.dialog_id);
         #[cfg(test)]
         if PANIC_RUN
@@ -1270,8 +1295,26 @@ impl Run {
         {
             panic!("a test's run panics");
         }
-        let implementation = self.begin_plan_implementation().await;
-        let outcome = self.drive(entry).await;
+        let implementation = if self.preparation.is_none() {
+            self.begin_plan_implementation().await
+        } else {
+            None
+        };
+        let outcome = if let Some(deadline) = self.preparation.as_ref().map(|prep| prep.deadline) {
+            let stop = self.stop.clone();
+            let drive = self.drive(entry);
+            tokio::pin!(drive);
+            tokio::select! {
+                result = &mut drive => result,
+                _ = tokio::time::sleep_until(deadline.into()) => {
+                    stop.set();
+                    let _ = drive.await;
+                    Err("Verification preparation reached its time limit. Implementation has not started.".into())
+                }
+            }
+        } else {
+            self.drive(entry).await
+        };
         // Whatever ended it, the run takes no more messages from here, and
         // what it holds unread goes back to the user (D9, D15).
         let unread = self.steering.queue().close_and_take();
@@ -1303,21 +1346,28 @@ impl Run {
         };
         self.steering.returned(unread.len());
         super::hand_back_steering(&self.core, &self.dialog_id, unread, &outcome);
-        self.finish_verification_checkpoint().await;
+        if self.preparation.is_none() {
+            self.finish_verification_checkpoint().await;
+        }
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
-        if self.sub().is_none() && outcome != "verify-needs-approval" {
+        if self.preparation.is_none() && self.sub().is_none() && outcome != "verify-needs-approval"
+        {
             self.core.agents.drop_carry(&self.dialog_id);
         }
         // An isolated chat's changes land now, or say why they don't.
-        self.land_at_end(&outcome).await;
+        if self.preparation.is_none() {
+            self.land_at_end(&outcome).await;
+        }
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
         // The project's memory: how the run itself ended, for the records it
         // had in hand, the run's own account of itself, and the lesson a
         // repaired failure taught (memory.rs).
-        self.memory_after_run(&outcome).await;
+        if self.preparation.is_none() {
+            self.memory_after_run(&outcome).await;
+        }
         let mut entry = json!({
             "event": "run",
             "dialogId": self.dialog_id,
@@ -1342,15 +1392,20 @@ impl Run {
             entry["stage"] = json!(stage.stage.id());
         }
         log::write(&self.core, entry);
-        self.finish_plan_implementation(implementation.as_deref(), &outcome)
-            .await;
+        if self.preparation.is_none() {
+            self.finish_plan_implementation(implementation.as_deref(), &outcome)
+                .await;
+        }
         outcome
     }
 
     async fn drive(&mut self, entry: Entry) -> Result<String, String> {
         // P1.7: a new run makes the checks older runs left waiting stale:
         // their records say so (no "Run checks" any more).
-        if !matches!(entry, Entry::Verify { .. }) && self.sub().is_none() {
+        if !matches!(entry, Entry::Verify { .. })
+            && self.sub().is_none()
+            && self.preparation.is_none()
+        {
             self.supersede_waiting_checks().await;
         }
         match entry {
@@ -1420,6 +1475,12 @@ impl Run {
         loop {
             if self.stopped() {
                 return Ok("stopped".into());
+            }
+            if let Some(preparation) = &mut self.preparation {
+                if preparation.submitted {
+                    return Ok("done".into());
+                }
+                preparation.next_turn(self.guard.tool_calls)?;
             }
             // P1, the next step (steering-plan.md): every tool call has its
             // result here, so what the user sent meanwhile is stored now, for
@@ -1536,6 +1597,9 @@ impl Run {
 
             // The model says it's done: the checks decide.
             if turn.tool_calls.is_empty() {
+                if self.preparation.is_some() {
+                    return Err("The agent stopped before submitting a valid verification setup. Preparation can be retried; implementation has not started.".into());
+                }
                 // P3: a message waiting is read instead: no reminder, review
                 // or check starts for a change that's about to change (D8).
                 if self.read_waiting("done").await? {
@@ -1665,7 +1729,9 @@ impl Run {
             }
 
             // Isolated: not while the project is mid-switch.
-            self.wait_while_project_busy().await;
+            if self.preparation.is_none() {
+                self.wait_while_project_busy().await;
+            }
             self.execute_tool_calls(&turn.tool_calls, None).await?;
             if self.stopped() {
                 return Ok("stopped".into());
@@ -1902,7 +1968,9 @@ impl Run {
     /// stored. Failed attempts are retried in chat_request.rs, which reports
     /// each retry, then succeeds or fails for good.
     pub(super) async fn model_turn(&mut self) -> Result<TurnOutput, String> {
-        self.refresh_memory_packet().await;
+        if self.preparation.is_none() {
+            self.refresh_memory_packet().await;
+        }
         let mut started = Instant::now();
         let mut pending = new_message("assistant", "");
         pending.finalized = false;
@@ -1968,7 +2036,11 @@ impl Run {
         }
         // A subagent gets its kind's tools only; a lead with subagents on,
         // the `task` tool (not on a turn restricted to context tools).
-        let kinds = self.subagent_kinds();
+        let kinds = if self.preparation.is_some() {
+            Vec::new()
+        } else {
+            self.subagent_kinds()
+        };
         let mut system_prompt = None;
         if let Some(sub) = self.sub() {
             let spec = sub.kind.spec();
@@ -2049,6 +2121,20 @@ impl Run {
                 Some(&project_context),
                 true,
                 delegated_tests,
+            ));
+        }
+        if let Some(preparation) = &self.preparation {
+            tools.retain(|schema| {
+                schema
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .and_then(super::builtin_tools::BuiltinTool::parse)
+                    .is_some_and(super::verified_preparation::permits)
+            });
+            tools.push(super::verified_preparation::schema());
+            system_prompt = Some(format!(
+                "You are preparing verification inputs for a reviewed plan, not implementing it. Work only in the issued private workspace. Read project files as needed; write all draft inputs under .rovik-preparation/. Never implement source changes, approve inputs, start a controller, or claim verification or implementation succeeded. The trusted service owns dependency installation and trial checks. Ask concise questions with ask_user when requirements cannot be determined from the plan. Finish only by calling prepare_verified_plan with the prepared recipe's relative path; use its validation errors to correct the recipe. A text response cannot submit preparation.\n\n{}\n\n{}",
+                preparation.instructions, project_context,
             ));
         }
         let continue_reply = std::mem::take(&mut self.continue_reply);

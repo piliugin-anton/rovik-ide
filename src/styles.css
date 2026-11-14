@@ -1431,12 +1431,19 @@ body.tree-dragging {
   overflow: hidden;
 }
 
+.chat-messages-frame:has(~ .plan-preparation),
+.chat-messages-frame:has(~ .polyglot-review) {
+  /* Reserve the transcript's share before flex shrinking. A zero basis lets a
+     naturally sized review consume all space left above the composer. */
+  flex-basis: 40%;
+}
+
 /* Verification reviews share the chat's finite height with the transcript
    and composer. Only the evidence body scrolls; actions remain reachable. */
 .polyglot-review {
   display: flex;
   flex-direction: column;
-  flex: 2 1 0;
+  flex: 0 1 auto;
   min-height: 0;
   min-width: 0;
   max-height: min(60%, 560px);
@@ -1513,6 +1520,69 @@ body.tree-dragging {
 }
 
 .polyglot-review-actions > button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* Preparation belongs beside the chat's existing check records. Only expanded
+   review details scroll; the conversation and the primary action stay visible. */
+.chat-verify.plan-preparation {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(42%, 360px);
+  margin: 0 8px 8px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.plan-preparation-heading,
+.plan-preparation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 8px 10px;
+}
+
+.plan-preparation-heading {
+  justify-content: space-between;
+}
+
+.plan-preparation-body {
+  min-height: 0;
+  padding: 0 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  overflow-wrap: anywhere;
+}
+
+.plan-preparation-body p {
+  margin: 0 0 8px;
+}
+
+.plan-preparation-body details {
+  margin: 6px 0;
+}
+
+.plan-preparation-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.plan-preparation-requirements {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+
+.plan-preparation-warning {
+  color: var(--warning);
+}
+
+.plan-preparation-actions > button {
   max-width: 100%;
   white-space: normal;
 }

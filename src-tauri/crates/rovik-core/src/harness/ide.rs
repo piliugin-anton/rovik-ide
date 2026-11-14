@@ -30,6 +30,12 @@ use std::{
 mod architecture;
 #[path = "ide_plan.rs"]
 mod plan;
+#[path = "ide_preparation.rs"]
+mod preparation;
+pub use preparation::{
+    cancel_active_preparation, preparation_context, submit_preparation, PreparationContext,
+    PreparationSubmission,
+};
 
 #[path = "ide_application.rs"]
 mod application;
@@ -244,6 +250,8 @@ impl IdeProject {
             CREATE TABLE IF NOT EXISTS setups(id TEXT PRIMARY KEY, artifact TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS configuration(singleton INTEGER PRIMARY KEY CHECK(singleton=1), value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS captures(digest TEXT PRIMARY KEY, untracked TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS preparations(id TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS preparation_baselines(setup_id TEXT PRIMARY KEY, baseline_digest TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, input TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0, owner TEXT, error TEXT, created_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS applications(subject TEXT PRIMARY KEY, run_id TEXT NOT NULL, value TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', receipt TEXT, created_ms INTEGER NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_run ON runs(active) WHERE active=1;")?;
@@ -604,6 +612,30 @@ impl IdeProject {
 
     fn dispatch(&self, request: Operation) -> Result<Value> {
         match request {
+            Operation::BeginPlanPreparation {
+                dialog_id,
+                plan_path,
+                provider,
+                saved_buffers,
+                untracked,
+            } => self.begin_preparation(&dialog_id, &plan_path, provider, saved_buffers, untracked),
+            Operation::PreparationStatus { preparation_id } => {
+                self.preparation_status(&preparation_id)
+            }
+            Operation::CancelPreparation { preparation_id } => {
+                self.cancel_preparation(&preparation_id)
+            }
+            Operation::StartPreparedImplementation {
+                preparation_id,
+                expected_review_digest,
+                saved_buffers,
+                provider,
+            } => self.start_prepared_implementation(
+                &preparation_id,
+                &expected_review_digest,
+                saved_buffers,
+                provider,
+            ),
             Operation::ArchitectureFeedback { run_id } => self.architecture_feedback(&run_id),
             Operation::ApplicationState => self.application_guard(),
             Operation::ReleaseApplication {
@@ -713,8 +745,7 @@ impl IdeProject {
                 setup
                     .authority
                     .authorize(&Principal::current()?, "operate")?;
-                let baseline = self.integration()?.snapshot(&self.ledger()?)?;
-                check(baseline.digest()? == setup.base.digest()?, "The prepared baseline differs from this project's HEAD. Prepare a new setup for the current revision.")?;
+                self.require_setup_baseline(&setup)?;
                 let backend = self.backend(&engine)?;
                 backend.require_environment(&setup.environment)?;
                 backend.validate_image(&setup.environment)?;
@@ -1014,10 +1045,7 @@ impl IdeProject {
         candidate: Snapshot,
     ) -> Result<TaskSetup> {
         let mut setup = self.load_setup(&configuration.setup_id)?;
-        check(
-            self.integration()?.snapshot(&self.ledger()?)?.digest()? == setup.base.digest()?,
-            "The destination revision changed. Prepare and approve a setup for the new baseline.",
-        )?;
+        self.require_setup_baseline(&setup)?;
         let now = runner::now_ms()?;
         check(
             setup.deadline_ms > now,

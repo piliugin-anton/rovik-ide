@@ -32,7 +32,7 @@ Extend Project Checks with a verification setup panel. Discover nested manifests
 and show build roots, supported profiles, missing configuration and host readiness.
 Offer prepared configurations with readable scope, obligations, protected tests,
 toolchain and dependency identities. Bootstrap this phase with reviewed prepared
-setup bundles; phase 2 adds guided preparation without editing harness JSON.
+setup bundles; phase 2 adds automatic preparation through the ordinary plan chat.
 Discovery alone does not establish an executable or approved configuration.
 
 Capture tracked working-tree files and explicitly selected untracked files as an
@@ -69,20 +69,54 @@ failures and unsupported preparation stay blocked; stale results cannot deliver.
 
 ## Phase 2 — Verified plan implementation
 
-Add Require verified result to Implement this plan. Bind the reviewed plan bytes
-to the preparation. Guided preparation uses registered capabilities and explicit
-execution inputs to produce contract/design/oracle drafts and derive the check
-matrix. Show missing decisions and approvals in ordinary language. Never infer
-protected test adequacy, domain semantics or execution support from filenames.
+Select Require verified result by default on Implement this plan. Bind the saved
+plan, captured source, chat, execution host and selected model to a private
+preparation session. The ordinary Agent conversation inspects the project and
+stages contract/design/oracle inputs using registered capabilities. It reports
+progress through existing messages and tools and asks about unresolved requirements
+in chat. Clearing Require verified result retains ordinary Agent implementation.
 
-Plan and Autopilot setup reviews share the chat's available height with the
-conversation and composer. Long plans and evidence scroll in a keyboard-focusable
-region while the heading and Start, Cancel or Close controls stay visible.
+Keep preparation status and its final decision in one compact card using existing
+chat styles. Messages, questions and the composer remain available. Show the ready
+summary, requirements, checks and change scope, with details expandable, then offer
+Implement plan. Bind that review to exact backend-issued inputs before promotion.
+Plan and Autopilot review surfaces must remain bounded and scrollable, with their
+action controls reachable.
 
-Resolve the chosen provider, endpoint, credentials and pricing through the existing
-trusted host configuration. Reuse the harness provider and durable model accounting.
-The harness owns implementation and bounded repair for a verified task. Stream its
-status into the existing chat; do not launch a second ordinary repair loop.
+Prepare a private source copy; the preparation agent may write only staged inputs,
+not production implementation. It can select existing tests or author protected
+tests and a relevant negative-control mutation without requiring a prior failing
+Git revision. The service validates paths, policies and case inventory, then runs
+real baseline/control trials. Failed trials return actionable feedback for another
+submission. Compilation failure alone is not a behavioral control. Preserve IDE
+blocked-read/write restrictions, and keep hidden source out of model context and
+opaque diagnostic feedback while retaining complete verification snapshots.
+
+The trusted service prepares and caches its bundled verifier image and compatible
+locked dependencies on first use. Automatic preparation currently needs Linux
+x86_64 with usable Docker or rootless Podman, locally or on a connected host.
+Preparation may fetch pinned/locked assets; final verification stays offline.
+The existing language and configuration limits remain: TypeScript `extends` and
+project references need a separate single-project configuration, and mixed Tauri
+roots do not establish browser, bundler, packaging or IPC coverage automatically.
+
+Resolve provider endpoints and credentials through existing trusted host settings.
+Save input, cached-input and output prices per model in Model providers and reuse
+them for plan and Autopilot runs. Users enter the provider's currency price per
+million tokens with up to six decimal places. Convert exactly to the existing
+integer microunit storage; saved and protocol prices retain their meaning. Missing
+prices block strict work and explicit zero denotes a free model.
+Preparation uses ordinary chat model accounting, separate from the implementation
+limits shown in the review. Native trial check spending carries into the promoted
+strict run. Stop/continue and retry retain valid session bindings; changed source,
+plan or provider requires fresh preparation. The harness owns implementation and
+bounded repair after review; no second ordinary repair loop edits its candidate.
+
+Negotiate `POLYGLOT_PREPARATION` (`polyglot-preparation`) independently from basic
+verification and implementation features. This covers preparation RPCs and chat
+requests/continuations carrying preparation metadata. Local desktop IPC is protocol
+22; cloud transport and harness document schemas remain v1. An older host must be
+updated before the new preparation workflow can run.
 
 Show the candidate diff and its acceptance evidence. Preserve local edits when
 reviewing or applying results. A changed destination or conflict resolution needs
@@ -144,13 +178,25 @@ After pushing the final phase, inspect the PR's CI results and fix regressions.
   tests, 919 protocol/client/daemon tests and a real baseline/control/final
   verification passed. The native run preserved the checkout and index and made
   no model calls. Clippy added no warnings.
-- Phase 2: implemented. Guided preparation, exact saved-plan binding, trusted
+- Phase 2, initial implementation: guided preparation, exact saved-plan binding, trusted
   provider selection and reservation accounting, bounded private implementation,
   review/export, cancellation and recovery are connected to the existing plan
   action. All 1,156 frontend cases, type checks and formatting passed. The native
   plan test made one priced model call, verified the private candidate and
   preserved dirty source and the Git index. Full Rust validation also exposed
   independent timing and file-history races; their fixes are delivered separately.
+- Phase 2, automatic plan workflow: preparation now runs through the existing Agent
+  conversation with a compact final review. Provider prices persist per model;
+  trusted environment/dependency preparation, privately staged tests and controls,
+  native trials, restricted-file enforcement and capability negotiation support
+  the flow. All 1,220 frontend tests, type checking and formatting passed. Browser
+  checks cover local and autonomous cloud chats, narrow and short layouts,
+  cancellation, idle clarification replies and saved-price changes. Native acceptance built the bundled
+  verifier, fetched locked Rust/npm/Python inputs without project hooks, ran real
+  protected-test/control trials, implemented with the selected scripted provider,
+  required exact candidate approval and finished verified without checkout or
+  index edits. Five additional native Rust checks cover new integration tests and
+  rejection of production-file substitutions and overwrites.
 - Phase 3: implemented. Strict task ownership,
   prepared asset stages, frozen budgets/provider prices, restart and cancellation,
   exact application approval and durable receipts are wired into Autopilot. Cloud

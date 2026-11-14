@@ -256,6 +256,15 @@ impl Ledger {
         tx.commit()?;
         self.run(run_id)
     }
+    /// Check durable intake existence without treating database failures as absence.
+    pub fn contains_run(&self, run_id: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id=?1)",
+            [run_id],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Read the durable position, never infer state from leftover build output.
     pub fn run(&self, run_id: &str) -> Result<RunRecord> {
         let (state, revision, input, binding, restart): StoredRun = self.connection.query_row("SELECT state,revision,input_digest,binding_digest,restart_state FROM runs WHERE run_id=?1", [run_id], |r| Ok((r.get(0)?,number(r,1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;

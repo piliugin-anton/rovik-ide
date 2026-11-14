@@ -143,6 +143,7 @@ pub fn quota_rust(
         limits: Default::default(),
         facts: Default::default(),
         scopes: vec![contract.scope.clone()],
+        deny_read: vec![],
     };
     let design=DesignRecord {schema_version:1,id:"quota-value-object".into(),contract_digest:Digest::of_json(&contract)?,existing_code_considered:vec![ExistingCode {file:"implementations/quota/lib.rs".into(),symbol:"Quota::reserve".into(),source_revision:base.digest()?,suitability:"Keep the existing value object and positive Amount; repair the comparison boundary.".into()}],components:[("quota".into(),"Own quota state and validate reservations without IO or allocation.".into())].into(),invariant_owners:contract.invariants.iter().map(|i|(i.id.clone(),"quota".into())).collect(),public_api_changes:vec!["Preserve Amount, Quota and ReserveError signatures.".into()],resource_contracts:vec!["Caller-owned value; exclusive mutable borrow; no heap ownership.".into()],error_contracts:vec!["Reject zero or insufficient amount without state mutation.".into()],concurrency_contract:"Caller serializes operations on the same value.".into(),variation_decisions:vec!["No new abstraction or dependency is required.".into()],mechanism_decisions:vec![crate::design::MechanismDecision::direct("quota","implementations/quota/lib.rs")],verification_obligations:vec![],unknowns:vec![]};
     let plan = CheckPlan {

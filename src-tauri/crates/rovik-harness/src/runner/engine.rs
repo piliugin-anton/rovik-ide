@@ -8,6 +8,19 @@ pub(super) trait Engine: Debug + Send + Sync {
     fn version(&self) -> &'static str;
     fn command(&self) -> Command;
     fn create_options(&self, command: &mut Command);
+    #[cfg(feature = "preparation")]
+    fn preparation_options(&self, command: &mut Command, output: &Path) -> Result<()> {
+        self.create_options(command);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::metadata(output)?;
+            command.arg(format!("--user={}:{}", metadata.uid(), metadata.gid()));
+        }
+        #[cfg(not(unix))]
+        let _ = output;
+        Ok(())
+    }
     fn needs_cgroup_probe(&self) -> bool;
 }
 
@@ -149,6 +162,12 @@ impl Engine for Podman {
             "--cgroupns=private",
             "--http-proxy=false",
         ]);
+    }
+    #[cfg(feature = "preparation")]
+    fn preparation_options(&self, command: &mut Command, _: &Path) -> Result<()> {
+        self.create_options(command);
+        command.arg("--user=65534:65534");
+        Ok(())
     }
     fn needs_cgroup_probe(&self) -> bool {
         true

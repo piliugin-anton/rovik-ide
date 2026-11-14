@@ -5,7 +5,6 @@ import {
   harnessRequest,
   verificationInputProblem,
   type HarnessApproval,
-  type HarnessInspection,
   type HarnessOperation,
   type HarnessRun,
   type HarnessTarget,
@@ -14,18 +13,15 @@ import {
 import {
   harnessProviderProblem,
   boundHarnessProviderProblem,
-  implementVerifiedPlan,
-  parseHarnessRates,
   type HarnessChangeReview,
   type HarnessPlan,
   type HarnessPlanOperation,
 } from '../lib/polyglotPlan';
-import type { WorkspaceSetupInput } from '../lib/polyglotPreparation';
-import PolyglotHarnessPanel from './PolyglotHarnessPanel';
 import PolyglotApproval, { SubjectFields } from './PolyglotApproval';
-import PolyglotPreparation from './PolyglotPreparation';
-import PolyglotProviderRates from './PolyglotProviderRates';
 import PolyglotReviewFrame from './PolyglotReviewFrame';
+import PlanPreparationCard from './PlanPreparationCard';
+import { savedHarnessRates } from '../lib/harnessRates';
+import type { PlanPreparation } from '../lib/planPreparation';
 
 /** Reviewed saved-plan implementation, independent of the ordinary agent's repair loop. */
 export default function PolyglotPlanImplementation(props: {
@@ -34,6 +30,11 @@ export default function PolyglotPlanImplementation(props: {
   /** Reopen the existing controller run, including an Autopilot-owned run. */
   runId?: string;
   profile?: ModelProfile;
+  preparationId?: string;
+  agentRunning?: boolean;
+  onPrepare?: (preparationId: string) => Promise<boolean>;
+  onStopPreparation?: () => Promise<void>;
+  onPreparationChange?: (preparation: PlanPreparation) => void;
   /** Resolve current credentials for the persisted identity without persisting secrets. */
   resolveProvider?: (binding: HarnessProviderBinding) => ModelProfile | undefined;
   unsavedFiles: readonly string[] | undefined;
@@ -44,13 +45,8 @@ export default function PolyglotPlanImplementation(props: {
   onRunChange?: (run: HarnessRun) => void;
 }) {
   const [plan, setPlan] = createSignal<HarnessPlan>();
-  const [inspection, setInspection] = createSignal<HarnessInspection>();
-  const [inputsReady, setInputsReady] = createSignal(false);
-  const [untracked, setUntracked] = createSignal<string[]>([]);
-  const [criteriaReviewed, setCriteriaReviewed] = createSignal(false);
-  const [inputRate, setInputRate] = createSignal('');
-  const [cachedRate, setCachedRate] = createSignal('');
-  const [outputRate, setOutputRate] = createSignal('');
+  const [preparedSnapshot, setPreparedSnapshot] = createSignal<string>();
+  const [restart, setRestart] = createSignal(false);
   const [run, setRun] = createSignal<HarnessRun>();
   const [approval, setApproval] = createSignal<HarnessApproval>();
   const [review, setReview] = createSignal<HarnessChangeReview>();
@@ -59,13 +55,11 @@ export default function PolyglotPlanImplementation(props: {
   const [error, setError] = createSignal('');
   const [fresh, setFresh] = createSignal(false);
   const [releaseReviewed, setReleaseReviewed] = createSignal<string>();
-  const [setupRevision, setSetupRevision] = createSignal(0);
   const [pollRevision, setPollRevision] = createSignal(0);
   let generation = 0;
   let requestNumber = 0;
   let disposed = false;
-  const rates = () =>
-    run()?.providerBinding?.rates ?? parseHarnessRates(inputRate(), cachedRate(), outputRate());
+  const rates = () => run()?.providerBinding?.rates ?? savedHarnessRates(currentProfile());
   const currentProfile = () => {
     const binding = run()?.providerBinding;
     return binding && props.resolveProvider ? props.resolveProvider(binding) : props.profile;
@@ -81,39 +75,13 @@ export default function PolyglotPlanImplementation(props: {
         ? harnessProviderProblem(props.profile)
         : 'Choose the configured provider to make model calls.';
   };
-  const selectedSetup = () =>
-    inspection()?.setups.find((setup) => setup.id === inspection()?.configuration?.setupId);
   const shownStatus = () => {
     const current = run();
     if (!current) return '';
     return ['verified', 'applied'].includes(current.status) && (!fresh() || !!props.contextProblem)
       ? 'stale'
-      : displayedHarnessStatus(current, props.unsavedFiles, inspection()?.snapshotDigest);
+      : displayedHarnessStatus(current, props.unsavedFiles, preparedSnapshot());
   };
-
-  async function readPlan() {
-    if (props.contextProblem || !props.planPath) return;
-    const scope = generation;
-    const number = ++requestNumber;
-    setBusy(true);
-    setError('');
-    setCriteriaReviewed(false);
-    setPlan(undefined);
-    try {
-      const value = await harnessRequest<HarnessPlan>(props.target, {
-        action: 'inspectPlan',
-        planPath: props.planPath,
-      });
-      if (!disposed && scope === generation && number === requestNumber) setPlan(value);
-    } catch (cause) {
-      if (!disposed && scope === generation && number === requestNumber) {
-        setError(String(cause));
-        setFresh(false);
-      }
-    } finally {
-      if (!disposed && scope === generation && number === requestNumber) setBusy(false);
-    }
-  }
 
   async function request<T>(
     operation: HarnessOperation | HarnessPlanOperation,
@@ -146,50 +114,6 @@ export default function PolyglotPlanImplementation(props: {
   };
   const runAction = (operation: HarnessOperation | HarnessPlanOperation) =>
     request<HarnessRun>(operation, acceptRun);
-  function inspected(value: HarnessInspection, files: string[]) {
-    if (
-      value.snapshotDigest !== inspection()?.snapshotDigest ||
-      value.configuration?.digest !== inspection()?.configuration?.digest
-    )
-      setCriteriaReviewed(false);
-    setInspection(value);
-    setUntracked(files);
-    setInputsReady(true);
-  }
-  async function start() {
-    if (unavailable() || !inputsReady() || !plan() || !inspection() || !rates()) return;
-    const scope = generation;
-    const number = ++requestNumber;
-    setBusy(true);
-    setError('');
-    props.onActiveChange?.(true);
-    try {
-      const value = await implementVerifiedPlan({
-        target: props.target,
-        plan: plan()!,
-        inspection: inspection()!,
-        untracked: untracked(),
-        unsavedFiles: props.unsavedFiles,
-        provider: provider(),
-        reviewed: criteriaReviewed(),
-      });
-      if (!disposed && scope === generation && number === requestNumber) acceptRun(value);
-    } catch (cause) {
-      if (!disposed && scope === generation && number === requestNumber) {
-        setError(String(cause));
-        setFresh(false);
-      }
-    } finally {
-      if (!disposed && scope === generation && number === requestNumber) setBusy(false);
-    }
-  }
-  async function prepare(input: WorkspaceSetupInput) {
-    setCriteriaReviewed(false);
-    await request<HarnessInspection>({ action: 'prepareWorkspace', input }, (value) => {
-      inspected(value, untracked());
-      setSetupRevision((revision) => revision + 1);
-    });
-  }
   createEffect(() => {
     props.target.root;
     props.target.dialogId;
@@ -198,14 +122,12 @@ export default function PolyglotPlanImplementation(props: {
     generation++;
     requestNumber++;
     setRun(undefined);
-    setInspection(undefined);
-    setInputsReady(false);
+    setPreparedSnapshot(undefined);
     setApproval(undefined);
     setReview(undefined);
     setFresh(false);
     setBusy(false);
     if (props.runId) void untrack(() => runAction({ action: 'status', runId: props.runId! }));
-    else void untrack(readPlan);
   });
   createEffect(() => {
     if (props.contextProblem) {
@@ -213,8 +135,6 @@ export default function PolyglotPlanImplementation(props: {
       requestNumber++;
       setBusy(false);
       setFresh(false);
-      setInputsReady(false);
-      setCriteriaReviewed(false);
     }
   });
   createEffect(() => props.onActiveChange?.(busy() || run()?.status === 'running'));
@@ -258,539 +178,402 @@ export default function PolyglotPlanImplementation(props: {
   });
 
   return (
-    <PolyglotReviewFrame
-      title={props.runId ? 'Verified Autopilot task' : 'Verified plan implementation'}
-      label="Verified plan implementation"
-      closeLabel="Close verified implementation"
-      closeDisabled={!props.contextProblem && (busy() || run()?.status === 'running')}
-      onClose={props.onClose}
-      actions={
-        <>
-          <Show when={!run() && !props.runId && !props.contextProblem}>
-            <button
-              type="button"
-              class="chat-action-button primary"
-              disabled={
-                unavailable() ||
-                !inputsReady() ||
-                !plan() ||
-                !inspection()?.configuration ||
-                !inspection()?.host.supported ||
-                !rates() ||
-                !criteriaReviewed() ||
-                !!inputProblem() ||
-                !!providerProblem()
-              }
-              onClick={() => void start()}
-            >
-              Start verified implementation
-            </button>
-          </Show>
-          <Show when={run()}>
-            {(current) => (
-              <Show when={current().canCancel}>
-                <button
-                  type="button"
-                  class="link-button"
-                  disabled={unavailable()}
-                  onClick={() => void runAction({ action: 'cancel', runId: current().runId })}
-                >
-                  Cancel implementation
-                </button>
-              </Show>
-            )}
-          </Show>
-        </>
+    <Show
+      when={run() || props.runId}
+      fallback={
+        <PlanPreparationCard
+          target={props.target}
+          planPath={props.planPath ?? ''}
+          preparationId={restart() ? undefined : props.preparationId}
+          profile={props.profile}
+          unsavedFiles={props.unsavedFiles}
+          contextProblem={props.contextProblem}
+          executionLabel={props.executionLabel}
+          agentRunning={props.agentRunning}
+          onPrepare={props.onPrepare ?? (() => Promise.resolve(false))}
+          onStop={props.onStopPreparation ?? (() => Promise.resolve())}
+          onPreparation={(value) => {
+            setPlan(value.plan);
+            setPreparedSnapshot(value.snapshotDigest);
+            props.onPreparationChange?.(value);
+          }}
+          onStart={acceptRun}
+          onClose={props.onClose}
+        />
       }
     >
-      <p class="settings-hint">
-        Execution: {props.executionLabel}. Model:{' '}
-        {currentProfile()?.label ?? run()?.providerBinding?.model ?? 'Unavailable'}. The controller
-        generates a separate candidate and only accepts it after the reviewed checks pass. Applying
-        changes to your project is a separate review.
-      </p>
-      <Show when={error()}>
-        <p role="alert" class="settings-status warning">
-          {error()}
-        </p>
-      </Show>
-      <Show when={providerProblem()}>
-        <p role="status" class="settings-status warning">
-          {providerProblem()}
-        </p>
-      </Show>
-      <Show when={inputProblem()}>
-        <p role="status" class="settings-status warning">
-          {inputProblem()}
-        </p>
-      </Show>
-      <Show when={plan()}>
-        {(saved) => (
-          <details open>
-            <summary>Exact saved plan: {saved().path}</summary>
-            <pre style={{ 'white-space': 'pre-wrap', 'overflow-wrap': 'anywhere' }}>
-              {saved().content}
-            </pre>
-            <p class="settings-hint">
-              Plan identity: <code>{saved().digest}</code>
-            </p>
-          </details>
-        )}
-      </Show>
-      <Show when={!props.runId}>
-        <button
-          type="button"
-          class="link-button"
-          disabled={unavailable() || run()?.status === 'running'}
-          onClick={() => void readPlan()}
-        >
-          Reload saved plan
-        </button>
-      </Show>
-      <PolyglotProviderRates
-        values={
-          run()?.providerBinding
-            ? {
-                input: String(rates()!.input),
-                cachedInput: String(rates()!.cachedInput),
-                output: String(rates()!.output),
-              }
-            : { input: inputRate(), cachedInput: cachedRate(), output: outputRate() }
+      <PolyglotReviewFrame
+        title={props.runId ? 'Verified Autopilot task' : 'Plan implementation'}
+        label="Verified plan implementation"
+        closeLabel="Close verified implementation"
+        closeDisabled={!props.contextProblem && (busy() || run()?.status === 'running')}
+        onClose={props.onClose}
+        actions={
+          <>
+            <Show when={run()}>
+              {(current) => (
+                <Show when={current().canCancel}>
+                  <button
+                    type="button"
+                    class="link-button"
+                    disabled={unavailable()}
+                    onClick={() => void runAction({ action: 'cancel', runId: current().runId })}
+                  >
+                    Cancel implementation
+                  </button>
+                </Show>
+              )}
+            </Show>
+          </>
         }
-        disabled={!!run()?.providerBinding}
-        onChange={(field, value) => {
-          if (field === 'input') setInputRate(value);
-          else if (field === 'cachedInput') setCachedRate(value);
-          else setOutputRate(value);
-        }}
-      />
-      <Show when={!rates()}>
-        <p class="settings-hint">Enter all three provider rates before any model calls.</p>
-      </Show>
-      <Show when={!run() && !props.runId && !props.contextProblem}>
-        <Show when={setupRevision() + 1} keyed>
-          {(_revision) => (
-            <PolyglotHarnessPanel
-              root={props.target.root}
-              dialogId={props.target.dialogId}
-              executionLabel={props.executionLabel}
-              unsavedFiles={props.unsavedFiles}
-              setupOnly
-              onInspection={inspected}
-              onInputPending={() => {
-                setInputsReady(false);
-                setCriteriaReviewed(false);
-              }}
-            />
-          )}
+      >
+        <p class="settings-hint">
+          Execution: {props.executionLabel}. Model:{' '}
+          {currentProfile()?.label ?? run()?.providerBinding?.model ?? 'Unavailable'}. The
+          controller generates a separate candidate and only accepts it after the reviewed checks
+          pass. Applying changes to your project is a separate review.
+        </p>
+        <Show when={error()}>
+          <p role="alert" class="settings-status warning">
+            {error()}
+          </p>
         </Show>
-        <Show when={inspection()}>
-          {(info) => (
+        <Show when={providerProblem()}>
+          <p role="status" class="settings-status warning">
+            {providerProblem()}
+          </p>
+        </Show>
+        <Show when={inputProblem()}>
+          <p role="status" class="settings-status warning">
+            {inputProblem()}
+          </p>
+        </Show>
+        <Show when={plan()}>
+          {(saved) => (
             <details>
-              <summary>Create a verification setup from this project</summary>
-              <PolyglotPreparation
-                model={props.profile?.model ?? ''}
-                manifests={info().inventory.units}
-                busy={busy()}
-                onPrepare={prepare}
-              />
+              <summary>Exact saved plan: {saved().path}</summary>
+              <pre style={{ 'white-space': 'pre-wrap', 'overflow-wrap': 'anywhere' }}>
+                {saved().content}
+              </pre>
+              <p class="settings-hint">
+                Plan identity: <code>{saved().digest}</code>
+              </p>
             </details>
           )}
         </Show>
-        <Show when={selectedSetup()}>
-          {(setup) => (
-            <div>
-              <p>
-                <strong>Acceptance criteria: {setup().label}</strong>
+        <Show when={run()}>
+          {(current) => (
+            <section aria-label="Verified implementation result">
+              <p role="status" class="settings-status">
+                {shownStatus() === 'applied'
+                  ? current().applicationReceipt?.deliveredLocally
+                    ? 'Applied to local checkout'
+                    : 'Applied on execution host'
+                  : shownStatus() === 'verified'
+                    ? 'Accepted — verified candidate'
+                    : `Implementation ${shownStatus()}`}
               </p>
-              <p>{setup().contractSummary}</p>
-              <For each={setup().invariants ?? []}>
-                {(invariant) => (
-                  <p>
-                    {invariant.statement} · {invariant.owner} · cases{' '}
-                    {invariant.case_ids.join(', ')}
-                  </p>
+              <p class="settings-hint">
+                Run {current().runId} · {current().state}
+              </p>
+              <Show when={shownStatus() === 'stale'}>
+                <p class="settings-status warning">
+                  Current inputs are changed or could not be confirmed. This result does not verify
+                  the current project.
+                </p>
+              </Show>
+              <Show when={current().reason}>
+                <p>{current().reason}</p>
+              </Show>
+              <For each={current().reasons?.filter((reason) => reason !== current().reason) ?? []}>
+                {(reason) => <p>{reason}</p>}
+              </For>
+              <For each={current().checks ?? []}>
+                {(check) => (
+                  <details>
+                    <summary>
+                      {check.check_id}: {check.status} · {check.executed_test_count} cases
+                    </summary>
+                    <p>{check.failed_case_ids.join(', ')}</p>
+                    <For each={check.diagnostics}>
+                      {(diagnostic) => (
+                        <p>
+                          {diagnostic.rule_id}: {diagnostic.message} {diagnostic.file}{' '}
+                          {diagnostic.line}
+                        </p>
+                      )}
+                    </For>
+                  </details>
                 )}
               </For>
-            </div>
-          )}
-        </Show>
-        <label>
-          <input
-            type="checkbox"
-            checked={criteriaReviewed()}
-            disabled={!inputsReady() || !plan() || !selectedSetup()}
-            onChange={(event) => setCriteriaReviewed(event.currentTarget.checked)}
-          />{' '}
-          I reviewed these exact saved plan bytes and confirm the configured acceptance criteria
-          cover the plan.
-        </label>
-        <For
-          each={
-            inspection()?.runs.filter(
-              (entry) => entry.kind === 'implementation' && entry.planDigest === plan()?.digest
-            ) ?? []
-          }
-        >
-          {(entry) => (
-            <button
-              type="button"
-              class="link-button"
-              disabled={unavailable()}
-              onClick={() => void runAction({ action: 'status', runId: entry.runId })}
-            >
-              Open implementation {entry.runId} ({entry.status})
-            </button>
-          )}
-        </For>
-      </Show>
-      <Show when={run()}>
-        {(current) => (
-          <section aria-label="Verified implementation result">
-            <p role="status" class="settings-status">
-              {shownStatus() === 'applied'
-                ? current().applicationReceipt?.deliveredLocally
-                  ? 'Applied to local checkout'
-                  : 'Applied on execution host'
-                : shownStatus() === 'verified'
-                  ? 'Accepted — verified candidate'
-                  : `Implementation ${shownStatus()}`}
-            </p>
-            <p class="settings-hint">
-              Run {current().runId} · {current().state}
-            </p>
-            <Show when={shownStatus() === 'stale'}>
-              <p class="settings-status warning">
-                Current inputs are changed or could not be confirmed. This result does not verify
-                the current project.
-              </p>
-            </Show>
-            <Show when={current().reason}>
-              <p>{current().reason}</p>
-            </Show>
-            <For each={current().reasons?.filter((reason) => reason !== current().reason) ?? []}>
-              {(reason) => <p>{reason}</p>}
-            </For>
-            <For each={current().checks ?? []}>
-              {(check) => (
+              <Show when={current().providerBinding}>
                 <details>
-                  <summary>
-                    {check.check_id}: {check.status} · {check.executed_test_count} cases
-                  </summary>
-                  <p>{check.failed_case_ids.join(', ')}</p>
-                  <For each={check.diagnostics}>
-                    {(diagnostic) => (
-                      <p>
-                        {diagnostic.rule_id}: {diagnostic.message} {diagnostic.file}{' '}
-                        {diagnostic.line}
-                      </p>
-                    )}
-                  </For>
+                  <summary>Bound provider identity</summary>
+                  <SubjectFields value={current().providerBinding} />
                 </details>
-              )}
-            </For>
-            <Show when={current().providerBinding}>
-              <details>
-                <summary>Bound provider identity</summary>
-                <SubjectFields value={current().providerBinding} />
-              </details>
-            </Show>
-            <Show when={current().applicationReceipt}>
-              {(receipt) => (
-                <div>
-                  <p>
-                    Application target: {receipt().location} · {receipt().root}
-                  </p>
-                  <Show when={!receipt().deliveredLocally}>
-                    <p>Desktop delivery remains a separate step.</p>
-                  </Show>
-                  <Show when={!receipt().current}>
-                    <p class="settings-status warning">
-                      This receipt is historical; the current checkout no longer matches it.
+              </Show>
+              <Show when={current().applicationReceipt}>
+                {(receipt) => (
+                  <div>
+                    <p>
+                      Application target: {receipt().location} · {receipt().root}
                     </p>
-                  </Show>
-                  <details>
-                    <summary>Application receipt</summary>
-                    <SubjectFields value={receipt()} />
-                  </details>
-                  <Show when={receipt().location === 'host' && !receipt().synchronizationReleased}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={releaseReviewed() === receipt().subjectDigest}
-                        onChange={(event) =>
-                          setReleaseReviewed(
-                            event.currentTarget.checked ? receipt().subjectDigest : undefined
-                          )
+                    <Show when={!receipt().deliveredLocally}>
+                      <p>Desktop delivery remains a separate step.</p>
+                    </Show>
+                    <Show when={!receipt().current}>
+                      <p class="settings-status warning">
+                        This receipt is historical; the current checkout no longer matches it.
+                      </p>
+                    </Show>
+                    <details>
+                      <summary>Application receipt</summary>
+                      <SubjectFields value={receipt()} />
+                    </details>
+                    <Show
+                      when={receipt().location === 'host' && !receipt().synchronizationReleased}
+                    >
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={releaseReviewed() === receipt().subjectDigest}
+                          onChange={(event) =>
+                            setReleaseReviewed(
+                              event.currentTarget.checked ? receipt().subjectDigest : undefined
+                            )
+                          }
+                        />{' '}
+                        I have preserved or manually integrated these host changes.
+                      </label>
+                      <button
+                        type="button"
+                        class="link-button"
+                        disabled={unavailable() || releaseReviewed() !== receipt().subjectDigest}
+                        onClick={() =>
+                          void runAction({
+                            action: 'releaseApplication',
+                            runId: current().runId,
+                            subjectDigest: receipt().subjectDigest,
+                            acknowledged: true,
+                          })
                         }
-                      />{' '}
-                      I have preserved or manually integrated these host changes.
-                    </label>
+                      >
+                        Allow synchronization
+                      </button>
+                    </Show>
+                  </div>
+                )}
+              </Show>
+              <For each={current().pendingApprovals}>
+                {(item) => (
+                  <button
+                    type="button"
+                    class="link-button"
+                    disabled={unavailable()}
+                    onClick={() => setApproval(item)}
+                  >
+                    Review {item.approvalType}
+                  </button>
+                )}
+              </For>
+              <Show when={approval()}>
+                {(item) => (
+                  <section aria-label="Implementation approval">
+                    <p>{item().summary}</p>
+                    <PolyglotApproval approval={item()} />
+                    <p class="settings-hint">
+                      Subject <code>{item().subjectDigest}</code> · Scope{' '}
+                      <code>{item().scopeDigest}</code>
+                    </p>
                     <button
                       type="button"
-                      class="link-button"
-                      disabled={unavailable() || releaseReviewed() !== receipt().subjectDigest}
+                      class="chat-action-button"
+                      disabled={unavailable() || item().subject == null}
                       onClick={() =>
                         void runAction({
-                          action: 'releaseApplication',
+                          action: 'approve',
                           runId: current().runId,
-                          subjectDigest: receipt().subjectDigest,
-                          acknowledged: true,
+                          request: item().request,
                         })
                       }
                     >
-                      Allow synchronization
+                      Approve {item().approvalType}
                     </button>
-                  </Show>
-                </div>
-              )}
-            </Show>
-            <For each={current().pendingApprovals}>
-              {(item) => (
+                    <button
+                      type="button"
+                      class="link-button"
+                      onClick={() => setApproval(undefined)}
+                    >
+                      Close approval review
+                    </button>
+                  </section>
+                )}
+              </Show>
+              <Show when={current().canResume}>
+                <button
+                  type="button"
+                  class="chat-action-button"
+                  disabled={unavailable() || !rates() || !!providerProblem() || !!inputProblem()}
+                  onClick={() =>
+                    void runAction({
+                      action: 'resumeImplementation',
+                      runId: current().runId,
+                      provider: provider(),
+                    })
+                  }
+                >
+                  Resume verified implementation
+                </button>
+              </Show>
+              <Show when={current().canRecover}>
                 <button
                   type="button"
                   class="link-button"
                   disabled={unavailable()}
-                  onClick={() => setApproval(item)}
+                  onClick={() => void runAction({ action: 'recover', runId: current().runId })}
                 >
-                  Review {item.approvalType}
+                  Recover interrupted implementation
                 </button>
-              )}
-            </For>
-            <Show when={approval()}>
-              {(item) => (
-                <section aria-label="Implementation approval">
-                  <p>{item().summary}</p>
-                  <PolyglotApproval approval={item()} />
-                  <p class="settings-hint">
-                    Subject <code>{item().subjectDigest}</code> · Scope{' '}
-                    <code>{item().scopeDigest}</code>
-                  </p>
-                  <button
-                    type="button"
-                    class="chat-action-button"
-                    disabled={unavailable() || item().subject == null}
-                    onClick={() =>
-                      void runAction({
-                        action: 'approve',
-                        runId: current().runId,
-                        request: item().request,
-                      })
-                    }
-                  >
-                    Approve {item().approvalType}
-                  </button>
-                  <button type="button" class="link-button" onClick={() => setApproval(undefined)}>
-                    Close approval review
-                  </button>
-                </section>
-              )}
-            </Show>
-            <Show when={current().canResume}>
-              <button
-                type="button"
-                class="chat-action-button"
-                disabled={unavailable() || !rates() || !!providerProblem() || !!inputProblem()}
-                onClick={() =>
-                  void runAction({
-                    action: 'resumeImplementation',
-                    runId: current().runId,
-                    provider: provider(),
-                  })
-                }
-              >
-                Resume verified implementation
-              </button>
-            </Show>
-            <Show when={current().canRecover}>
+              </Show>
               <button
                 type="button"
                 class="link-button"
                 disabled={unavailable()}
-                onClick={() => void runAction({ action: 'recover', runId: current().runId })}
+                onClick={() => void runAction({ action: 'status', runId: current().runId })}
               >
-                Recover interrupted implementation
+                Refresh implementation result
               </button>
-            </Show>
-            <button
-              type="button"
-              class="link-button"
-              disabled={unavailable()}
-              onClick={() => void runAction({ action: 'status', runId: current().runId })}
-            >
-              Refresh implementation result
-            </button>
-            <button
-              type="button"
-              class="chat-action-button"
-              disabled={unavailable() || !current().candidateDigest}
-              onClick={() =>
-                void request<HarnessChangeReview>(
-                  { action: 'reviewChanges', runId: current().runId },
-                  setReview
-                )
-              }
-            >
-              {shownStatus() === 'verified'
-                ? 'Review verified changes'
-                : 'Review candidate changes'}
-            </button>
-            <button
-              type="button"
-              class="link-button"
-              disabled={unavailable() || !current().candidateDigest}
-              onClick={() =>
-                void request<unknown>(
-                  { action: 'exportReview', runId: current().runId },
-                  setExported
-                )
-              }
-            >
-              Export review bundle
-            </button>
-            <button
-              type="button"
-              class="chat-action-button"
-              disabled={
-                unavailable() ||
-                shownStatus() !== 'verified' ||
-                !!inputProblem() ||
-                review()?.runId !== current().runId
-              }
-              onClick={() =>
-                void request<HarnessRun>(
-                  { action: 'prepareApplication', runId: current().runId },
-                  (value) => {
-                    setRun(value);
-                    setFresh(true);
-                    setApproval(undefined);
-                    props.onRunChange?.(value);
-                  }
-                )
-              }
-            >
-              Prepare application review
-            </button>
-            <Show when={current().application}>
-              {(application) => (
-                <section aria-label="Reviewed application">
-                  <SubjectFields value={application().subject} />
-                  <p>
-                    Approve the exact delivery subject above, then apply it to the named checkout.
-                  </p>
-                  <button
-                    type="button"
-                    class="chat-action-button primary"
-                    disabled={
-                      unavailable() ||
-                      !!inputProblem() ||
-                      shownStatus() !== 'verified' ||
-                      current().pendingApprovals.some((item) => item.approvalType === 'delivery')
+              <button
+                type="button"
+                class="chat-action-button"
+                disabled={unavailable() || !current().candidateDigest}
+                onClick={() =>
+                  void request<HarnessChangeReview>(
+                    { action: 'reviewChanges', runId: current().runId },
+                    setReview
+                  )
+                }
+              >
+                {shownStatus() === 'verified'
+                  ? 'Review verified changes'
+                  : 'Review candidate changes'}
+              </button>
+              <button
+                type="button"
+                class="link-button"
+                disabled={unavailable() || !current().candidateDigest}
+                onClick={() =>
+                  void request<unknown>(
+                    { action: 'exportReview', runId: current().runId },
+                    setExported
+                  )
+                }
+              >
+                Export review bundle
+              </button>
+              <button
+                type="button"
+                class="chat-action-button"
+                disabled={
+                  unavailable() ||
+                  shownStatus() !== 'verified' ||
+                  !!inputProblem() ||
+                  review()?.runId !== current().runId
+                }
+                onClick={() =>
+                  void request<HarnessRun>(
+                    { action: 'prepareApplication', runId: current().runId },
+                    (value) => {
+                      setRun(value);
+                      setFresh(true);
+                      setApproval(undefined);
+                      props.onRunChange?.(value);
                     }
-                    onClick={() =>
-                      void runAction({
-                        action: 'applyApplication',
-                        runId: current().runId,
-                        subjectDigest: application().subjectDigest,
-                        savedBuffers: true,
-                      })
-                    }
-                  >
-                    Apply reviewed verified changes
-                  </button>
-                  <Show when={['blocked', 'stale'].includes(current().status)}>
+                  )
+                }
+              >
+                Prepare application review
+              </button>
+              <Show when={current().application}>
+                {(application) => (
+                  <section aria-label="Reviewed application">
+                    <SubjectFields value={application().subject} />
+                    <p>
+                      Approve the exact delivery subject above, then apply it to the named checkout.
+                    </p>
                     <button
                       type="button"
-                      class="link-button"
-                      disabled={unavailable() || !!inputProblem()}
+                      class="chat-action-button primary"
+                      disabled={
+                        unavailable() ||
+                        !!inputProblem() ||
+                        shownStatus() !== 'verified' ||
+                        current().pendingApprovals.some((item) => item.approvalType === 'delivery')
+                      }
                       onClick={() =>
                         void runAction({
-                          action: 'recoverApplication',
+                          action: 'applyApplication',
                           runId: current().runId,
                           subjectDigest: application().subjectDigest,
                           savedBuffers: true,
                         })
                       }
                     >
-                      Recover interrupted application
+                      Apply reviewed verified changes
                     </button>
-                  </Show>
-                </section>
-              )}
-            </Show>
-            <details>
-              <summary>Preparation role drafts</summary>
-              <p class="settings-hint">
-                Drafts use this run's model budget. They are advisory and grant no approvals. Review
-                the proposals, then edit the guided setup and start a new run if the criteria or
-                design must change.
-              </p>
-              <For each={['domain', 'architect', 'oracle'] as const}>
-                {(role) => (
-                  <button
-                    type="button"
-                    class="link-button"
-                    disabled={
-                      unavailable() ||
-                      current().status === 'running' ||
-                      !rates() ||
-                      !!providerProblem()
-                    }
-                    onClick={() =>
-                      void runAction({
-                        action: 'draftPlan',
-                        runId: current().runId,
-                        role,
-                        provider: provider(),
-                      })
-                    }
-                  >
-                    Draft {role} preparation
-                  </button>
+                    <Show when={['blocked', 'stale'].includes(current().status)}>
+                      <button
+                        type="button"
+                        class="link-button"
+                        disabled={unavailable() || !!inputProblem()}
+                        onClick={() =>
+                          void runAction({
+                            action: 'recoverApplication',
+                            runId: current().runId,
+                            subjectDigest: application().subjectDigest,
+                            savedBuffers: true,
+                          })
+                        }
+                      >
+                        Recover interrupted application
+                      </button>
+                    </Show>
+                  </section>
                 )}
-              </For>
-              <For each={current().drafts ?? []}>
-                {(value) => (
-                  <details open>
-                    <summary>{value.role} — advisory draft; review required</summary>
-                    <SubjectFields value={value.draft} />
-                  </details>
-                )}
-              </For>
+              </Show>
+              <Show when={!props.runId && current().status !== 'running'}>
+                <button
+                  type="button"
+                  class="link-button"
+                  disabled={unavailable()}
+                  onClick={() => {
+                    setRun(undefined);
+                    setRestart(true);
+                  }}
+                >
+                  Prepare a new implementation
+                </button>
+              </Show>
+            </section>
+          )}
+        </Show>
+        <Show when={review()}>
+          {(value) => (
+            <details open>
+              <summary>Candidate change review</summary>
+              <SubjectFields value={value()} />
             </details>
-            <Show when={!props.runId && current().status !== 'running'}>
-              <button
-                type="button"
-                class="link-button"
-                disabled={unavailable()}
-                onClick={() => {
-                  setRun(undefined);
-                  setCriteriaReviewed(false);
-                  setSetupRevision((revision) => revision + 1);
-                }}
-              >
-                Return to setup and plan review
-              </button>
-            </Show>
-          </section>
-        )}
-      </Show>
-      <Show when={review()}>
-        {(value) => (
-          <details open>
-            <summary>Candidate change review</summary>
-            <SubjectFields value={value()} />
-          </details>
-        )}
-      </Show>
-      <Show when={exported()}>
-        {(value) => (
-          <div role="status">
-            <p>Review bundle saved on the execution host.</p>
-            <SubjectFields value={value()} />
-          </div>
-        )}
-      </Show>
-    </PolyglotReviewFrame>
+          )}
+        </Show>
+        <Show when={exported()}>
+          {(value) => (
+            <div role="status">
+              <p>Review bundle saved on the execution host.</p>
+              <SubjectFields value={value()} />
+            </div>
+          )}
+        </Show>
+      </PolyglotReviewFrame>
+    </Show>
   );
 }

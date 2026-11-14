@@ -315,7 +315,12 @@ fn mandatory_context_and_worker_capability_boundaries_survive_untrusted_text() {
             .len(),
         1
     );
-    let broker = Broker::new(&c.ledger, &setup.base, Default::default());
+    let broker = Broker::new(
+        &c.ledger,
+        &setup.base,
+        Default::default(),
+        &setup.policy.deny_read,
+    );
     assert!(broker
         .call(&ToolRequest::ReadFile {
             path: "../../state/ledger.sqlite".into(),

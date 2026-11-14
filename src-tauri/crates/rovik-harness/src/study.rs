@@ -307,6 +307,7 @@ fn context(
             &config.contract.intent,
             &[],
             Some(&config.contract.scope),
+            &config.policy.deny_read,
         )?);
     }
     context::build(
@@ -528,10 +529,7 @@ impl Controller {
                                 }
                                 feedback = observed
                                     .into_iter()
-                                    .map(|result| {
-                                        serde_json::to_value(result)
-                                            .map_err(|e| Error::new(e.to_string()))
-                                    })
+                                    .map(|result| context::check_feedback(&config.policy, &result))
                                     .collect::<Result<_>>()?;
                             }
                             Ok(())

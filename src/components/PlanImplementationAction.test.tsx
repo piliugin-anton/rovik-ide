@@ -207,7 +207,7 @@ test('a status lookup failure is visible and can be retried without crashing the
   }
 });
 
-test('Require verified result passes explicit intent without changing ordinary implementation by default', async () => {
+test('plan implementation prepares verification by default and preserves an explicit ordinary alternative', async () => {
   record = null;
   lookupError = false;
   const selected: (boolean | undefined)[] = [];
@@ -227,10 +227,10 @@ test('Require verified result passes explicit intent without changing ordinary i
     await tick();
     root.querySelector<HTMLButtonElement>('.primary')!.click();
     const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    checkbox.checked = true;
+    checkbox.checked = false;
     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     root.querySelector<HTMLButtonElement>('.primary')!.click();
-    assert.deepEqual(selected, [false, true]);
+    assert.deepEqual(selected, [true, false]);
   } finally {
     dispose();
   }

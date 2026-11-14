@@ -212,17 +212,34 @@ impl Run {
         while !rest.is_empty() {
             // A final review closes the evidence snapshot. Settle every call
             // ID in a mixed reply, but do not execute work after acceptance.
-            if self.sub().is_some_and(|sub| sub.accepted_review.is_some()) {
+            if self.sub().is_some_and(|sub| sub.accepted_review.is_some())
+                || self
+                    .preparation
+                    .as_ref()
+                    .is_some_and(|preparation| preparation.submitted)
+            {
                 for tc in rest {
                     self.calls.start(&tc.id);
                     self.answer_unrun(
                         tc,
-                        "Error: not run: this review was already submitted.".into(),
+                        "Error: not run: this run already submitted its review or preparation."
+                            .into(),
                         Outcome::Failed,
                         true,
                         None,
                     )
                     .await?;
+                }
+                break;
+            }
+            if self
+                .preparation
+                .as_ref()
+                .is_some_and(|preparation| preparation.out_of_work(self.guard.tool_calls))
+            {
+                for tc in rest {
+                    self.calls.start(&tc.id);
+                    self.answer_unrun(tc, "Error: not run: verification preparation reached its work limit. Implementation has not started.".into(), Outcome::Failed, true, None).await?;
                 }
                 break;
             }
@@ -242,7 +259,7 @@ impl Run {
             }
             // The lead's subagents: a run of `task` calls starts together
             // (subagent_run.rs), at most the settings' number at once.
-            let tasks = if self.sub().is_none() {
+            let tasks = if self.sub().is_none() && self.preparation.is_none() {
                 rest.iter()
                     .take_while(|tc| {
                         BuiltinTool::parse(&tc.name)
@@ -317,7 +334,8 @@ impl Run {
         let Some(spec) = BuiltinTool::parse(&tc.name).map(|t| t.spec()) else {
             return false;
         };
-        if resume_note.is_some()
+        if self.preparation.is_some()
+            || resume_note.is_some()
             || self.stopped()
             || !spec.parallel
             || !spec.modes.offered_in(self.plan_mode)
@@ -504,9 +522,33 @@ impl Run {
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
 
+        if self.preparation.is_some()
+            && tool.is_none_or(|tool| !super::verified_preparation::permits(tool))
+        {
+            return self.answer_unrun(
+                tc,
+                "Error: this preparation run can only prepare private verification inputs. It cannot delegate, start background work, or perform external actions.".into(),
+                Outcome::Failed,
+                true,
+                None,
+            ).await;
+        }
+
+        if let (Some(_), Some(tool), Some(root)) = (&self.preparation, tool, self.root.as_deref()) {
+            if let Some(problem) = super::verified_preparation::path_problem(root, tool, &args) {
+                return self
+                    .answer_unrun(tc, format!("Error: {problem}"), Outcome::Failed, true, None)
+                    .await;
+            }
+        }
+
         // Test edits belong to an independent testing role. Resolve links
         // too, so a source-looking alias cannot bypass ownership.
-        if tc.name == "write" && !self.plan_mode && !self.sub().is_some_and(|sub| sub.tests_only) {
+        if tc.name == "write"
+            && !self.plan_mode
+            && self.preparation.is_none()
+            && !self.sub().is_some_and(|sub| sub.tests_only)
+        {
             if let (Some(path), Some(root)) = (path_arg, self.root.as_deref()) {
                 let key = super::repair::rel_key(root, path);
                 let real = super::repair::real_key(root, path);
@@ -709,6 +751,9 @@ impl Run {
             Some(BuiltinTool::SubmitPlan) => {
                 return self.submit_plan(tc, &args).await;
             }
+            Some(BuiltinTool::PrepareVerifiedPlan) => {
+                return self.submit_verified_preparation(tc, &args).await;
+            }
             Some(BuiltinTool::SubmitReview) => {
                 let result = self.submit_review(&args);
                 return self
@@ -731,7 +776,7 @@ impl Run {
                     outcome,
                     ..
                 } = checklist::describe_todo(&items);
-                if !outcome.failed() {
+                if !outcome.failed() && self.preparation.is_none() {
                     if let Err(error) = self.record_plan_implementation_intent(&args).await {
                         return self
                             .add_tool_result(
@@ -1025,7 +1070,8 @@ impl Run {
         // An isolated chat's changes are saved as they happen (overlay/fs.rs).
         // Then compared with the other open chats on the project, so a clash
         // on the same lines is told with this result.
-        if crate::overlay::chats::get(&self.overlay_owner()).is_some() {
+        if self.preparation.is_none() && crate::overlay::chats::get(&self.overlay_owner()).is_some()
+        {
             let id = self.overlay_owner();
             let _ = crate::rt::spawn_blocking(move || {
                 if let Some(o) = crate::overlay::chats::get(&id) {
@@ -1038,8 +1084,10 @@ impl Run {
         // The project changed under an isolated chat: its model hears it with
         // this result.
         let mut result = result;
-        if let Some(note) = crate::overlay::chats::take_note(&self.dialog_id) {
-            result.content.push_str(&note);
+        if self.preparation.is_none() {
+            if let Some(note) = crate::overlay::chats::take_note(&self.dialog_id) {
+                result.content.push_str(&note);
+            }
         }
         let write = match (writes, write_path) {
             (true, Some(path)) => Some(WriteTarget {
@@ -1217,9 +1265,10 @@ impl Run {
             }
         }
 
+        // Private preparation drafts are not editor changes in the user's checkout.
         // Open tabs of the file show what was written; an edit the user
         // didn't review is marked in the editor until they save.
-        if writes && !failed {
+        if writes && !failed && self.preparation.is_none() {
             if let (Some(abs), Some(after)) = (&abs_write_path, &after) {
                 let reviewed = auth
                     .approval

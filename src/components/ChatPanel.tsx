@@ -102,6 +102,7 @@ import {
   verifiedPlanContextProblem,
 } from '../lib/polyglotPlan';
 import { verificationInputProblem, type HarnessProviderBinding } from '../lib/polyglotHarness';
+import { preparationReplyMetadata, type PlanPreparation } from '../lib/planPreparation';
 import AutopilotStrip from './AutopilotStrip';
 import {
   runningCandidate,
@@ -309,9 +310,14 @@ export default function ChatPanel(props: ChatProps) {
     dialogId: string;
     path?: string;
     runId?: string;
+    preparationId?: string;
     profile?: ModelProfile;
     projectId: string;
     owner: string;
+  }>();
+  const [openPreparation, setOpenPreparation] = createSignal<{
+    plan: NonNullable<ReturnType<typeof strictPlan>>;
+    session: PlanPreparation;
   }>();
   const [strictActive, setStrictActive] = createSignal(false);
   const [strictStartReview, setStrictStartReview] = createSignal<{
@@ -3289,7 +3295,12 @@ export default function ChatPanel(props: ChatProps) {
           start,
           profile: dispatchedProfile,
           options: reasoningOptions(dispatchedProfile, effort),
-          mode: reviewedStart || strictTask ? 'autopilot' : chatMode(),
+          mode:
+            reviewedStart || strictTask
+              ? 'autopilot'
+              : start.kind === 'send' && typeof start.message.meta?.verifiedPreparation === 'string'
+                ? 'agent'
+                : chatMode(),
           contextMode: ensureContextMode(dialogId),
           root: captured?.root ?? startingRoot,
           currentUserContent,
@@ -3368,12 +3379,30 @@ export default function ChatPanel(props: ChatProps) {
     };
   }
 
+  function preparationReplyMeta(dialogId: string, meta: ChatMessage['meta']) {
+    const plan = strictPlan();
+    const open = openPreparation();
+    return preparationReplyMetadata(
+      open?.plan === plan ? open?.session : undefined,
+      plan,
+      {
+        root: props.rootPath(),
+        projectId: props.projectId(),
+        chatProjectId: store.projectId(),
+        dialogId: activeDialogId() === dialogId ? dialogId : null,
+        owner: harnessOwner(dialogId),
+      },
+      meta
+    );
+  }
+
   /** Sends a user message (shown at once; the run stores it first thing). */
   async function sendMessage(
     dialogId: string,
     message: { id: string; content: string; meta: ChatMessage['meta']; attachments?: string[] },
     wireContent: string | undefined
   ): Promise<boolean> {
+    message = { ...message, meta: preparationReplyMeta(dialogId, message.meta) };
     if (dialogId === activeDialogId() && unresolvedStrictTask(taskStages())) {
       openStrictAutopilot();
       notify({
@@ -3394,7 +3423,8 @@ export default function ChatPanel(props: ChatProps) {
       subagentSettings().autopilot,
       message.meta?.mode ?? chatMode(),
       worksOnItsOwn(store.summaryOf(dialogId)?.place, cloud.hosts),
-      !!message.meta?.command
+      !!message.meta?.command,
+      typeof message.meta?.verifiedPreparation === 'string'
     );
     if (strictRequired) {
       const root = props.rootPath();
@@ -3456,7 +3486,7 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /** "Implement this plan" under the plan in the chat: its file. */
-  function implementPlan(requireVerified = false) {
+  function implementPlan(requireVerified = true) {
     const dialogId = activeDialogId();
     if (!dialogId) return;
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
@@ -3470,15 +3500,32 @@ export default function ChatPanel(props: ChatProps) {
    * request, which keeps it in view for the whole run (the current request
    * is never dropped from the context); the chat shows a short line.
    */
-  async function startImplementation(dialogId: string, file: string, requireVerified = false) {
-    if (!activeProfile() || isRunning(dialogId) || strictActive()) return;
+  async function startImplementation(dialogId: string, file: string, requireVerified = true) {
+    if (!activeProfile() || isRunning(dialogId) || strictActive() || strictPlan()) return;
     if (requireVerified) {
       const root = props.rootPath();
       const projectId = props.projectId();
       const dialog = store.summaryOf(dialogId);
       if (!root || !projectId || store.projectId() !== projectId || !dialog || readOnly()) return;
       const owner = dialog.place?.kind === 'host' ? dialog.place.host : 'local';
-      setStrictPlan({ root, dialogId, path: file, profile: activeProfile()!, projectId, owner });
+      const previous = [...store.messagesOf(dialogId)]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === 'user' &&
+            !message.failed &&
+            message.meta?.planPath === file &&
+            typeof message.meta?.verifiedPreparation === 'string'
+        );
+      setStrictPlan({
+        root,
+        dialogId,
+        path: file,
+        profile: activeProfile()!,
+        projectId,
+        owner,
+        preparationId: previous?.meta?.verifiedPreparation,
+      });
       return;
     }
     try {
@@ -3942,7 +3989,16 @@ export default function ChatPanel(props: ChatProps) {
     }
     // A mode the model can't run (Autopilot without Rovik's tools): the
     // text stays, and the notice says why.
-    const effectiveMode = worksOnItsOwn(dialog.place, cloud.hosts) ? 'autopilot' : chatMode();
+    const replyMeta = preparationReplyMeta(dialog.id, {
+      mode: chatMode(),
+      ...(typedCommand() ? { command: true } : {}),
+    });
+    const effectiveMode =
+      typeof replyMeta?.verifiedPreparation === 'string'
+        ? 'agent'
+        : worksOnItsOwn(dialog.place, cloud.hosts)
+          ? 'autopilot'
+          : chatMode();
     const unavailable = modeUnavailable(effectiveMode, profile);
     if (unavailable) {
       notify({
@@ -3955,7 +4011,7 @@ export default function ChatPanel(props: ChatProps) {
     }
     // A Thorough task: the kinds it judges with run only on models chosen
     // for them (T09), so it doesn't start until each has one. The text stays.
-    if (chatMode() === 'autopilot' || worksOnItsOwn(dialog.place, cloud.hosts)) {
+    if (effectiveMode === 'autopilot') {
       const settings = subagentSettings();
       const effort = taskEffort(dialog.place, cloud.hosts, settings.autopilot.effort);
       const missing = effort === 'thorough' ? kindsWithoutModel(settings, providers()) : [];
@@ -3986,7 +4042,7 @@ export default function ChatPanel(props: ChatProps) {
       id: crypto.randomUUID(),
       content: text,
       meta: {
-        mode: chatMode(),
+        ...replyMeta,
         ...(command ? { command: true } : {}),
         ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
         ...(pdfs.length > 0 ? { pdfs } : {}),
@@ -4929,77 +4985,142 @@ export default function ChatPanel(props: ChatProps) {
         }
       />
       <Show when={strictStartReview()} keyed>
-        {(review) => (
-          <PolyglotAutopilotReview
-            target={{ root: review.root, dialogId: review.dialogId }}
-            profile={review.profile}
-            request={review.request}
-            executionLabel={
-              review.owner === 'local'
-                ? 'This computer'
-                : (cloud.hosts.find((host) => host.id === review.owner)?.name ??
-                  'Selected chat’s host')
-            }
-            unsavedFiles={props.unsavedFiles?.()}
-            contextProblem={
-              activeDialogId() !== review.dialogId
-                ? 'Return to the original chat to review this task, or cancel its start.'
-                : (verifiedPlanContextProblem(review, {
-                    root: props.rootPath(),
-                    projectId: props.projectId(),
-                    chatProjectId: store.projectId(),
-                    owner: harnessOwner(review.dialogId),
-                  }) ??
-                  boundHarnessProviderProblem(
-                    {
-                      profileId: review.profile.id,
-                      model: review.profile.model,
-                      endpoint: `${review.profile.baseUrl.replace(/\/+$/, '')}/chat/completions`,
-                      rates: { input: 0, cachedInput: 0, output: 0 },
-                    },
-                    activeProfile() ?? undefined
-                  ))
-            }
-            onStart={(settings) => review.finish(settings)}
-            onCancel={() => review.finish(null)}
-          />
-        )}
+        {(review) => {
+          const profile = createMemo(
+            () =>
+              currentBoundProfile({
+                profileId: review.profile.id,
+                model: review.profile.model,
+                endpoint: `${review.profile.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+              }) ?? review.profile
+          );
+          const contextProblem = createMemo(() =>
+            activeDialogId() !== review.dialogId
+              ? 'Return to the original chat to review this task, or cancel its start.'
+              : (verifiedPlanContextProblem(review, {
+                  root: props.rootPath(),
+                  projectId: props.projectId(),
+                  chatProjectId: store.projectId(),
+                  owner: harnessOwner(review.dialogId),
+                }) ??
+                boundHarnessProviderProblem(
+                  {
+                    profileId: review.profile.id,
+                    model: review.profile.model,
+                    endpoint: `${review.profile.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+                    rates: { input: 0, cachedInput: 0, output: 0 },
+                  },
+                  activeProfile() ?? undefined
+                ))
+          );
+          return (
+            <PolyglotAutopilotReview
+              target={{ root: review.root, dialogId: review.dialogId }}
+              profile={profile()}
+              request={review.request}
+              executionLabel={
+                review.owner === 'local'
+                  ? 'This computer'
+                  : (cloud.hosts.find((host) => host.id === review.owner)?.name ??
+                    'Selected chat’s host')
+              }
+              unsavedFiles={props.unsavedFiles?.()}
+              contextProblem={contextProblem()}
+              onStart={(settings) => review.finish(settings)}
+              onCancel={() => review.finish(null)}
+            />
+          );
+        }}
       </Show>
       <Show when={strictPlan()} keyed>
-        {(plan) => (
-          <PolyglotPlanImplementation
-            target={{ root: plan.root, dialogId: plan.dialogId }}
-            contextProblem={verifiedPlanContextProblem(plan, {
-              root: props.rootPath(),
-              projectId: props.projectId(),
-              chatProjectId: store.projectId(),
-              owner: !store.summaryOf(plan.dialogId)
-                ? undefined
-                : store.summaryOf(plan.dialogId)?.place
-                  ? store.summaryOf(plan.dialogId)?.place?.kind === 'host'
-                    ? store.summaryOf(plan.dialogId)?.place?.host
-                    : undefined
-                  : 'local',
-            })}
-            planPath={plan.path}
-            runId={plan.runId}
-            profile={plan.profile}
-            resolveProvider={currentBoundProfile}
-            unsavedFiles={props.unsavedFiles?.()}
-            executionLabel={
-              store.summaryOf(plan.dialogId)?.place?.kind === 'host'
-                ? (cloud.hosts.find(
-                    (host) => host.id === store.summaryOf(plan.dialogId)?.place?.host
-                  )?.name ?? 'Selected chat’s host')
-                : 'This computer (selected chat)'
-            }
-            onActiveChange={setStrictActive}
-            onClose={() => {
-              setStrictPlan(undefined);
-              setStrictActive(false);
-            }}
-          />
-        )}
+        {(plan) => {
+          onCleanup(() => setOpenPreparation((open) => (open?.plan === plan ? undefined : open)));
+          const contextProblem = createMemo(() =>
+            activeDialogId() !== plan.dialogId
+              ? 'Return to this plan’s chat to continue preparation or implementation.'
+              : verifiedPlanContextProblem(plan, {
+                  root: props.rootPath(),
+                  projectId: props.projectId(),
+                  chatProjectId: store.projectId(),
+                  owner: harnessOwner(plan.dialogId),
+                })
+          );
+          const profile = createMemo(() =>
+            plan.profile
+              ? currentBoundProfile({
+                  profileId: plan.profile.id,
+                  model: plan.profile.model,
+                  endpoint: `${plan.profile.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+                })
+              : undefined
+          );
+          return (
+            <PolyglotPlanImplementation
+              target={{ root: plan.root, dialogId: plan.dialogId }}
+              contextProblem={contextProblem()}
+              planPath={plan.path}
+              runId={plan.runId}
+              preparationId={plan.preparationId}
+              profile={profile()}
+              agentRunning={isRunning(plan.dialogId)}
+              onPreparationChange={(session) => setOpenPreparation({ plan, session })}
+              onRunChange={() => setOpenPreparation(undefined)}
+              onPrepare={async (preparationId) => {
+                if (
+                  !plan.path ||
+                  activeDialogId() !== plan.dialogId ||
+                  props.rootPath() !== plan.root ||
+                  props.projectId() !== plan.projectId ||
+                  store.projectId() !== plan.projectId ||
+                  harnessOwner(plan.dialogId) !== plan.owner ||
+                  isRunning(plan.dialogId) ||
+                  strictActive()
+                )
+                  return false;
+                const selected = activeProfile();
+                if (
+                  !selected ||
+                  !plan.profile ||
+                  selected.id !== plan.profile.id ||
+                  selected.model !== plan.profile.model ||
+                  selected.baseUrl !== plan.profile.baseUrl
+                )
+                  return false;
+                setChatMode('agent');
+                return sendMessage(
+                  plan.dialogId,
+                  {
+                    id: crypto.randomUUID(),
+                    content: `Prepare verification for the plan in \`${plan.path}\`.`,
+                    meta: {
+                      mode: 'agent',
+                      verifiedPreparation: preparationId,
+                      planPath: plan.path,
+                    },
+                  },
+                  undefined
+                );
+              }}
+              onStopPreparation={async () => {
+                await stopRun(plan.dialogId);
+              }}
+              resolveProvider={currentBoundProfile}
+              unsavedFiles={props.unsavedFiles?.()}
+              executionLabel={
+                store.summaryOf(plan.dialogId)?.place?.kind === 'host'
+                  ? (cloud.hosts.find(
+                      (host) => host.id === store.summaryOf(plan.dialogId)?.place?.host
+                    )?.name ?? 'Selected chat’s host')
+                  : 'This computer (selected chat)'
+              }
+              onActiveChange={setStrictActive}
+              onClose={() => {
+                setStrictPlan(undefined);
+                setStrictActive(false);
+              }}
+            />
+          );
+        }}
       </Show>
       {/* What the project's memory gave this run, above its checklist. */}
       <Show when={recalledMemories(activeDialogId())} keyed>

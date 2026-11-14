@@ -172,6 +172,11 @@ test('verified delivery is opt-in and saved settings never retain per-task revie
   );
   assert.equal(requiresVerifiedTaskReview(saved, 'agent', false), false);
   assert.equal(
+    requiresVerifiedTaskReview(saved, 'agent', true, false, true),
+    false,
+    'plan preparation uses its private agent workflow even on an autonomous host'
+  );
+  assert.equal(
     requiresVerifiedTaskReview(saved, 'autopilot', true, true),
     false,
     'commands do not create tasks'

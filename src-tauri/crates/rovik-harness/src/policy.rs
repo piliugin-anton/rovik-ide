@@ -20,6 +20,9 @@ pub struct PolicyLayer {
     pub facts: BTreeMap<String, String>,
     /// Each layer constrains writes independently.
     pub scope: Scope,
+    /// Source paths that models and worker read tools cannot inspect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_read: Vec<String>,
 }
 
 /// Deterministically resolved policy; its exact bytes are evidence inputs.
@@ -36,6 +39,10 @@ pub struct EffectivePolicy {
     pub facts: BTreeMap<String, String>,
     /// A path must pass every scope; this preserves exact intersections.
     pub scopes: Vec<Scope>,
+    /// Trusted read exclusions, independent of the complete verification snapshot.
+    /// Omitting an empty list preserves the identity of earlier policy documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_read: Vec<String>,
 }
 impl EffectivePolicy {
     /// Resolve trusted layers against registered command and obligation IDs.
@@ -51,9 +58,11 @@ impl EffectivePolicy {
             limits: BTreeMap::new(),
             facts: BTreeMap::new(),
             scopes: Vec::new(),
+            deny_read: Vec::new(),
         };
         for layer in layers {
             layer.scope.validate()?;
+            validate_read_patterns(&layer.deny_read)?;
             require(
                 layer
                     .allow_commands
@@ -81,8 +90,24 @@ impl EffectivePolicy {
                 }
             }
             out.scopes.push(layer.scope.clone());
+            out.deny_read.extend(layer.deny_read.iter().cloned());
         }
+        out.deny_read.sort();
+        out.deny_read.dedup();
         Ok(out)
+    }
+    /// Validate portable read exclusions before constructing any worker view.
+    pub fn validate_reads(&self) -> Result<()> {
+        validate_read_patterns(&self.deny_read)
+    }
+    /// Reject reads forbidden by any trusted policy layer.
+    pub fn check_read(&self, path: &str) -> Result<()> {
+        crate::scope::validate_path(path)?;
+        self.validate_reads()?;
+        require(
+            readable(&self.deny_read, path),
+            "source read is restricted by project policy",
+        )
     }
     /// Check a proposed path against every applicable layer.
     pub fn check_write(&self, path: &str) -> Result<()> {
@@ -92,4 +117,20 @@ impl EffectivePolicy {
         }
         Ok(())
     }
+}
+
+/// Validate exclusions before using their non-fallible matcher over an admitted snapshot.
+pub(crate) fn validate_read_patterns(patterns: &[String]) -> Result<()> {
+    crate::unique(patterns.iter().map(String::as_str))?;
+    for pattern in patterns {
+        crate::scope::validate_pattern(pattern)?;
+    }
+    Ok(())
+}
+
+/// Patterns and source paths have already been validated by their owner.
+pub(crate) fn readable(patterns: &[String], path: &str) -> bool {
+    !patterns
+        .iter()
+        .any(|pattern| crate::scope::matches(pattern, path))
 }

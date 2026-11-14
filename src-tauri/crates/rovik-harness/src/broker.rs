@@ -98,21 +98,33 @@ pub struct Broker<'a> {
     ledger: &'a Ledger,
     snapshot: &'a Snapshot,
     diagnostics: BTreeSet<Digest>,
+    deny_read: &'a [String],
 }
 impl<'a> Broker<'a> {
     /// Construct from controller-owned handles; no host paths are accepted.
-    pub fn new(ledger: &'a Ledger, snapshot: &'a Snapshot, diagnostics: BTreeSet<Digest>) -> Self {
+    pub fn new(
+        ledger: &'a Ledger,
+        snapshot: &'a Snapshot,
+        diagnostics: BTreeSet<Digest>,
+        deny_read: &'a [String],
+    ) -> Self {
         Self {
             ledger,
             snapshot,
             diagnostics,
+            deny_read,
         }
     }
     /// Execute one admitted read or return an explicit non-authorizing change request.
     pub fn call(&self, tool: &ToolRequest) -> Result<serde_json::Value> {
+        crate::policy::validate_read_patterns(self.deny_read)?;
         match tool {
             ToolRequest::InspectSymbol { path, symbol } => {
                 scope::validate_path(path)?;
+                require(
+                    crate::policy::readable(self.deny_read, path),
+                    "source read is restricted by project policy",
+                )?;
                 require(
                     !symbol.is_empty() && symbol.len() <= 256,
                     "invalid symbol query",
@@ -132,6 +144,10 @@ impl<'a> Broker<'a> {
                 maximum_lines,
             } => {
                 scope::validate_path(path)?;
+                require(
+                    crate::policy::readable(self.deny_read, path),
+                    "source read is restricted by project policy",
+                )?;
                 require(
                     *start_line > 0 && *maximum_lines > 0 && *maximum_lines <= 400,
                     "invalid source range",
@@ -176,7 +192,9 @@ impl<'a> Broker<'a> {
                 scope::validate_pattern(pattern)?;
                 let mut hits = Vec::new();
                 'files: for (path, file) in &self.snapshot.files {
-                    if !scope::matches(pattern, path) {
+                    if !scope::matches(pattern, path)
+                        || !crate::policy::readable(self.deny_read, path)
+                    {
                         continue;
                     }
                     if self.ledger.is_binary(&file.content.digest)? {
@@ -203,6 +221,10 @@ impl<'a> Broker<'a> {
                 digest,
                 maximum_bytes,
             } => {
+                require(
+                    self.deny_read.is_empty(),
+                    "native diagnostic text may contain source excluded by project read permissions",
+                )?;
                 require(
                     self.diagnostics.contains(digest)
                         && *maximum_bytes > 0

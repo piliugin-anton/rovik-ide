@@ -89,6 +89,8 @@ pub mod test_writer;
 pub mod tools;
 pub mod triage;
 mod unreached;
+mod verified_preparation;
+pub use verified_preparation::requires_preparation;
 mod verify;
 pub mod worker;
 

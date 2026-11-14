@@ -274,15 +274,19 @@ export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
   };
 }
 
-/** The host's autonomous mode participates even when the composer says Agent. */
+/** Preparation uses its private agent workflow; ordinary tasks honor autonomous host mode. */
 export function requiresVerifiedTaskReview(
   settings: AutopilotSettings,
   mode: string,
   worksOnOwn: boolean,
-  command = false
+  command = false,
+  preparation = false
 ): boolean {
   return (
-    settings.requireVerifiedDelivery === true && !command && (mode === 'autopilot' || worksOnOwn)
+    settings.requireVerifiedDelivery === true &&
+    !command &&
+    !preparation &&
+    (mode === 'autopilot' || worksOnOwn)
   );
 }
 

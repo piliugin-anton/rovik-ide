@@ -213,7 +213,15 @@ impl Controller {
             .ledger
             .operations(run_id)?
             .into_iter()
-            .filter(|operation| matches!(operation.kind.as_str(), "baseline" | "negative_control"))
+            .filter(|operation| {
+                matches!(
+                    operation.kind.as_str(),
+                    "baseline"
+                        | "negative_control"
+                        | "preparation_baseline"
+                        | "preparation_negative_control"
+                )
+            })
             .map(|operation| operation.operation_id)
             .collect();
         Ok(self

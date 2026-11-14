@@ -217,8 +217,12 @@ impl ContainerBackend {
         self.checked(&["load", "--input", path])?;
         Ok(())
     }
-    fn command(&self) -> Command {
+    pub(crate) fn command(&self) -> Command {
         self.engine.command()
+    }
+    #[cfg(feature = "preparation")]
+    pub(crate) fn preparation_options(&self, command: &mut Command, output: &Path) -> Result<()> {
+        self.engine.preparation_options(command, output)
     }
     fn control(&self, args: &[&str], limit: usize) -> Result<ProcessOutput> {
         let mut command = self.command();

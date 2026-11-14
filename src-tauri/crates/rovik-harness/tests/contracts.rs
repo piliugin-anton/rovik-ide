@@ -105,12 +105,14 @@ fn narrower_policy_cannot_drop_rules_or_expand_tools_paths_or_budgets() {
             allow_write: vec!["src/**".into()],
             protected: vec!["src/oracle/**".into()],
         },
+        deny_read: vec!["src/private/**".into()],
     };
     let mut child = layer.clone();
     child.obligations.clear();
     child.limits.insert("model_calls".into(), 100);
     child.scope.allow_write = vec!["**".into()];
     child.scope.protected.clear();
+    child.deny_read.clear();
     child.deny_commands.insert("build".into());
     let resolved = EffectivePolicy::resolve(
         &[layer.clone(), child.clone()],
@@ -123,6 +125,8 @@ fn narrower_policy_cannot_drop_rules_or_expand_tools_paths_or_budgets() {
     assert_eq!(resolved.limits["model_calls"], 4);
     assert!(resolved.check_write("src/oracle/test.rs").is_err());
     assert!(resolved.check_write("other.rs").is_err());
+    assert!(resolved.check_read("src/private/token.txt").is_err());
+    assert!(resolved.check_read("src/private-other/token.txt").is_ok());
     let mut parent = layer.clone();
     parent.facts.insert("allocation".into(), "none".into());
     child.facts.insert("allocation".into(), "required".into());
@@ -130,6 +134,39 @@ fn narrower_policy_cannot_drop_rules_or_expand_tools_paths_or_budgets() {
         EffectivePolicy::resolve(&[parent, child], &layer.allow_commands, &layer.obligations)
             .is_err()
     );
+}
+
+#[test]
+fn read_exclusions_preserve_legacy_policy_identity_and_reject_invalid_patterns() {
+    let legacy = serde_json::json!({
+        "commands": [], "obligations": [], "limits": {}, "facts": {},
+        "scopes": [{"allow_write": ["src/**"], "protected": []}]
+    });
+    let mut policy: EffectivePolicy = wire::decode(&wire::canonical(&legacy).unwrap()).unwrap();
+    assert!(policy.deny_read.is_empty());
+    assert_eq!(
+        Digest::of_json(&policy).unwrap(),
+        Digest::of_json(&legacy).unwrap()
+    );
+    policy.deny_read = vec!["src/private/**".into()];
+    assert_ne!(
+        Digest::of_json(&policy).unwrap(),
+        Digest::of_json(&legacy).unwrap()
+    );
+    policy.validate_reads().unwrap();
+    for patterns in [
+        vec!["../secrets"],
+        vec!["/secrets"],
+        vec!["src\\secrets"],
+        vec!["src/*"],
+        vec!["src/private/**", "src/private/**"],
+    ] {
+        policy.deny_read = patterns.into_iter().map(str::to_owned).collect();
+        assert!(policy.validate_reads().is_err());
+        assert!(policy.check_read("src/public.rs").is_err());
+    }
+    policy.deny_read = vec!["**".into()];
+    assert!(policy.check_read("src/public.rs").is_err());
 }
 
 fn plan() -> (CheckPlan, PlanRegistry) {

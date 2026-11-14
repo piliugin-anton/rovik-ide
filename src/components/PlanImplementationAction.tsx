@@ -21,7 +21,7 @@ export default function PlanImplementationAction(props: {
   canImplement?: boolean;
   onImplement?: (requireVerified?: boolean) => void;
 }) {
-  const [requireVerified, setRequireVerified] = createSignal(false);
+  const [requireVerified, setRequireVerified] = createSignal(true);
   const [implementation, { refetch }] = createResource(
     () => ({
       path: props.path,
@@ -136,7 +136,7 @@ export default function PlanImplementationAction(props: {
           onClick={() => props.onImplement?.(requireVerified())}
           title={
             requireVerified()
-              ? 'Review the exact plan and acceptance criteria before verified implementation'
+              ? 'Prepare checks automatically, then review and implement this plan'
               : 'Switch to Agent mode and carry out this plan'
           }
         >

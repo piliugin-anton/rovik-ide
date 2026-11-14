@@ -65,6 +65,8 @@ pub mod features {
     pub const POLYGLOT_HARNESS: &str = "polyglot-harness";
     /// Reviewed plan implementation and preparation with ephemeral provider credentials.
     pub const POLYGLOT_IMPLEMENTATION: &str = "polyglot-implementation";
+    /// Private automatic plan preparation and exact reviewed promotion into implementation.
+    pub const POLYGLOT_PREPARATION: &str = "polyglot-preparation";
     /// Read-only architecture observations with current source and policy attribution.
     pub const POLYGLOT_ARCHITECTURE: &str = "polyglot-architecture";
     /// Authenticated reviewed checkout application with durable landing receipts.
