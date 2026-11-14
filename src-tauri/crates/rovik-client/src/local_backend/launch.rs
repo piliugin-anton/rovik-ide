@@ -118,9 +118,25 @@ async fn ensure_prepared(
     #[cfg(windows)]
     let image = std::path::PathBuf::from(command.get_program());
     let mut child = command.spawn()?;
+    super::diagnostics::record(
+        &directory,
+        &format!("launcher_started child_pid={}", child.id()),
+    );
     let (exited, exit) = tokio::sync::oneshot::channel();
+    let diagnostic_directory = directory.clone();
     std::thread::spawn(move || {
         let result = child.wait();
+        super::diagnostics::record(
+            &diagnostic_directory,
+            &match &result {
+                Ok(status) => format!("launcher_exited status={status}"),
+                Err(error) => format!(
+                    "launcher_wait_failed io_kind={:?} os_code={:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ),
+            },
+        );
         match &result {
             Ok(status) if !status.success() => {
                 log::warn!("Local backend launcher exited with {status}")

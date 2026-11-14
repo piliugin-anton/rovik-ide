@@ -1,6 +1,7 @@
 //! Automatic preparation has a private writable workspace and no approval authority.
 //! Only an exact, current review can promote its immutable output into implementation.
 
+use super::preparation_log::PreparationLog;
 use super::*;
 use crate::restricted_files::Denied;
 use rovik_harness::{
@@ -197,6 +198,28 @@ impl IdeProject {
         saved_buffers: bool,
         untracked: Vec<String>,
     ) -> Result<Value> {
+        let mut trace = PreparationLog::start("capture");
+        let result = self.capture_preparation(
+            dialog_id,
+            path,
+            provider,
+            saved_buffers,
+            untracked,
+            &mut trace,
+        );
+        trace.finish(&result);
+        result
+    }
+
+    fn capture_preparation(
+        &self,
+        dialog_id: &str,
+        path: &str,
+        provider: ImplementationProvider,
+        saved_buffers: bool,
+        untracked: Vec<String>,
+        trace: &mut PreparationLog,
+    ) -> Result<Value> {
         check(
             saved_buffers,
             "Save the project buffers before preparing this plan.",
@@ -206,7 +229,9 @@ impl IdeProject {
             "Select the plan's chat before preparation.",
         )?;
         let binding = plan::binding(&provider)?;
+        trace.stage("read_plan");
         let plan = self.read_plan(path)?;
+        trace.stage("inspect_project");
         let inspection = self.inspect(BTreeSet::new())?;
         let automatic_untracked = untracked.is_empty();
         let untracked: BTreeSet<String> = if automatic_untracked {
@@ -214,9 +239,11 @@ impl IdeProject {
         } else {
             untracked.into_iter().collect()
         };
+        trace.stage("capture_snapshot");
         let snapshot = self.capture(&untracked)?;
         check(!snapshot.files.keys().any(|p| p == DRAFTS || p.starts_with(&format!("{DRAFTS}/"))), "The project uses Rovik's private preparation directory name. Rename that directory before preparing.")?;
         let ledger = self.ledger()?;
+        trace.stage("capture_baseline");
         let baseline_digest = self.integration()?.snapshot(&ledger)?.digest()?;
         let mut worker = WorkerLimits {
             model_id: binding.model.clone(),
@@ -234,6 +261,7 @@ impl IdeProject {
             ("cost_microunits".into(), 10_000_000),
             ("checks".into(), 128),
         ]);
+        trace.stage("reserve_budget");
         plan::reserve_provider_limits(&mut worker, &binding.rates, &budgets)?;
         let record = PreparationRecord {
             id: format!("prep-{}", uuid::Uuid::new_v4()),
@@ -263,6 +291,8 @@ impl IdeProject {
             run_id: None,
             promoted: false,
         };
+        trace.bind(&record.id);
+        trace.stage("materialize_workspace");
         let workspace = self.preparation_workspace(&record.id)?;
         fs::create_dir_all(
             workspace
@@ -287,6 +317,7 @@ impl IdeProject {
         }
         fs::create_dir(workspace.join(DRAFTS))?;
         fs::create_dir(workspace.join(DRAFTS).join("dependencies"))?;
+        trace.stage("persist_preparation");
         self.save_preparation(&record)?;
         Ok(self.preparation_view(&record))
     }
@@ -411,79 +442,90 @@ pub async fn preparation_context(
     denied: Denied,
 ) -> Result<PreparationContext> {
     crate::rt::spawn_blocking(move || {
-        let (project, mut record) = bound_project(
-            &state_root,
-            &project_root,
-            &project_id,
-            &preparation_id,
-            &dialog_id,
-            &profile,
-        )?;
-        let active = ActivePreparation::begin(&project, &record.id)?;
-        restrictions(&mut record, denied)?;
-        project.save_active_preparation(&record)?;
-        if record.runtime.is_none() {
-            let built: Result<_> = (|| {
-                check(
-                    cfg!(target_os = "linux"),
-                    "Choose a connected Linux host for isolated verification.",
-                )?;
-                let candidates = [EngineKind::Podman, EngineKind::Docker]
-                    .into_iter()
-                    .filter_map(|kind| {
-                        crate::process::find_on_path(if kind == EngineKind::Docker {
-                            "docker"
-                        } else {
-                            "podman"
+        let mut trace = PreparationLog::start("bootstrap");
+        let result = (|| {
+            trace.stage("validate_binding_and_snapshot");
+            let (project, mut record) = bound_project(
+                &state_root,
+                &project_root,
+                &project_id,
+                &preparation_id,
+                &dialog_id,
+                &profile,
+            )?;
+            trace.bind(&record.id);
+            let active = ActivePreparation::begin(&project, &record.id)?;
+            restrictions(&mut record, denied)?;
+            project.save_active_preparation(&record)?;
+            if record.runtime.is_none() {
+                let built: Result<_> = (|| {
+                    check(
+                        cfg!(target_os = "linux"),
+                        "Choose a connected Linux host for isolated verification.",
+                    )?;
+                    let candidates = [EngineKind::Podman, EngineKind::Docker]
+                        .into_iter()
+                        .filter_map(|kind| {
+                            crate::process::find_on_path(if kind == EngineKind::Docker {
+                                "docker"
+                            } else {
+                                "podman"
+                            })
+                            .map(|path| Engine {
+                                kind,
+                                executable: path.to_string_lossy().into_owned(),
+                            })
                         })
-                        .map(|path| Engine {
-                            kind,
-                            executable: path.to_string_lossy().into_owned(),
+                        .collect();
+                    trace.stage("qualify_container_engine");
+                    let engine = select_preparation_engine(
+                        project.configuration()?.map(|c| c.engine),
+                        candidates,
+                        &active.cancel,
+                        |engine| project.backend(engine)?.validate_host(&active.cancel),
+                    )?;
+                    trace.stage("prepare_runtime");
+                    let environment = project.backend(&engine)?.prepare_environment(
+                        &project.state.join("preparation-runtime"),
+                        &active.cancel,
+                    )?;
+                    Ok((engine, environment))
+                })();
+                let current = project.load_preparation(&record.id)?;
+                check(current.status != "cancelled", "Preparation was cancelled.")?;
+                match built {
+                    Ok((engine, environment)) => {
+                        record.runtime = Some(Runtime {
+                            engine,
+                            assets: environment,
+                            dependencies: None,
+                            dependency_manifests: BTreeSet::new(),
                         })
-                    })
-                    .collect();
-                let engine = select_preparation_engine(
-                    project.configuration()?.map(|c| c.engine),
-                    candidates,
-                    &active.cancel,
-                    |engine| project.backend(engine)?.validate_host(&active.cancel),
-                )?;
-                let environment = project.backend(&engine)?.prepare_environment(
-                    &project.state.join("preparation-runtime"),
-                    &active.cancel,
-                )?;
-                Ok((engine, environment))
-            })();
-            let current = project.load_preparation(&record.id)?;
-            check(current.status != "cancelled", "Preparation was cancelled.")?;
-            match built {
-                Ok((engine, environment)) => {
-                    record.runtime = Some(Runtime {
-                        engine,
-                        assets: environment,
-                        dependencies: None,
-                        dependency_manifests: BTreeSet::new(),
-                    })
-                }
-                Err(error) => {
-                    record.status = "blocked".into();
-                    record.error = Some(error.to_string());
-                    project.save_active_preparation(&record)?;
-                    return Err(error);
+                    }
+                    Err(error) => {
+                        record.status = "blocked".into();
+                        record.error = Some(error.to_string());
+                        project.save_active_preparation(&record)?;
+                        return Err(error);
+                    }
                 }
             }
-        }
-        project.require_fresh_preparation(&record)?;
-        record.status = "preparing".into();
-        record.error = None;
-        project.save_active_preparation(&record)?;
-        let workspace = project.preparation_workspace(&record.id)?;
-        let instructions = write_template(&project, &record, &workspace)?;
-        Ok(PreparationContext {
-            workspace_root: workspace,
-            instructions,
-            deadline_ms: record.deadline_ms,
-        })
+            trace.stage("recheck_snapshot");
+            project.require_fresh_preparation(&record)?;
+            record.status = "preparing".into();
+            record.error = None;
+            project.save_active_preparation(&record)?;
+            let workspace = project.preparation_workspace(&record.id)?;
+            trace.stage("write_agent_template");
+            let instructions = write_template(&project, &record, &workspace)?;
+            Ok(PreparationContext {
+                workspace_root: workspace,
+                instructions,
+                deadline_ms: record.deadline_ms,
+            })
+        })();
+        trace.finish(&result);
+        result
     })
     .await
     .map_err(|e| Error::new(format!("Preparation task failed: {e}")))?
@@ -562,6 +604,9 @@ pub async fn submit_preparation(
     submission: PreparationSubmission,
 ) -> Result<Value> {
     crate::rt::spawn_blocking(move || {
+        let mut trace = PreparationLog::start("submit");
+        let result = (|| {
+        trace.stage("validate_binding_and_snapshot");
         let (project, mut record) = bound_project(
             &state_root,
             &project_root,
@@ -570,8 +615,9 @@ pub async fn submit_preparation(
             &dialog_id,
             &profile,
         )?;
+        trace.bind(&record.id);
         restrictions(&mut record, submission.denied)?;
-        match project.submit_prepared_assets(&mut record, &submission.input_path) {
+        match project.submit_prepared_assets(&mut record, &submission.input_path, &mut trace) {
             Ok(value)=>Ok(value),
             Err(error) if !record.denied_read.is_empty()=>{
                 record.error=Some(error.to_string());
@@ -580,6 +626,9 @@ pub async fn submit_preparation(
             }
             Err(error)=>Err(error),
         }
+        })();
+        trace.finish(&result);
+        result
     })
     .await
     .map_err(|e| Error::new(format!("Preparation submission failed: {e}")))?
@@ -590,7 +639,9 @@ impl IdeProject {
         &self,
         record: &mut PreparationRecord,
         input_path: &str,
+        trace: &mut PreparationLog,
     ) -> Result<Value> {
+        trace.stage("validate_staged_assets");
         let workspace = self.preparation_workspace(&record.id)?;
         let mut submission: Submission =
             wire::decode(&read_staged(&workspace, input_path, STAGED_FILE_LIMIT)?)?;
@@ -707,6 +758,7 @@ impl IdeProject {
             )?;
         }
         let active = ActivePreparation::begin(self, &record.id)?;
+        trace.stage("prepare_dependencies");
         let dependencies = match &runtime.dependencies {
             Some(path) if runtime.dependency_manifests == selected_manifests => path.clone(),
             _ => self.backend(&runtime.engine)?.prepare_dependencies(
@@ -748,6 +800,7 @@ impl IdeProject {
         );
         submission.setup.protected_paths.sort();
         submission.setup.protected_paths.dedup();
+        trace.stage("build_protected_checks");
         let mut setup = crate::harness::ide_prepare::build_with_assets(
             &self.root,
             &ledger,
@@ -809,9 +862,11 @@ impl IdeProject {
             }
             .create(&mut controller.ledger)?;
         }
+        trace.stage("execute_trials");
         let trial =
             controller.trial_preparation(&Principal::current()?, &final_setup, &active.cancel)?;
         if trial["ready"] != true {
+            trace.stage("trials_need_correction");
             record.status = "preparing".into();
             record.error=Some("Preparation trials need correction. Inspect the executed cases and diagnostics, then submit revised protected tests or control.".into());
             check(
@@ -823,6 +878,7 @@ impl IdeProject {
             response["trial"] = trial;
             return Ok(response);
         }
+        trace.stage("persist_review");
         let final_artifact = ledger
             .store_json("operation", &final_setup, runner::now_ms()?)?
             .digest;

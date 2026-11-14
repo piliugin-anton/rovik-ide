@@ -7,6 +7,36 @@ use std::{ffi::OsString, path::PathBuf, sync::Arc};
 /// Selects headless backend hosting before any native window is initialized.
 pub const HOST_FLAG: &str = "--desktop-backend";
 
+/// Enables normal core/client diagnostics in the standalone host, whose stderr
+/// is retained in backend.log by the launcher. An existing app logger is kept.
+pub fn init_log() {
+    struct StderrLog;
+    impl log::Log for StderrLog {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::max_level()
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!(
+                    "{} {} {}: {}",
+                    rovik_core::agent_run::log::iso_now(),
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+            }
+        }
+        fn flush(&self) {}
+    }
+    let level = std::env::var("ROVIK_LOG")
+        .ok()
+        .and_then(|level| level.parse::<log::LevelFilter>().ok())
+        .unwrap_or(log::LevelFilter::Info);
+    if log::set_logger(&StderrLog).is_ok() {
+        log::set_max_level(level);
+    }
+}
+
 /// Parses the explicit directories supplied by a desktop launcher.
 pub fn paths(args: impl IntoIterator<Item = OsString>) -> Result<Paths, String> {
     let mut args = args.into_iter();
@@ -42,6 +72,7 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         // Another launcher won. It alone initializes the database and mounts.
         return Ok(());
     };
+    log::info!(target: "rovik::backend", "Backend starting pid={} protocol={} version={}", std::process::id(), super::PROTOCOL, env!("CARGO_PKG_VERSION"));
     #[cfg(windows)]
     wait_for_legacy_windows(&paths.data_dir).await?;
     let backend = Arc::new(
@@ -58,6 +89,7 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
     let result = async {
         backend.start_services().map_err(std::io::Error::other)?;
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
+        log::info!(target: "rovik::backend", "Backend ready pid={} boot={} protocol={} version={}", std::process::id(), listener.boot(), super::PROTOCOL, env!("CARGO_PKG_VERSION"));
         let control = control::Listener::bind(&lease, &directory)?;
         let hello = control::Hello::new(listener.boot());
         #[cfg(unix)]
@@ -147,6 +179,7 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         Ok::<_, std::io::Error>(())
     }
     .await;
+    log::info!(target: "rovik::backend", "Backend stopping pid={} outcome={}", std::process::id(), if result.is_ok() { "requested" } else { "failed" });
     backend.shutdown().await;
     drop(retirement);
     result?;

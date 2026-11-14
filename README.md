@@ -1789,6 +1789,17 @@ A newly launched backend retries transient readiness timeouts within its existin
 The shared backend writes its standard output and diagnostics to `backend.log`
 in its private backend directory under the app data directory. Its output handles
 remain valid after the launching window or `tauri dev` process exits.
+Plan preparation records its capture, container/runtime setup, dependency and trial
+stages there, with timestamps, elapsed time, trace IDs and preparation IDs. The
+standalone backend enables these logs by default. Cloud execution records the same
+preparation stages in the host's `~/.rovik/logs/agentd.log`.
+The desktop also retains `connection.log` beside `backend.log`: backend starts,
+exits, reconnects, preparation RPCs, transport failures and interrupted calls. It
+records the operation, backend/session identity, wait stage and OS error kind,
+including whether a reply hit the 60-second RPC deadline. These diagnostics omit
+API keys, request/response bodies, prompts, source contents and native command
+output. After a preparation disconnect, keep both files from the desktop's
+`desktop-backend` directory and the execution host's log if using a cloud host.
 The Unix endpoint also serves bounded typed request/reply calls through
 `local_backend::rpc::Client`. Requests route by their chat or message identity;
 run start, steering, deletion, and configuration use the existing remote-routing

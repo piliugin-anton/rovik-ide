@@ -11,6 +11,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(any(unix, windows))]
 pub mod control;
 #[cfg(any(unix, windows))]
+mod diagnostics;
+#[cfg(any(unix, windows))]
 mod handshake;
 #[cfg(any(unix, windows))]
 pub mod host;

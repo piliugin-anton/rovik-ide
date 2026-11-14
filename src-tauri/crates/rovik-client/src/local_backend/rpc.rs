@@ -1,7 +1,7 @@
 //! Bounded typed RPC over the authenticated local stream. Calls are never
 //! automatically retried: a lost reply may follow a committed mutation.
 
-use super::{connect, Ready, Stream};
+use super::{connect, diagnostics, Ready, Stream};
 use crate::desktop_api::DesktopRequest;
 use crate::desktop_backend::DesktopBackend;
 use crate::desktop_session::{DesktopEvent, SessionEvents};
@@ -50,6 +50,44 @@ enum ClientFrame {
         sink: String,
     },
     Ping,
+}
+
+impl ClientFrame {
+    // Read only closed discriminants. Debug/JSON formatting a request would expose credentials.
+    fn diagnostic(&self) -> (&'static str, bool) {
+        match self {
+            Self::Call { req, .. } => match req.as_ref() {
+                Request::AgentStart(_) => ("agent_start", true),
+                Request::VerifiedAutopilotStart { .. } => ("verified_autopilot_start", true),
+                Request::AgentStop { .. } => ("agent_stop", true),
+                Request::AgentStatus => ("agent_status", false),
+                Request::Harness { operation, .. } => harness_diagnostic(operation),
+                _ => ("call", false),
+            },
+            Self::Desktop { req, .. } => match req.as_ref() {
+                DesktopRequest::Harness(request) => harness_diagnostic(&request.request),
+                _ => ("desktop", false),
+            },
+            Self::Ping => ("ping", false),
+            Self::Subscribe { .. } => ("subscribe", false),
+            Self::CloseSession { .. } => ("close_session", false),
+            Self::CancelSink { .. } => ("cancel_sink", false),
+        }
+    }
+}
+
+fn harness_diagnostic(operation: &rovik_protocol::harness::Operation) -> (&'static str, bool) {
+    use rovik_protocol::harness::Operation;
+    match operation {
+        Operation::BeginPlanPreparation { .. } => ("begin_plan_preparation", true),
+        Operation::PreparationStatus { .. } => ("preparation_status", false),
+        Operation::CancelPreparation { .. } => ("cancel_preparation", true),
+        Operation::StartPreparedImplementation { .. } => ("start_prepared_implementation", true),
+        Operation::Status { .. } | Operation::ArchitectureFeedback { .. } => {
+            ("harness_status", false)
+        }
+        _ => ("harness_management", true),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,6 +220,16 @@ impl Client {
         // The owner session must exist before its separate event connection
         // can attach. A reply also proves the server has entered its dispatcher.
         client.exchange(ClientFrame::Ping).await?;
+        diagnostics::record(
+            directory,
+            &format!(
+                "connected boot={:?} session={:?} protocol={} version={:?}",
+                client.ready.boot,
+                client.ready.session,
+                client.ready.protocol,
+                client.ready.version
+            ),
+        );
         Ok(client)
     }
 
@@ -228,7 +276,11 @@ impl Client {
             )
             .await?;
             match read(&mut stream).await? {
-                ServerFrame::Subscribed { result: Ok(()) } => Ok(EventStream { stream }),
+                ServerFrame::Subscribed { result: Ok(()) } => Ok(EventStream {
+                    stream,
+                    directory: self.directory.clone(),
+                    ready: self.ready.clone(),
+                }),
                 ServerFrame::Subscribed { result: Err(error) } => Err(io::Error::other(error)),
                 _ => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -315,19 +367,40 @@ impl Client {
     }
 
     async fn exchange(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
-        let mut closing = self.closing.subscribe();
-        if *closing.borrow() {
-            return Err(detached());
-        }
-        tokio::select! {
-            biased;
-            _ = closing.changed() => Err(detached()),
-            reply = self.exchange_open(frame) => reply,
-        }
+        self.exchange_with_wait(frame, IO_WAIT).await
     }
 
-    async fn exchange_open(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
+    async fn exchange_with_wait(
+        &self,
+        frame: ClientFrame,
+        wait: Duration,
+    ) -> io::Result<ServerFrame> {
+        let (operation, verbose) = frame.diagnostic();
+        let mut trace =
+            diagnostics::Exchange::begin(&self.directory, &self.ready, operation, verbose);
+        let mut closing = self.closing.subscribe();
+        let is_closing = *closing.borrow();
+        let result = if is_closing {
+            Err(detached())
+        } else {
+            tokio::select! {
+                biased;
+                _ = closing.changed() => Err(detached()),
+                reply = self.exchange_open(frame, &mut trace, wait) => reply,
+            }
+        };
+        trace.finish(&result);
+        result
+    }
+
+    async fn exchange_open(
+        &self,
+        frame: ClientFrame,
+        trace: &mut diagnostics::Exchange<'_>,
+        wait: Duration,
+    ) -> io::Result<ServerFrame> {
         let mut slot = self.stream.lock().await;
+        trace.stage("acquire_connection");
         let mut stream = slot.take().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -343,19 +416,23 @@ impl Client {
             )
         };
         let result = async {
-            tokio::time::timeout(IO_WAIT, write(&mut stream, &frame))
+            trace.wait("write_request", wait);
+            tokio::time::timeout(wait, write(&mut stream, &frame))
                 .await
                 .map_err(|_| uncertain())??;
             // Deployments and other desktop operations already own their
             // deadlines. Do not cut them off at the framing timeout. Dropping
             // the caller still invalidates this connection without a retry.
             let reply: ServerFrame = if matches!(frame, ClientFrame::Desktop { .. }) {
+                trace.stage("await_desktop_reply");
                 read(&mut stream).await?
             } else {
-                tokio::time::timeout(IO_WAIT, read(&mut stream))
+                trace.wait("await_reply", wait);
+                tokio::time::timeout(wait, read(&mut stream))
                     .await
                     .map_err(|_| uncertain())??
             };
+            trace.stage("validate_reply");
             let matches = matches!(
                 (&frame, &reply),
                 (ClientFrame::Ping, ServerFrame::Pong)
@@ -419,6 +496,12 @@ pub async fn serve(
         if lease.session.is_closed() {
             return Ok(());
         }
+        let (operation, traced) = frame.diagnostic();
+        let started = std::time::Instant::now();
+        if traced {
+            log::info!(target: "rovik::backend", "{} pid={} rpc session={:?} operation={operation} stage=dispatch outcome=started",
+                rovik_core::agent_run::log::iso_now(), std::process::id(), lease.session.id());
+        }
         let reply = match frame {
             ClientFrame::Call { id, req, host } => ServerFrame::Reply {
                 id,
@@ -464,17 +547,26 @@ pub async fn serve(
             }
             ClientFrame::Ping => ServerFrame::Pong,
         };
-        tokio::time::timeout(IO_WAIT, write(&mut stream, &reply))
+        let operation_failed = matches!(&reply, ServerFrame::Reply { res, .. } if res.is_err())
+            || matches!(&reply, ServerFrame::DesktopReply { res: Err(_), .. });
+        let sent = tokio::time::timeout(IO_WAIT, write(&mut stream, &reply))
             .await
-            .map_err(|_| {
-                io::Error::new(io::ErrorKind::TimedOut, "Backend client stopped reading")
-            })??;
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Backend client stopped reading"))
+            .and_then(|result| result);
+        if traced || sent.is_err() {
+            log::info!(target: "rovik::backend", "{} pid={} rpc session={:?} operation={operation} stage=send_reply outcome={} operation_failed={operation_failed} elapsed_ms={} io_kind={:?}",
+                rovik_core::agent_run::log::iso_now(), std::process::id(), lease.session.id(),
+                if sent.is_ok() { "completed" } else { "failed" }, started.elapsed().as_millis(), sent.as_ref().err().map(io::Error::kind));
+        }
+        sent?;
     }
 }
 
 /// The private event connection of one desktop client.
 pub struct EventStream {
     stream: Stream,
+    directory: std::path::PathBuf,
+    ready: Ready,
 }
 
 impl EventStream {
@@ -491,10 +583,25 @@ impl EventStream {
 
     /// Reads in source order. Loss is explicit and requires a new client session.
     pub async fn next(&mut self) -> Result<DesktopEvent, String> {
-        match read(&mut self.stream)
-            .await
-            .map_err(|e| format!("Desktop event connection failed: {e}"))?
-        {
+        let incoming = read(&mut self.stream).await;
+        let reason = match &incoming {
+            Err(_) => Some("read_failed"),
+            Ok(ServerFrame::EventFailure { .. }) => Some("server_ended_stream"),
+            Ok(ServerFrame::Event { .. }) => None,
+            _ => Some("unexpected_frame"),
+        };
+        if let Some(reason) = reason {
+            diagnostics::record(
+                &self.directory,
+                &format!(
+                    "event_connection_lost boot={:?} session={:?} reason={reason} io_kind={:?}",
+                    self.ready.boot,
+                    self.ready.session,
+                    incoming.as_ref().err().map(io::Error::kind)
+                ),
+            );
+        }
+        match incoming.map_err(|e| format!("Desktop event connection failed: {e}"))? {
             ServerFrame::Event { event } => Ok(event),
             ServerFrame::EventFailure { message } => Err(message),
             _ => Err("Unexpected desktop event frame".into()),
@@ -687,7 +794,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_lost_reply_invalidates_the_connection_without_retrying() {
-        let (client, mut server) = pair().await;
+        let (mut client, mut server) = pair().await;
+        let logs = tempfile::tempdir().unwrap();
+        client.directory = logs.path().into();
         let peer = tokio::spawn(async move {
             let request: Frame = read(&mut server).await.unwrap();
             assert!(matches!(
@@ -705,6 +814,10 @@ mod tests {
             client.call(Request::AgentStatus).await.unwrap_err().kind(),
             io::ErrorKind::NotConnected
         );
+        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
+        assert!(diagnostic.contains("operation=agent_status stage=await_reply outcome=failed"));
+        assert!(diagnostic.contains("io_kind=Some(UnexpectedEof)"));
+        assert!(diagnostic.contains("stage=acquire_connection outcome=failed"));
     }
 
     #[tokio::test]
@@ -734,8 +847,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reply_timeout_records_the_actual_deadline_without_replaying_the_call() {
+        let (mut client, mut server) = pair().await;
+        let logs = tempfile::tempdir().unwrap();
+        client.directory = logs.path().into();
+        let peer = tokio::spawn(async move {
+            assert!(matches!(
+                read::<ClientFrame>(&mut server).await.unwrap(),
+                ClientFrame::Call { .. }
+            ));
+            assert_eq!(
+                read::<ClientFrame>(&mut server).await.err().unwrap().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        });
+        let result = client
+            .exchange_with_wait(
+                ClientFrame::Call {
+                    id: 1,
+                    req: Box::new(Request::AgentStatus),
+                    host: None,
+                },
+                Duration::from_millis(20),
+            )
+            .await;
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::TimedOut);
+        peer.await.unwrap();
+        assert_eq!(
+            client.call(Request::AgentStatus).await.unwrap_err().kind(),
+            io::ErrorKind::NotConnected
+        );
+        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
+        assert!(diagnostic.contains("stage=await_reply outcome=failed"));
+        assert!(diagnostic.contains("timeout_ms=Some(20) io_kind=Some(TimedOut)"));
+    }
+
+    #[tokio::test]
     async fn cancelling_an_inflight_call_invalidates_the_connection() {
-        let (client, mut server) = pair().await;
+        let (mut client, mut server) = pair().await;
+        let logs = tempfile::tempdir().unwrap();
+        client.directory = logs.path().into();
         let client = Arc::new(client);
         let calling = client.clone();
         let task = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
@@ -746,6 +897,77 @@ mod tests {
             client.call(Request::AgentStatus).await.unwrap_err().kind(),
             io::ErrorKind::NotConnected
         );
+        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
+        assert!(diagnostic.contains("stage=await_reply outcome=cancelled_completion_unknown"));
+    }
+
+    #[tokio::test]
+    async fn preparation_rpc_logs_lifecycle_without_credentials_paths_or_response_content() {
+        let (mut client, mut server) = pair().await;
+        let logs = tempfile::tempdir().unwrap();
+        client.directory = logs.path().into();
+        let request = serde_json::from_value::<crate::desktop_api::harness::HarnessRequest>(serde_json::json!({
+            "root":"/private-project", "executionHost":"chat", "dialogId":"private-chat",
+            "request":{"action":"beginPlanPreparation", "dialogId":"private-chat", "planPath":"private-plan.md", "savedBuffers":true,
+                "provider":{"profile":{"id":"provider::worker", "label":"Worker", "model":"worker", "baseUrl":"https://private-provider/v1", "apiKey":"secret-api-key"},
+                    "rates":{"input":0,"cachedInput":0,"output":0}}}
+        })).unwrap();
+        let peer = tokio::spawn(async move {
+            assert!(matches!(
+                read::<ClientFrame>(&mut server).await.unwrap(),
+                ClientFrame::Desktop { .. }
+            ));
+            write(
+                &mut server,
+                &ServerFrame::DesktopReply {
+                    id: 1,
+                    res: Ok(serde_json::json!({"content":"private response"})),
+                },
+            )
+            .await
+            .unwrap();
+        });
+        client.desktop(request.into()).await.unwrap().unwrap();
+        peer.await.unwrap();
+        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
+        assert!(diagnostic.contains(
+            "operation=begin_plan_preparation stage=wait_for_connection outcome=started"
+        ));
+        assert!(diagnostic.contains("stage=validate_reply outcome=completed"));
+        for private in [
+            "private-project",
+            "private-chat",
+            "private-plan",
+            "private-provider",
+            "secret-api-key",
+            "private response",
+        ] {
+            assert!(!diagnostic.contains(private), "{private}");
+        }
+    }
+
+    #[tokio::test]
+    async fn event_connection_loss_is_retained_without_the_server_message() {
+        let (client, mut server) = pair().await;
+        let logs = tempfile::tempdir().unwrap();
+        let mut events = EventStream {
+            stream: client.stream.lock().await.take().unwrap(),
+            directory: logs.path().into(),
+            ready: client.ready.clone(),
+        };
+        write(
+            &mut server,
+            &ServerFrame::EventFailure {
+                message: "private diagnostic".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(events.next().await.is_err());
+        let diagnostic = std::fs::read_to_string(logs.path().join("connection.log")).unwrap();
+        assert!(diagnostic.contains("event_connection_lost"));
+        assert!(diagnostic.contains("reason=server_ended_stream"));
+        assert!(!diagnostic.contains("private diagnostic"));
     }
 
     #[tokio::test]
