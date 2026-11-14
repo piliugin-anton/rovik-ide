@@ -206,3 +206,32 @@ test('a status lookup failure is visible and can be retried without crashing the
     refreshPlanImplementations();
   }
 });
+
+test('plan implementation prepares verification by default and preserves an explicit ordinary alternative', async () => {
+  record = null;
+  lookupError = false;
+  const selected: (boolean | undefined)[] = [];
+  const root = container();
+  const dispose = render(
+    () => (
+      <PlanImplementationAction
+        path={file}
+        content="# New plan"
+        canImplement
+        onImplement={(strict) => selected.push(strict)}
+      />
+    ),
+    root
+  );
+  try {
+    await tick();
+    root.querySelector<HTMLButtonElement>('.primary')!.click();
+    const checkbox = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    root.querySelector<HTMLButtonElement>('.primary')!.click();
+    assert.deepEqual(selected, [true, false]);
+  } finally {
+    dispose();
+  }
+});

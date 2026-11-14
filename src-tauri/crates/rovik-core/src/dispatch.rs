@@ -22,12 +22,73 @@ use rovik_protocol::{Access, Fail, FailCode, Request, Response, Target};
 /// Serves a request of the Agent, Chat or CLM group. A failure carries the
 /// error text the operation gives, which is what the app's command returns.
 pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
+    let starting = match &request {
+        Request::AgentStart(start) => Some(core.agents.begin_start(&start.dialog_id)),
+        _ => None,
+    };
     if let Some((target, access)) = request.target() {
         check_owner(core, target, access).await?;
+    }
+    if let Some(starting) = &starting {
+        starting
+            .check()
+            .map_err(|error| Fail::new(FailCode::BadRequest, error))?;
     }
     let (db, vfs) = (&core.db, &core.vfs);
     let done = |()| Response::Done;
     match request {
+        Request::Harness {
+            dialog_id,
+            root,
+            source,
+            operation,
+        } => {
+            if source.is_some() {
+                return Err(Fail::new(
+                    FailCode::BadRequest,
+                    "A synchronized source binding requires the owning cloud host",
+                ));
+            }
+            let root = root.filter(|root| !root.trim().is_empty()).ok_or_else(|| {
+                Fail::new(
+                    FailCode::BadRequest,
+                    "Open the chat's project before using verification",
+                )
+            })?;
+            agent_run::check_project(db, &dialog_id, Some(&root))
+                .await
+                .map_err(|error| Fail::new(FailCode::BadRequest, error))?;
+            let lookup = dialog_id.clone();
+            let project_id = db
+                .read(move |db| crate::chat_db::store::dialog_project(db, &lookup))
+                .await
+                .map_err(|error| Fail::new(FailCode::BadRequest, error))?
+                .ok_or_else(|| {
+                    Fail::new(
+                        FailCode::BadRequest,
+                        "Select a project-backed chat before using verification",
+                    )
+                })?;
+            let result = crate::harness::ide::execute(
+                core.paths.data_dir.join("harness"),
+                root.into(),
+                project_id,
+                operation,
+            )
+            .await
+            .map(Response::Harness)
+            .map_err(|error| error.to_string());
+            if result.is_ok() {
+                agent_run::autopilot::reconcile_verified(core, &dialog_id).await;
+            }
+            result
+        }
+        Request::VerifiedAutopilotStart { .. } => {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                "A synchronized Autopilot source binding requires the owning cloud host",
+            ));
+        }
         Request::AgentStart(start) => agent_run::agent_start(core, *start)
             .await
             .map(Response::RunId),
@@ -750,6 +811,14 @@ mod tests {
             },
         ];
         let writes = vec![
+            Request::Harness {
+                dialog_id: id.into(),
+                root: None,
+                source: None,
+                operation: rovik_protocol::harness::Operation::Status {
+                    run_id: "run".into(),
+                },
+            },
             Request::AgentStart(Box::new(start(id, "http://127.0.0.1:9", StartKind::Resume))),
             Request::ChatRename {
                 dialog_id: id.into(),

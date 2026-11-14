@@ -40,22 +40,7 @@ async fn ensure_prepared(
 ) -> io::Result<(Stream, Ready)> {
     let directory = super::directory(data);
     std::fs::create_dir_all(data)?;
-    // Serialize upgrade and launch, without taking the host's lifetime lease.
-    let _launch = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Some(lease) = Lease::acquire_named(&directory, "launch.lock")? {
-                return Ok::<_, io::Error>(lease);
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Another backend launcher is still starting or upgrading",
-        )
-    })??;
+    let _launch = launch_lease(&directory).await?;
     if let Some((host, reply)) =
         super::control::negotiate(&directory, env!("CARGO_PKG_VERSION"), super::PROTOCOL).await?
     {
@@ -94,6 +79,15 @@ async fn ensure_prepared(
             ) => {}
         Err(e) => return Err(e),
     }
+    spawn_prepared(prepare, data, config).await
+}
+
+async fn spawn_prepared(
+    prepare: impl FnOnce() -> io::Result<std::process::Command>,
+    data: &Path,
+    config: &Path,
+) -> io::Result<(Stream, Ready)> {
+    let directory = super::directory(data);
     #[cfg(windows)]
     super::host::wait_for_legacy_windows(data).await?;
     let mut command = prepare()?;
@@ -151,6 +145,83 @@ async fn ensure_prepared(
         }
     }
     Ok(connected)
+}
+
+async fn launch_lease(directory: &Path) -> io::Result<Lease> {
+    // Serialize discovery, authorized stopping, and readiness as one operation.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(lease) = Lease::acquire_named(directory, "launch.lock")? {
+                return Ok::<_, io::Error>(lease);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Another backend launcher is still starting or upgrading",
+        )
+    })?
+}
+
+/// Replaces the exact backend explicitly approved by the user, including active work.
+pub async fn restart_backend(
+    executable: &Path,
+    data: &Path,
+    config: &Path,
+    expected: &super::control::BackendIdentity,
+) -> io::Result<(Stream, Ready)> {
+    let directory = super::directory(data);
+    let _launch = launch_lease(&directory).await?;
+    // Prepare the installed image before stopping anything. A missing or damaged
+    // installation must leave the existing backend available.
+    #[cfg(windows)]
+    let image = super::image::stage(executable, &directory.join("images"))?;
+    #[cfg(windows)]
+    let executable = image.as_path();
+    let build = super::image::fingerprint(executable).await?;
+    let command = rovik_core::process::command(executable);
+    validate_command(&command)?;
+    super::control::stop(&directory, expected, &build).await?;
+    spawn_prepared(|| Ok(command), data, config).await
+}
+
+/// Restarts through the packaged launcher while identifying its actual backend image.
+pub async fn restart_command(
+    command: std::process::Command,
+    identity_executable: &Path,
+    data: &Path,
+    config: &Path,
+    expected: &super::control::BackendIdentity,
+) -> io::Result<(Stream, Ready)> {
+    let directory = super::directory(data);
+    let _launch = launch_lease(&directory).await?;
+    let build = super::image::fingerprint(identity_executable).await?;
+    validate_command(&command)?;
+    super::control::stop(&directory, expected, &build).await?;
+    spawn_prepared(|| Ok(command), data, config).await
+}
+
+fn validate_command(command: &std::process::Command) -> io::Result<()> {
+    let metadata = std::fs::metadata(command.get_program())?;
+    if !metadata.is_file() {
+        return Err(io::Error::other(
+            "The updated backend executable is not a file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "The updated backend is not executable",
+            ));
+        }
+    }
+    Ok(())
 }
 
 // Only after spawning: an exposed pipe can time out while the new host is busy.

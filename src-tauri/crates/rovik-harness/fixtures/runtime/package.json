@@ -1,0 +1,8 @@
+{
+  "name": "quota-runtime-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "fixture-identity": "file:/dependencies/packages/fixture-identity-1.0.0.tgz"
+  }
+}

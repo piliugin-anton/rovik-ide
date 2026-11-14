@@ -197,7 +197,7 @@ impl Hooks {
     /// pipe its output and errors both go to: one pipe, so they're read in
     /// the order the hook printed them, as a terminal shows them. Dropping
     /// the command closes this side's end of it.
-    fn command(
+    pub(super) fn command(
         &self,
         program: impl AsRef<std::ffi::OsStr>,
         piped_input: bool,
@@ -306,7 +306,7 @@ fn failure_text(name: &str, status: ExitStatus, output: &str) -> String {
 
 /// Waits for the hook, with `input` written to it, and what it printed on
 /// `out`.
-fn collect(
+pub(super) fn collect(
     mut child: Child,
     mut out: PipeReader,
     input: Option<&[u8]>,

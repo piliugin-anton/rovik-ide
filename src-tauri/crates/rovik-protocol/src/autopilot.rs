@@ -111,7 +111,9 @@ impl PlanFix {
             stall_rounds: self.stall_rounds.clamp(PLAN_FIX_STALL.0, PLAN_FIX_STALL.1),
             max_minutes: clamp_f(self.max_minutes, PLAN_FIX_MINUTES, d.max_minutes),
             budget_share: clamp_f(self.budget_share, PLAN_FIX_SHARE, d.budget_share),
-            max_retries: self.max_retries.clamp(PLAN_FIX_RETRIES.0, PLAN_FIX_RETRIES.1),
+            max_retries: self
+                .max_retries
+                .clamp(PLAN_FIX_RETRIES.0, PLAN_FIX_RETRIES.1),
         }
     }
 }
@@ -136,13 +138,20 @@ impl PlanFixOverride {
     /// Each value set, within `PlanFix::bounded`'s ranges; a value that
     /// isn't a number is dropped.
     pub fn bounded(self) -> PlanFixOverride {
-        let f = |v: Option<f64>, r: (f64, f64)| v.filter(|v| v.is_finite()).map(|v| v.clamp(r.0, r.1));
+        let f =
+            |v: Option<f64>, r: (f64, f64)| v.filter(|v| v.is_finite()).map(|v| v.clamp(r.0, r.1));
         PlanFixOverride {
-            max_rounds: self.max_rounds.map(|v| v.clamp(PLAN_FIX_ROUNDS.0, PLAN_FIX_ROUNDS.1)),
-            stall_rounds: self.stall_rounds.map(|v| v.clamp(PLAN_FIX_STALL.0, PLAN_FIX_STALL.1)),
+            max_rounds: self
+                .max_rounds
+                .map(|v| v.clamp(PLAN_FIX_ROUNDS.0, PLAN_FIX_ROUNDS.1)),
+            stall_rounds: self
+                .stall_rounds
+                .map(|v| v.clamp(PLAN_FIX_STALL.0, PLAN_FIX_STALL.1)),
             max_minutes: f(self.max_minutes, PLAN_FIX_MINUTES),
             budget_share: f(self.budget_share, PLAN_FIX_SHARE),
-            max_retries: self.max_retries.map(|v| v.clamp(PLAN_FIX_RETRIES.0, PLAN_FIX_RETRIES.1)),
+            max_retries: self
+                .max_retries
+                .map(|v| v.clamp(PLAN_FIX_RETRIES.0, PLAN_FIX_RETRIES.1)),
         }
     }
 
@@ -412,12 +421,32 @@ pub const DEFAULT_AUTOPILOT_DENYLIST: &[&str] = &[
     "dd",
 ];
 
+/// Non-secret setup and prices explicitly reviewed for one strict task.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifiedDeliverySettings {
+    /// Exact registered setup identity selected before the task starts.
+    pub setup_id: String,
+    /// Exact configured setup and execution-engine binding.
+    pub configuration_digest: String,
+    /// Explicit untracked source selection; later source bytes need exact approval.
+    pub untracked: Vec<String>,
+    /// Explicit billing rates; no missing price is treated as zero.
+    pub rates: crate::harness::ModelRates,
+}
+
 /// Settings → Autopilot (autopilot-plan 3.5). The effort shapes
 /// the pipeline (`next_stage`); the budget (U04), the prepare stage (S03)
 /// and the denylist (U01) are read by the tasks that build them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AutopilotConfig {
+    /// Require the durable polyglot controller's gate and reviewed delivery.
+    /// Older settings remain on the ordinary Autopilot workflow.
+    pub require_verified_delivery: bool,
+    /// Per-task reviewed inputs, never provider credentials or global saved rates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_delivery: Option<VerifiedDeliverySettings>,
     pub effort: Effort,
     pub budget: Budget,
     /// Install the dependencies a lockfile implies before the first check
@@ -431,6 +460,8 @@ pub struct AutopilotConfig {
 impl Default for AutopilotConfig {
     fn default() -> Self {
         AutopilotConfig {
+            require_verified_delivery: false,
+            verified_delivery: None,
             effort: Effort::Balanced,
             budget: Budget::default(),
             prepare: true,
@@ -665,7 +696,13 @@ mod autonomy_tests {
     fn plan_fix_round_trips_defaults_when_missing_and_is_bounded() {
         let d = PlanFix::default();
         assert_eq!(
-            (d.max_rounds, d.stall_rounds, d.max_minutes, d.budget_share, d.max_retries),
+            (
+                d.max_rounds,
+                d.stall_rounds,
+                d.max_minutes,
+                d.budget_share,
+                d.max_retries
+            ),
             (8, 2, 30.0, 0.4, 2)
         );
         let json = serde_json::to_value(d).unwrap();
@@ -688,9 +725,24 @@ mod autonomy_tests {
         .bounded();
         assert_eq!(
             wild,
-            PlanFix { max_rounds: 1, stall_rounds: 5, max_minutes: 30.0, budget_share: 0.9, max_retries: 5 }
+            PlanFix {
+                max_rounds: 1,
+                stall_rounds: 5,
+                max_minutes: 30.0,
+                budget_share: 0.9,
+                max_retries: 5
+            }
         );
-        assert_eq!(PlanFix { max_minutes: 0.0, budget_share: 0.0, ..d }.bounded().max_minutes, 1.0);
+        assert_eq!(
+            PlanFix {
+                max_minutes: 0.0,
+                budget_share: 0.0,
+                ..d
+            }
+            .bounded()
+            .max_minutes,
+            1.0
+        );
         assert_eq!(d.bounded(), d);
     }
 
@@ -705,8 +757,14 @@ mod autonomy_tests {
             ..Default::default()
         };
         let json = serde_json::to_value(&host).unwrap();
-        assert_eq!(json["planFix"], json!({ "maxRounds": 50, "budgetShare": 0.05 }));
-        assert_eq!(serde_json::from_value::<AutonomySettings>(json).unwrap(), host);
+        assert_eq!(
+            json["planFix"],
+            json!({ "maxRounds": 50, "budgetShare": 0.05 })
+        );
+        assert_eq!(
+            serde_json::from_value::<AutonomySettings>(json).unwrap(),
+            host
+        );
         let kept = host.checked().unwrap().plan_fix.unwrap();
         assert_eq!(kept.max_rounds, Some(20));
         assert_eq!(kept.budget_share, Some(0.1));
@@ -717,7 +775,17 @@ mod autonomy_tests {
         };
         assert_eq!(empty.checked().unwrap().plan_fix, None);
         let mut mine = PlanFix::default();
-        PlanFixOverride { max_rounds: Some(5), ..Default::default() }.apply(&mut mine);
-        assert_eq!(mine, PlanFix { max_rounds: 5, ..PlanFix::default() });
+        PlanFixOverride {
+            max_rounds: Some(5),
+            ..Default::default()
+        }
+        .apply(&mut mine);
+        assert_eq!(
+            mine,
+            PlanFix {
+                max_rounds: 5,
+                ..PlanFix::default()
+            }
+        );
     }
 }

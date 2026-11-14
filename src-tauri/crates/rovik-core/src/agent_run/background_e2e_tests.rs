@@ -34,11 +34,16 @@ fn left_running(result: &str) -> String {
 /// A run in which the agent starts the server and leaves it running; the
 /// id its start gave it.
 async fn server_started(h: &Harness) -> String {
+    server_started_with(h, server()).await
+}
+
+/// The same start with a command whose readiness the test can control.
+async fn server_started_with(h: &Harness, command: String) -> String {
     let (url, seen) = model(vec![
         Reply::Call {
             id: "b1",
             name: "bash",
-            args: json!({ "command": server(), "background": true }),
+            args: json!({ "command": command, "background": true }),
         },
         Reply::Text("It runs."),
     ])
@@ -63,8 +68,30 @@ async fn server_started(h: &Harness) -> String {
         .is_some());
     assert!(named("background").is_some());
     let started = result_of(&h.messages().await, "b1").content.clone();
-    assert!(started.contains("\nlistening\n"), "{started}");
-    left_running(&started)
+    let id = left_running(&started);
+    let listening = |output: &str| output.lines().any(|line| line == "listening");
+    // The first report is a bounded output window, not a readiness promise.
+    // Later raw chunks are kept separately from the first report's formatted hint.
+    let mut later_output = String::new();
+    let ready = tokio::time::timeout(Duration::from_secs(5), async {
+        while !listening(&started) && !listening(&later_output) {
+            let report = crate::command_tool::background::output(&h.dialog_id, &id).unwrap();
+            assert_eq!(
+                report.status.end, None,
+                "the server ended before readiness: {report:?}"
+            );
+            later_output.push_str(&report.output);
+            if !listening(&later_output) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    })
+    .await;
+    assert!(
+        ready.is_ok() && (listening(&started) || listening(&later_output)),
+        "{started}\nLater output: {later_output}"
+    );
+    id
 }
 
 /// The tasks the chat's windows are told of, once told `ids`.
@@ -95,6 +122,31 @@ async fn background_stop(h: &Harness, id: &str) -> bool {
         id: id.into(),
     };
     through(&h.core, request).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_servers_readiness_can_arrive_after_the_starting_run_ends() {
+    let h = harness(&[]).await;
+    let command = format!("while [ ! -e go ]; do sleep 0.05; done; {}", server());
+    let (id, ()) = tokio::join!(server_started_with(&h, command), async {
+        h.wait_for("the run ending before readiness", |event| {
+            event["type"] == "runEnded"
+        })
+        .await;
+        let initial = result_of(&h.messages().await, "b1").content.clone();
+        assert!(
+            !initial.contains("\nlistening\n"),
+            "the server still waits: {initial}"
+        );
+        std::fs::write(h.project.join("go"), "").unwrap();
+    });
+    assert!(
+        beats(&h.project),
+        "the ready server outlives its starting run"
+    );
+    crate::command_tool::background::stop(&h.dialog_id, &id).unwrap();
+    assert!(!beats(&h.project));
+    assert!(background_tasks(&h).await.is_empty());
 }
 
 /// The server outlives the call that started it and the run, the chat's

@@ -63,6 +63,8 @@ export interface ModelProfile {
   reasoning: import('./lib/reasoning').ReasoningSetting;
   /** The API route the model was found to work on, once known. */
   apiRoute?: ApiRoute;
+  /** Saved verification prices in microunits per million tokens, when all three are known. */
+  harnessRates?: ModelRates;
   /** A connector's settings, when the model is a connector's (lib/connectors.ts). */
   connector?: Record<string, unknown>;
 }
@@ -74,6 +76,13 @@ export interface ModelProfile {
  * saved with the model; one with none saved is asked on `/responses` first.
  */
 export type ApiRoute = 'chat_completions' | 'responses';
+
+/** Verification billing prices in microunits per million tokens; zero is explicit. */
+export interface ModelRates {
+  input: number;
+  cachedInput: number;
+  output: number;
+}
 
 export interface ProviderModel {
   id: string; // exactly as the API expects it, e.g. "anthropic/claude-sonnet-4.5"
@@ -89,6 +98,8 @@ export interface ProviderModel {
   reasoning?: import('./lib/reasoning').ReasoningSetting;
   /** The API route found to work (detected, not set by the user). */
   apiRoute?: ApiRoute;
+  /** Incomplete saved prices remain unknown until every price has been supplied. */
+  harnessRates?: Partial<ModelRates>;
 }
 
 /**
@@ -353,6 +364,8 @@ export interface ToolMeta {
   pdfs?: import('./lib/composerAttachments').ComposerPdf[];
   /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
   implementsPlan?: boolean;
+  /** A service-issued private preparation session; never itself implementation evidence. */
+  verifiedPreparation?: string;
   /** Its plan's file: the backend sends the model the plan from it (lib/plans.ts). */
   planPath?: string;
   /** Revision and execution evidence persisted by the backend on the request. */

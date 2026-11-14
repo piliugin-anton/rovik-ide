@@ -49,6 +49,71 @@ pub(super) struct Snapshot {
 }
 
 impl Remote {
+    /// Verification must never silently use the older tree retained after a
+    /// failed or conflicted conversational sync.
+    pub(super) async fn sync_before_verification(
+        &self,
+        host: &str,
+        dialog_id: &str,
+    ) -> Result<rovik_protocol::harness::SourceBinding, String> {
+        let client = self.client(host).map_err(|fail| fail.message)?;
+        let project = self.project_of(dialog_id).await?;
+        if !takes_projects(&client) || project.is_none() {
+            return Err(
+                "Verification needs a project-backed chat and a host with project synchronization"
+                    .into(),
+            );
+        }
+        let (_, source_root) = project.ok_or(NO_PROJECT)?;
+        let before_root = source_root.clone();
+        let before = rt::spawn_blocking(move || verification_inputs(&before_root))
+            .await
+            .map_err(|error| error.to_string())??;
+        let snapshot = self.snapshot(dialog_id).await?.ok_or(NO_PROJECT)?;
+        let expected = before.clone();
+        let (root, shadow, commit) = (
+            snapshot.root.clone(),
+            snapshot.shadow.clone(),
+            snapshot.commit,
+        );
+        let source = rt::spawn_blocking(move || {
+            let shadow = Shadow::open(&shadow, &root)?;
+            if !shadow.with_history() {
+                return Err("Cloud verification needs source history sharing enabled for this project".into());
+            }
+            let (head, tracked_paths) = verification_inputs(&root)?;
+            if (head, &tracked_paths) != (expected.0, &expected.1) {
+                return Err("The source baseline or tracked-file selection changed while capturing verification inputs; inspect again".into());
+            }
+            let candidate = shadow.repo().find_commit(commit).map_err(|error| error.to_string())?;
+            if candidate.parent_count() != 1 || candidate.parent_id(0).map_err(|error| error.to_string())? != head {
+                return Err("The synchronized candidate has no verifiable source baseline; use a complete Git checkout and inspect again".into());
+            }
+            Ok::<_, String>(rovik_protocol::harness::SourceBinding {head: head.to_string(), snapshot:commit.to_string(), tracked_paths})
+        }).await.map_err(|error| error.to_string())??;
+        if self.lock().last_sync.get(dialog_id) != Some(&snapshot.commit) {
+            self.sync_with(host, &client, dialog_id, &snapshot, false)
+                .await?;
+        }
+        if !matches!(self.sync_state(dialog_id), Some(sync) if sync.state == SyncState::Synced) {
+            return Err(
+                "Resolve the project's synchronization conflicts before verifying changes".into(),
+            );
+        }
+        // A checkout or edit during network transfer must invalidate the request,
+        // even if the host successfully received the preceding snapshot.
+        let current = self.snapshot(dialog_id).await?.ok_or(NO_PROJECT)?;
+        let after = rt::spawn_blocking(move || verification_inputs(&source_root))
+            .await
+            .map_err(|error| error.to_string())??;
+        if current.commit != snapshot.commit || current.root != snapshot.root || before != after {
+            return Err(
+                "The project changed while synchronizing verification inputs; inspect again".into(),
+            );
+        }
+        Ok(source)
+    }
+
     /// Syncs the chat before a message to it. A sync that fails says so,
     /// and the message goes all the same, to the chat as it was.
     pub(super) async fn sync_before_send(&self, host: &str, dialog_id: &str) -> Result<(), String> {
@@ -332,4 +397,42 @@ pub(super) fn origin_of(root: &Path) -> Option<String> {
 pub(super) fn settings(config_dir: &Path, root: &Path) -> Option<serde_json::Value> {
     let settings = project_profile::load_project_settings(config_dir, &root.to_string_lossy());
     Some(settings).filter(|s| !s.is_null())
+}
+
+/// Read only source-owned Git metadata; a shadow's index conflates staged and untracked paths.
+fn verification_inputs(root: &Path) -> Result<(Oid, Vec<String>), String> {
+    let repository = git2::Repository::discover(root).map_err(|error| error.to_string())?;
+    let head = repository
+        .head()
+        .and_then(|head| head.peel_to_commit())
+        .map_err(|error| format!("Cloud verification needs a committed source baseline: {error}"))?
+        .id();
+    let workdir = repository
+        .workdir()
+        .ok_or("Verification needs a Git worktree")?;
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let workdir = workdir.canonicalize().map_err(|error| error.to_string())?;
+    let subpath = root
+        .strip_prefix(&workdir)
+        .map_err(|_| "The project root is outside its Git worktree")?;
+    let index = repository.index().map_err(|error| error.to_string())?;
+    if index.has_conflicts() {
+        return Err("Resolve Git index conflicts before verifying changes".into());
+    }
+    let mut paths = Vec::new();
+    for entry in index.iter() {
+        let path = std::str::from_utf8(&entry.path)
+            .map_err(|_| "Verification requires UTF-8 Git paths")?;
+        if let Ok(relative) = Path::new(path).strip_prefix(subpath) {
+            paths.push(
+                relative
+                    .to_str()
+                    .ok_or("Verification requires UTF-8 Git paths")?
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok((head, paths))
 }

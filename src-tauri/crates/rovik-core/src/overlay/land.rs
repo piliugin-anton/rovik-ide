@@ -571,6 +571,31 @@ pub fn land_checked(
     known: Option<&[String]>,
     allow_merge: bool,
 ) -> Result<Option<Landed>, LandError> {
+    land_guarded(
+        data_dir,
+        dialog_id,
+        project,
+        changes,
+        keep_chat,
+        known,
+        allow_merge,
+        || Ok(()),
+    )
+}
+
+/// A checked landing with a final trusted precondition under the project and file locks.
+/// The guard runs before any journal or destination write, including an empty landing.
+#[allow(clippy::too_many_arguments)]
+pub fn land_guarded(
+    data_dir: &Path,
+    dialog_id: &str,
+    project: &Path,
+    changes: &[OverlayChange],
+    keep_chat: bool,
+    known: Option<&[String]>,
+    allow_merge: bool,
+    mut guard: impl FnMut() -> Result<(), String>,
+) -> Result<Option<Landed>, LandError> {
     #[cfg(test)]
     if let Some((left, calls)) = BUSY_TIMES.lock().unwrap().get_mut(project) {
         *calls += 1;
@@ -604,6 +629,7 @@ pub fn land_checked(
             ));
         }
         if plan.is_empty() {
+            guard().map_err(LandError::Failed)?;
             return Ok(None);
         }
         // Every touched file locked (each once, in order: no deadlock), then
@@ -617,6 +643,7 @@ pub fn land_checked(
         if !unchanged {
             continue;
         }
+        guard().map_err(LandError::Failed)?;
         return apply(data_dir, dialog_id, project, &plan)
             .map(Some)
             .map_err(LandError::Failed);
@@ -992,6 +1019,25 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
         (into_chat(data_dir, id).is_none() && !super::chats::is_chat_view(project))
             .then(|| project.to_path_buf())
     })
+}
+
+/// Recover only one trusted application's private journal after its authorization is rechecked.
+/// Changed user files remain untouched; callers must verify the complete result before recording success.
+pub fn recover_guarded(
+    data_dir: &Path,
+    dialog_id: &str,
+    project: &Path,
+    paths: &[String],
+    guard: impl FnOnce() -> Result<(), String>,
+) -> Result<Vec<String>, LandError> {
+    let lock = project_lock(project);
+    let _landing = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let files: Vec<_> = paths.iter().map(|path| project.join(path)).collect();
+    let _files = crate::file_guard::lock_all(files.iter().map(PathBuf::as_path));
+    guard().map_err(LandError::Failed)?;
+    Ok(recover_where(data_dir, |id, recorded| {
+        (id == dialog_id && recorded == project).then(|| project.to_path_buf())
+    }))
 }
 
 /// Finishes the interrupted landings into one chat's view (its children's),

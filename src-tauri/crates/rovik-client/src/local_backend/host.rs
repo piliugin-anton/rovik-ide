@@ -55,11 +55,19 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(std::io::Error::other)?,
     );
     let mut retirement = None;
+    let mut explicit_restart = false;
+    // Capture the loaded image before an installer can replace its source path.
+    #[cfg(target_os = "linux")]
+    let executable = std::path::PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
+    let executable = std::env::current_exe()?;
+    let build = super::image::fingerprint(&executable).await?;
     let result = async {
         backend.start_services().map_err(std::io::Error::other)?;
         let listener = lease.listen(env!("CARGO_PKG_VERSION"))?;
         let control = control::Listener::bind(&lease, &directory)?;
-        let hello = control::Hello::new(listener.boot());
+        let mut hello = control::Hello::new(listener.boot());
+        hello.build = build;
         #[cfg(unix)]
         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let termination = async {
@@ -80,8 +88,11 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                             let result = async {
                                 tokio::time::timeout(control::TIMEOUT, control::write(&mut stream, &hello)).await??;
                                 let candidate: control::Candidate = tokio::time::timeout(control::TIMEOUT, control::read(&mut stream)).await??;
+                                let restart = candidate.restarts(&hello)?;
                                 let mut pause = None;
-                                let reply = if !candidate.upgrades(&hello)? {
+                                let reply = if restart {
+                                    control::Reply::Retiring
+                                } else if !candidate.upgrades(&hello)? {
                                     control::Reply::Current
                                 } else {
                                     while let Some(result) = clients.try_join_next() {
@@ -104,11 +115,22 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 };
                                 tokio::time::timeout(control::TIMEOUT, control::write(&mut stream, &reply)).await??;
-                                Ok::<_, std::io::Error>(pause)
+                                if restart {
+                                    // Cover noncooperative client tasks and their
+                                    // destructors as well as backend cleanup.
+                                    std::thread::Builder::new()
+                                        .name("backend-restart-deadline".into())
+                                        .spawn(|| {
+                                            std::thread::sleep(std::time::Duration::from_secs(10));
+                                            std::process::exit(0);
+                                        })?;
+                                }
+                                Ok::<_, std::io::Error>((pause, restart))
                             }.await;
                             match result {
-                                Ok(Some(guard)) => { retirement = Some(guard); break; },
-                                Ok(None) => {},
+                                Ok((guard, true)) => { retirement = guard; explicit_restart = true; break; },
+                                Ok((Some(guard), false)) => { retirement = Some(guard); break; },
+                                Ok((None, false)) => {},
                                 Err(error) => eprintln!("Local backend upgrade: {error}"),
                             }
                         }
@@ -147,7 +169,16 @@ pub async fn serve(paths: Paths) -> Result<(), Box<dyn std::error::Error>> {
         Ok::<_, std::io::Error>(())
     }
     .await;
-    backend.shutdown().await;
+    if explicit_restart {
+        // The user explicitly accepted interruption. A retained mount or stuck
+        // operation must not keep the obsolete owner alive indefinitely.
+        backend.shutdown().await;
+        // Keep the lifetime lease until the OS closes this process's handles.
+        // Releasing it before runtime teardown would let two owners overlap.
+        std::process::exit(0);
+    } else {
+        backend.shutdown().await;
+    }
     drop(retirement);
     result?;
     Ok(())

@@ -2,7 +2,13 @@ import { backendProject, onBackendRestored } from './lib/backendSession';
 import { startPageRequests } from './lib/pageRequests';
 import { startBackendEvents } from './lib/backendEvents';
 import {
+  backendUpdateAvailable,
+  deferBackendUpdateUntilRelaunch,
+  startBackendUpdates,
+} from './lib/backendUpdates';
+import {
   batch,
+  untrack,
   createSignal,
   createMemo,
   For,
@@ -18,6 +24,11 @@ import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
+import ArchitectureProblems from './components/ArchitectureProblems';
+import { architectureFeedback } from './lib/architectureFeedback';
+import { startArchitectureMarkers } from './lib/architectureMonaco';
+import { ensureDiagnosticsReporting } from './lib/diagnostics';
+import { onHarnessInputsChanged } from './lib/polyglotHarness';
 import BrowserView from './components/BrowserView';
 import MarkdownViewSwitch from './components/MarkdownViewSwitch';
 import ChatPanel from './components/ChatPanel';
@@ -99,7 +110,7 @@ import {
   type Marks,
   type OpenInEditor,
 } from './lib/openInEditor';
-import { isPlanFile, requestImplementPlan } from './lib/plans';
+import { isPlanFile, requestImplementPlan, verifiedEditorPlanPath } from './lib/plans';
 import PlanImplementationAction from './components/PlanImplementationAction';
 import {
   isBrowserTab,
@@ -134,12 +145,14 @@ import {
   clearVfsSettingsRequest,
 } from './lib/virtualFilesStartup';
 import { startBrowser } from './lib/browserStartup';
+import { startDocker } from './lib/dockerStartup';
 import { startSandbox } from './lib/sandboxStartup';
 import { startWsl } from './lib/wslStartup';
-import { startUpdates } from './lib/updates';
+import { startUpdates, updateStatus } from './lib/updates';
 import { startHostUpdates } from './lib/hostUpdates';
 import { onShowChat } from './lib/agentRuns';
 import { cloud } from './lib/cloud';
+import { eligibleHarnessChat } from './lib/polyglotHarness';
 import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
@@ -169,6 +182,7 @@ export default function App() {
   const [openingProject, setOpeningProject] = createSignal(true);
   const [preparingProject, setPreparingProject] = createSignal(false);
   const [loadingChats, setLoadingChats] = createSignal(false);
+  let retryLastProjectAfterUpdate = false;
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -184,6 +198,7 @@ export default function App() {
   });
   // The web tools' browser: downloaded if it's missing (in the background).
   onMount(() => void startBrowser());
+  onMount(() => void startDocker());
 
   // Load last opened project on startup: the folder the command line asked
   // for (`rovik-ide <folder>`, claimed for this window by the backend), else
@@ -196,20 +211,14 @@ export default function App() {
       ).catch(() => ({ folder: null, newWindow: false }));
       if (startup.newWindow && !startup.folder) return;
       const asked = startup.folder;
-      const projectData = await getLastProject(asked ?? undefined);
+      const projectData = await getLastProject(asked ?? undefined, () => {
+        retryLastProjectAfterUpdate = !asked;
+      });
       if (!projectData) {
         if (asked) await openWithItsTabs(asked);
         return;
       }
-      const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
-      for (const m of monaco.editor.getModels()) m.dispose();
-      tree.presetExpanded(path, expandedPaths);
-      setRootPath(path);
-      setOpenFiles(openFiles);
-      setTerminalCollapsed(terminalCollapsed);
-      if (openFiles.length > 0) {
-        setActivePath(openFiles[openFiles.length - 1].path);
-      }
+      applyLastProject(projectData);
     } finally {
       setRestoringProject(false);
     }
@@ -220,6 +229,41 @@ export default function App() {
   /** The file tabs among them: a new list only when one of them changed. */
   const openFiles = createMemo(() => tabs().filter(isFileTab), [], {
     equals: (a, b) => a.length === b.length && a.every((f, i) => f === b[i]),
+  });
+  createEffect(() => {
+    const chat = eligibleHarnessChat(
+      currentProject()?.id,
+      chatStore.projectId(),
+      chatStore.state.active,
+      cloud.hosts
+    );
+    const context = {
+      root: rootPath(),
+      projectId: currentProject()?.id,
+      chatProjectId: chatStore.projectId(),
+      chatId: chat?.dialogId ?? null,
+      hostId: chat?.hostId,
+      unsavedFiles: openFiles()
+        .filter((file) => file.dirty && !file.readOnly)
+        .map((file) => file.path),
+    };
+    untrack(() => architectureFeedback.updateContext(context));
+    ensureDiagnosticsReporting(context.root);
+  });
+  onMount(() => onCleanup(startArchitectureMarkers()));
+  onCleanup(onFileWritten((path) => architectureFeedback.sourceChanged(path)));
+  onCleanup(onFileDeleted((path) => architectureFeedback.sourceChanged(path)));
+  onCleanup(onHarnessInputsChanged((target) => architectureFeedback.inputsChanged(target)));
+  onCleanup(
+    onBackendRestored(() =>
+      architectureFeedback.invalidate(
+        'The execution backend reconnected. Refresh architecture feedback to confirm its current source.'
+      )
+    )
+  );
+  onCleanup(() => {
+    architectureFeedback.dismiss();
+    ensureDiagnosticsReporting(null);
   });
   /** Changes the file tabs; the browser tabs stay where they are. */
   function setOpenFiles(next: OpenFile[] | ((files: OpenFile[]) => OpenFile[])) {
@@ -399,9 +443,10 @@ export default function App() {
   /** The last project, as it was left, if this window may open it; only
    *  `folder` when given (its tabs come back if it was the last). */
   async function getLastProject(
-    folder?: string
+    folder?: string,
+    onFailure?: (error: unknown) => void
   ): Promise<[string, OpenFile[], string[], boolean] | null> {
-    const lastProject = await loadLastProject();
+    const lastProject = await loadLastProject(onFailure);
     if (!lastProject || !lastProject.path) return null;
     if (folder !== undefined && lastProject.path !== folder) return null;
     // Open in another window: this one starts without a project.
@@ -415,6 +460,20 @@ export default function App() {
       lastProject.expandedPaths ?? [],
       lastProject.terminalCollapsed,
     ];
+  }
+
+  function applyLastProject([path, files, expanded, collapsed]: [
+    string,
+    OpenFile[],
+    string[],
+    boolean,
+  ]) {
+    for (const model of monaco.editor.getModels()) model.dispose();
+    tree.presetExpanded(path, expanded);
+    setRootPath(path);
+    setOpenFiles(files);
+    setTerminalCollapsed(collapsed);
+    if (files.length > 0) setActivePath(files[files.length - 1].path);
   }
 
   /** Tabs saved for later, read again from disk. */
@@ -485,6 +544,18 @@ export default function App() {
     });
     void startHostUpdates();
   });
+  onMount(() => onCleanup(startBackendUpdates()));
+  createEffect(() => {
+    // A deferred backend cannot finish loading the project. Keep its explicit
+    // restart action reachable above the initial splash.
+    if (backendUpdateAvailable()) dismissBootSplash();
+  });
+  createEffect(
+    on(updateStatus, (status) => {
+      if (status.kind === 'installing' || status.kind === 'installed')
+        deferBackendUpdateUntilRelaunch();
+    })
+  );
 
   // Closing the window with unsaved tabs asks first.
   onMount(() => {
@@ -1270,12 +1341,21 @@ export default function App() {
    * "Implement this plan" over a plan file: saves it, then hands it to the
    * chat, which starts the run in Agent mode (lib/plans.ts).
    */
-  async function implementOpenPlan() {
+  async function implementOpenPlan(requireVerified = false) {
     const file = activeFile();
     if (!file || !isPlanFile(file.path)) return;
     if (file.dirty) await saveActiveFile();
-    setSidebarTab('chat');
-    requestImplementPlan({ path: file.path });
+    try {
+      const path = requireVerified ? verifiedEditorPlanPath(file.path, rootPath()) : file.path;
+      setSidebarTab('chat');
+      requestImplementPlan({
+        path,
+        requireVerified,
+        sourceRoot: requireVerified ? rootPath()! : undefined,
+      });
+    } catch (error) {
+      notify({ kind: 'error', title: 'The plan could not be prepared', message: String(error) });
+    }
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */
@@ -1931,6 +2011,10 @@ export default function App() {
 
     unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
+      // Graph findings depend on every source, including unopened files and directories.
+      // Invalidate before any asynchronous reload or source-kind filtering can run.
+      const architecturePath = operation === 'unknown' ? rootPath() : path;
+      if (architecturePath) architectureFeedback.sourceChanged(architecturePath);
       // Too much at once for the watcher to say what (a branch switch, an
       // unpacked archive): everything open is checked again.
       const everything = operation === 'unknown';
@@ -2040,7 +2124,40 @@ export default function App() {
   onMount(() => {
     // The chat panel is lazy: its store may never have selected this project.
     onCleanup(
-      backendProject(() => ({ root: rootPath(), projectId: currentProject()?.id ?? null }))
+      backendProject(
+        () => ({ root: rootPath(), projectId: currentProject()?.id ?? null }),
+        async () => {
+          if (retryLastProjectAfterUpdate) {
+            if (!rootPath() && tabs().length === 0) {
+              let failed = false;
+              let failure: unknown;
+              const saved = await getLastProject(undefined, (error) => {
+                failed = true;
+                failure = error;
+              });
+              if (failed) throw failure;
+              // A user-selected folder or draft opened during the read wins.
+              if (saved && !rootPath() && tabs().length === 0) applyLastProject(saved);
+            }
+            retryLastProjectAfterUpdate = false;
+          }
+          for (;;) {
+            const root = rootPath();
+            if (!!root !== !!currentProject()?.id || currentProject() === undefined)
+              await resolveProject(root);
+            if (root !== rootPath()) continue;
+            if (root && !currentProject()?.id) {
+              const blocked = chatsBlocked();
+              throw new Error(
+                blocked?.kind === 'failed'
+                  ? blocked.error
+                  : 'The project could not reopen. Select the folder again, then reconnect.'
+              );
+            }
+            return;
+          }
+        }
+      )
     );
     onCleanup(
       onBackendRestored(async () => {
@@ -2316,6 +2433,11 @@ export default function App() {
           >
             <ChatPanel
               rootPath={rootPath}
+              unsavedFiles={() =>
+                openFiles()
+                  .filter((file) => file.dirty && !file.readOnly)
+                  .map((file) => file.path)
+              }
               onLoadingChange={setLoadingChats}
               activeFileContext={activeFileContext}
               files={tree.files}
@@ -2380,7 +2502,7 @@ export default function App() {
                 path={activePath()!}
                 content={activeFile()?.content}
                 canImplement={!activeFile()?.readOnly}
-                onImplement={() => void implementOpenPlan()}
+                onImplement={(requireVerified) => void implementOpenPlan(requireVerified)}
               />
             </div>
           </Show>
@@ -2427,6 +2549,7 @@ export default function App() {
           </Show>
         </div>
 
+        <ArchitectureProblems />
         <TerminalPanel
           rootPath={rootPath}
           collapsed={terminalCollapsed}
@@ -2481,7 +2604,20 @@ export default function App() {
       <NotificationHost />
       <Show when={appSettingsPage()} keyed>
         {(page) => (
-          <SettingsDialog initialPage={page} rootPath={rootPath()} onClose={closeAppSettings} />
+          <SettingsDialog
+            initialPage={page}
+            rootPath={rootPath()}
+            harnessChat={eligibleHarnessChat(
+              currentProject()?.id,
+              chatStore.projectId(),
+              chatStore.state.active,
+              cloud.hosts
+            )}
+            unsavedFiles={openFiles()
+              .filter((file) => file.dirty && !file.readOnly)
+              .map((file) => file.path)}
+            onClose={closeAppSettings}
+          />
         )}
       </Show>
     </div>

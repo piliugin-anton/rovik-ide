@@ -409,7 +409,7 @@ struct Thread {
 /// Why a thread didn't start.
 enum Halt {
     /// The thread to continue is gone: the caller starts a new one.
-    Gone(Process),
+    Gone(Box<Process>),
     /// The run's error, to report.
     Failed(ChatError),
 }
@@ -526,7 +526,7 @@ async fn open(
             params["excludeTurns"] = json!(true);
             match ask!("thread/resume", params) {
                 Ok(started) => started,
-                Err(error) if is_gone(&error.message) => return Err(Halt::Gone(process)),
+                Err(error) if is_gone(&error.message) => return Err(Halt::Gone(Box::new(process))),
                 Err(error) => {
                     return Err(refused("Codex couldn't continue the chat's thread", error))
                 }

@@ -7,7 +7,16 @@
 // the stage records and keeps no state of its own, so it is right after a
 // restart and in a remote chat's mirror.
 import { Index, Show } from 'solid-js';
-import { shownStatus, stageHover, stripStages, taskLine, type StageRow } from '../lib/autopilot';
+import {
+  shownStatus,
+  stageHover,
+  stripStages,
+  taskLine,
+  strictAutopilotRun,
+  strictAutopilotTask,
+  unresolvedStrictTask,
+  type StageRow,
+} from '../lib/autopilot';
 import { StageIcon } from './StageRecord';
 
 export default function AutopilotStrip(props: {
@@ -17,13 +26,56 @@ export default function AutopilotStrip(props: {
   running: boolean;
   /** Show a record in the chat, by its message id. */
   onShow: (recordId: string) => void;
+  /** Open the existing strict controller's approvals, results and delivery review. */
+  onOpenVerified?: (runId: string) => void;
+  /** Cancel frozen task ownership, including paused preparation before a controller exists. */
+  onCancelVerified?: () => void;
 }) {
   const line = () => taskLine(props.rows, props.running);
+  const strictRun = () => strictAutopilotRun(props.rows);
+  const strictSummary = () =>
+    strictAutopilotTask(props.rows)
+      ? [...props.rows].reverse().find((row) => row.stage.summary)?.stage.summary
+      : undefined;
   return (
     <div class="autopilot-strip" role="group" aria-label={line()}>
       <span class="autopilot-strip-line" aria-live="polite">
         {line()}
       </span>
+      <Show when={strictAutopilotTask(props.rows)}>
+        <span class="settings-hint">Verified delivery required</span>
+      </Show>
+      <Show when={strictRun()}>
+        {(run) => (
+          <button
+            type="button"
+            class="link-button"
+            disabled={!props.onOpenVerified}
+            onClick={() => props.onOpenVerified?.(run().runId)}
+          >
+            {run().stopped
+              ? 'Review stopped verified task'
+              : 'Open verified task decisions and result'}
+          </button>
+        )}
+      </Show>
+      <Show when={unresolvedStrictTask(props.rows)}>
+        <button
+          type="button"
+          class="link-button"
+          disabled={!props.onCancelVerified}
+          onClick={() => props.onCancelVerified?.()}
+        >
+          Cancel verified task
+        </button>
+      </Show>
+      <Show when={strictSummary()}>
+        {(summary) => (
+          <span class="settings-hint" aria-live="polite">
+            {summary()}
+          </span>
+        )}
+      </Show>
       <ol class="autopilot-stages">
         {/* By position: a stage's button stays as its record changes. */}
         <Index each={stripStages(props.rows)}>

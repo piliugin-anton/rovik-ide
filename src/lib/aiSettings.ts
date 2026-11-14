@@ -10,6 +10,7 @@ import {
   type SubagentSettings,
 } from './subagentSettings';
 import { normalizeMcpServers, type McpServer } from './mcpServers';
+import { savedHarnessRates } from './harnessRates';
 
 export interface PersistedAiSettings {
   version: 2;
@@ -291,6 +292,7 @@ export function resolveProfile(
     firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,
     reasoning: settingOf(model),
     apiRoute: model.apiRoute,
+    harnessRates: savedHarnessRates(model) ?? undefined,
   };
 }
 

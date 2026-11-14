@@ -1096,3 +1096,120 @@ test('the report card’s lines: how it ended, what it spent (S09)', () => {
   assert.equal(tokensText(12_500_000), '12.5 million');
   assert.equal(reportDuration(3_900_000), '1 h 5 min');
 });
+
+test('a completed strict task on a keep-on-host workspace does not claim desktop delivery', async () => {
+  const { taskLine, strictAutopilotTask, strictAutopilotRun } = await import('./autopilot');
+  const rows: import('./autopilot').StageRow[] = [
+    {
+      id: 'plan',
+      stage: {
+        task: 'task',
+        name: 'plan',
+        status: 'done',
+        round: 1,
+        effort: 'balanced',
+        strictTask: {
+          schemaVersion: 1,
+          projectId: 'project',
+          root: '/host/project',
+          keepsOnHost: true,
+          profileId: 'provider::model',
+          model: 'model',
+          endpoint: 'https://provider.invalid/v1/chat/completions',
+          configuration: {
+            setupId: 'setup',
+            configurationDigest: 'configuration',
+            untracked: [],
+            rates: { input: 1, cachedInput: 0, output: 2 },
+          },
+        },
+      },
+    },
+    {
+      id: 'delivery',
+      stage: {
+        task: 'task',
+        name: 'deliver',
+        status: 'done',
+        round: 1,
+        effort: 'balanced',
+        strictRun: { runId: 'durable-run', stopped: false },
+      },
+    },
+  ];
+  assert.equal(strictAutopilotTask(rows)?.configuration.setupId, 'setup');
+  assert.equal(strictAutopilotRun(rows)?.runId, 'durable-run');
+  assert.equal(taskLine(rows, false), 'Autopilot: verified changes applied on execution host');
+  assert.equal(strictAutopilotRun([]), undefined);
+});
+
+test('a new or failed user row cannot hide unresolved strict ownership from the strip or continuation guard', async () => {
+  const { taskRecords, unresolvedStrictTask } = await import('./autopilot');
+  const plan: import('./autopilot').StageRow = {
+    id: 'plan',
+    stage: {
+      task: 'strict-task',
+      name: 'plan',
+      status: 'done',
+      round: 1,
+      effort: 'balanced',
+      strictTask: {
+        schemaVersion: 1,
+        projectId: 'project',
+        root: '/project',
+        profileId: 'provider::model',
+        model: 'model',
+        endpoint: 'https://provider.invalid/v1/chat/completions',
+        configuration: {
+          setupId: 'setup',
+          configurationDigest: 'configuration',
+          untracked: [],
+          rates: { input: 0, cachedInput: 0, output: 0 },
+        },
+      },
+    },
+  };
+  const implementation: import('./autopilot').StageRow = {
+    id: 'implementation',
+    stage: {
+      task: 'strict-task',
+      name: 'implement',
+      status: 'failed',
+      round: 1,
+      effort: 'balanced',
+      strictRun: { runId: 'owned-run', stopped: false },
+      outcome: 'blocked',
+    },
+  };
+  const records = [plan, implementation];
+  const messages = records.map((row) => ({
+    id: row.id,
+    role: 'assistant',
+    content: '',
+    timestamp: 'now',
+    meta: { stage: row.stage },
+  })) as import('../types').ChatMessage[];
+  messages.push({
+    id: 'later-user',
+    role: 'user',
+    content: 'new request',
+    timestamp: 'now',
+  } as import('../types').ChatMessage);
+  assert.equal(taskRecords(records, messages)?.[0].stage.task, 'strict-task');
+  assert.equal(
+    taskRecords(null, messages)?.[0].stage.task,
+    'strict-task',
+    'loaded complete records recover ownership without a stale cached task'
+  );
+  const cancelled = {
+    ...implementation.stage,
+    strictRun: { runId: 'owned-run', stopped: true },
+    outcome: 'stopped',
+  };
+  assert.equal(
+    taskRecords(records, messages, true, { implementation: cancelled }),
+    null,
+    'an authenticated stop releases ownership'
+  );
+  assert.equal(unresolvedStrictTask([{ ...plan }, { ...implementation, stage: cancelled }]), false);
+});

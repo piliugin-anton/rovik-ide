@@ -877,10 +877,72 @@ impl Remote {
 
     /// A chat's request, answered by its owner: the core here, or its host.
     /// The mirror takes the writes its owner tells no event of.
-    pub async fn route(&self, dialog_id: &str, request: Request) -> Result<Response, Fail> {
+    pub async fn route(&self, dialog_id: &str, mut request: Request) -> Result<Response, Fail> {
+        let stopping = matches!(&request, Request::AgentStop { .. });
+        let stopped_start = stopping && self.core.agents.stop_starting(dialog_id);
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
+        if let Request::Harness {
+            root,
+            source,
+            operation,
+            ..
+        } = &mut request
+        {
+            if !self.serves(&host, operation.required_feature()) {
+                return Err(Fail::new(
+                    FailCode::BadRequest,
+                    format!(
+                        "{} needs an update before it can perform this polyglot operation.",
+                        self.host_name(&host)
+                    ),
+                ));
+            }
+            if self.is_moving_back(dialog_id) {
+                return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
+            }
+            let mut applied = false;
+            if operation.requires_current_source()
+                && self.serves(&host, features::POLYGLOT_APPLICATION)
+            {
+                let state = self
+                    .client(&host)?
+                    .call(Request::Harness {
+                        dialog_id: dialog_id.into(),
+                        root: None,
+                        source: None,
+                        operation: rovik_protocol::harness::Operation::ApplicationState,
+                    })
+                    .await?;
+                let Response::Harness(state) = state else {
+                    return Err(internal(
+                        "The host returned an invalid application state".into(),
+                    ));
+                };
+                applied = state["blocked"].as_bool().ok_or_else(|| {
+                    internal("The host did not establish application freshness".into())
+                })?;
+                if applied && !operation.observes_applied_workspace() {
+                    return Err(internal("Reviewed changes remain on the host and have not been delivered to this computer. Synchronization is blocked until delivery or explicit reconciliation.".into()));
+                }
+            }
+            if operation.requires_current_source() && !applied {
+                *source = Some(
+                    self.sync_before_verification(&host, dialog_id)
+                        .await
+                        .map_err(internal)?,
+                );
+            } else {
+                *source = None;
+            }
+            // A local drive or project path is never an execution path on a host.
+            // The daemon binds this operation to its owned chat worktree.
+            *root = None;
+            // Harness state stays on its execution host, outside chat-row mirroring.
+            // Move ephemeral provider credentials directly into the one transport call.
+            return self.client(&host)?.call(request).await;
+        }
         if let Request::ClmReadFile { path, .. } = &request {
             if !self.serves(&host, features::CONTEXT_FILES) {
                 // Older hosts already support the live context through revisions.
@@ -934,6 +996,7 @@ impl Remote {
             log::warn!("the mirror of {dialog_id} didn't take a write: {e}");
         }
         Ok(match reply {
+            Response::Bool(stopped) if stopping => Response::Bool(stopped || stopped_start),
             // A path on the server means nothing here.
             Response::ClmStatus(mut status) => {
                 status.real_path = None;
@@ -1030,9 +1093,12 @@ impl Remote {
     /// applied (6.9), and the text left out when the host has it already
     /// (K50).
     pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
+        let starting = self.core.agents.begin_start(&request.dialog_id);
+        starting.check().map_err(internal)?;
         if self.host_of(&request.dialog_id).is_none() {
             self.go_home(&request.dialog_id).await?;
         }
+        starting.check().map_err(internal)?;
         let Some(host) = self.host_of(&request.dialog_id) else {
             return rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(request))).await;
         };
@@ -1040,10 +1106,52 @@ impl Remote {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
         let client = self.client(&host)?;
+        if agent_run::requires_preparation(&self.core, &request)
+            .await
+            .map_err(internal)?
+            && !self.serves(&host, features::POLYGLOT_PREPARATION)
+        {
+            return Err(Fail::new(FailCode::BadRequest, "This host cannot prepare verified plans; update the host before starting or continuing preparation."));
+        }
         agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
             .await
             .map_err(internal)?;
-        if matches!(request.start, StartKind::Send { .. }) {
+        // Establish the effective host mode before selecting strict source handling.
+        if self.policy(&host) == ApprovalPolicy::Autonomous && request.mode.is_none() {
+            request.mode = Some(agent_run::autopilot::MODE.into());
+        }
+        if let Some(config) = &mut request.config {
+            self.apply_policy(&host, config);
+        }
+        let configuration = request
+            .config
+            .clone()
+            .unwrap_or_else(|| self.core.agents.config());
+        let new_strict = rovik_protocol::harness::normalize_verified_autopilot(
+            &mut request,
+            &configuration.autopilot,
+        )
+        .map_err(internal)?;
+        let existing_strict =
+            agent_run::autopilot::requires_verified(&self.core, &request.dialog_id)
+                .await
+                .map_err(internal)?;
+        let strict = new_strict || existing_strict;
+        if strict && !self.serves(&host, features::POLYGLOT_AUTOPILOT) {
+            return Err(Fail::new(FailCode::BadRequest, "This host cannot enforce verified Autopilot delivery; update the host before starting or resuming this task."));
+        }
+        let source = if new_strict {
+            // The initial task freezes this binding. Later resumes must not merge
+            // desktop files into the host's implementation or applied candidate.
+            let source = self
+                .sync_before_verification(&host, &request.dialog_id)
+                .await
+                .map_err(internal)?;
+            Some(source)
+        } else {
+            None
+        };
+        if !strict && matches!(request.start, StartKind::Send { .. }) {
             self.sync_before_send(&host, &request.dialog_id)
                 .await
                 .map_err(internal)?;
@@ -1062,14 +1170,6 @@ impl Remote {
         let project = project.await.map_err(internal)?;
         if project.is_some() && takes_projects(&client) {
             request.root = None;
-        }
-        if let Some(config) = &mut request.config {
-            self.apply_policy(&host, config);
-        }
-        // A chat on a host that works on its own runs in Autopilot unless
-        // its message names another mode (H02).
-        if self.policy(&host) == ApprovalPolicy::Autonomous && request.mode.is_none() {
-            request.mode = Some(agent_run::autopilot::MODE.into());
         }
         // A host has no keychain: the saved secrets of the servers that are
         // on go with the start (Q11), unless its daemon is too old to take
@@ -1101,7 +1201,16 @@ impl Remote {
                     .await?;
             }
         }
-        client.call(Request::AgentStart(Box::new(request))).await
+        let call = if strict {
+            Request::VerifiedAutopilotStart {
+                start: Box::new(request),
+                source,
+            }
+        } else {
+            Request::AgentStart(Box::new(request))
+        };
+        starting.check().map_err(internal)?;
+        client.call(call).await
     }
 
     /// Tests `server` on `host`, from there (Q11): its saved secrets, on or

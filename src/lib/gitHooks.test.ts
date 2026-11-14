@@ -40,5 +40,6 @@ test('git hooks: what --no-verify wouldn’t skip, or another error, has no skip
   assert.equal(skippableHook('Not rebased: the pre-rebase hook failed (exit code 1).'), null);
   assert.equal(skippableHook('Not committed: the commit message the hooks left is empty.'), null);
   assert.equal(skippableHook('Push failed: authentication required'), null);
+  assert.equal(skippableHook('Not pushed: Git LFS failed: missing local object'), null);
   assert.equal(skippableHook('Resolve the conflicts first.'), null);
 });

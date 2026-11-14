@@ -1,0 +1,131 @@
+name: Polyglot harness native evidence
+
+on:
+  pull_request:
+    paths:
+      - 'src-tauri/crates/rovik-harness/**'
+      - 'src-tauri/crates/rovik-core/src/harness.rs'
+      - 'src-tauri/crates/rovik-core/src/harness/**'
+      - 'src-tauri/crates/rovik-core/src/agent_run/verified_preparation*.rs'
+      - 'src-tauri/crates/rovik-headless/src/bin/rovik-harness.rs'
+      - 'src-tauri/crates/rovik-headless/Cargo.toml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'scripts/build-harness-tool.sh'
+      - '.github/workflows/polyglot-harness.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polyglot-native-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  automatic-preparation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      ROVIK_REAL_PREPARATION: '1'
+      ROVIK_HARNESS_PREPARATION_NATIVE: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate locked verifier build inputs
+        run: node --test src-tauri/crates/rovik-harness/src/preparation/verify-lock.test.mjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: polyglot-preparation
+      - name: Build the bundled verifier and fetch locked dependencies without project hooks
+        working-directory: src-tauri
+        run: >-
+          cargo test --locked -p rovik-harness --features preparation --lib preparation::
+          -- --ignored --test-threads=1
+      - name: Prepare and verify a new project under delegated rootless Podman
+        working-directory: src-tauri
+        run: |
+          command -v podman
+          # Match the installed daemon: a persistent controller subgroup leaves
+          # an empty delegated parent for individually bounded Podman jobs.
+          # The fixture requires Podman, so Docker fallback cannot hide a failure.
+          sudo systemd-run --quiet --wait --pipe --collect \
+            --unit="rovik-preparation-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --uid="$(id -u)" --gid="$(id -g)" \
+            --property=Type=exec \
+            --property="WorkingDirectory=$PWD" \
+            --property="Delegate=cpu memory pids" \
+            --property=DelegateSubgroup=rovik-controller \
+            --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
+            --setenv="CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            --setenv="RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_PROFILE_TEST_DEBUG=0 \
+            --setenv=CARGO_INCREMENTAL=0 --setenv=CARGO_TERM_COLOR=always \
+            --setenv=ROVIK_HARNESS_PREPARATION_NATIVE=1 \
+            --setenv=ROVIK_HARNESS_REQUIRE_PODMAN=1 \
+            "$(command -v cargo)" test --locked -p rovik-core --lib \
+            harness::ide::preparation::tests::native_automatic_preparation \
+            -- --ignored --test-threads=1
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      ROVIK_HARNESS_DOCKER: '1'
+      ROVIK_HARNESS_DOCKER_BIN: /usr/bin/docker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: polyglot-native
+      - name: Validate the durable core and strict protocol
+        working-directory: src-tauri
+        run: |
+          cargo test --locked -p rovik-harness
+          cargo clippy --locked -p rovik-harness --tests -- -D warnings
+      - name: Prepare protected native toolchain outside verification
+        run: |
+          bash scripts/build-harness-tool.sh
+          docker build -t rovik-harness-native:ci src-tauri/crates/rovik-harness/fixtures/native
+          echo "ROVIK_HARNESS_IMAGE=$(docker image inspect --format '{{.Id}}' rovik-harness-native:ci)" >> "$GITHUB_ENV"
+      - name: Exercise every supported native language, risk and evaluation configuration
+        working-directory: src-tauri
+        env:
+          ROVIK_HARNESS_EVALUATION_OUTPUT: ${{ runner.temp }}/native-evaluation-v1.json
+        run: cargo test --locked -p rovik-harness --test controller --test packs --test risk --test evaluation --test runtimes --test imports --test workspace --test verification --test conformance --test study -- --ignored --test-threads=1
+      - name: Verify saved IDE changes through the actual controller
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-core --lib harness::ide::tests::native_ide_verification -- --ignored --test-threads=1
+      - name: Implement a saved IDE plan with the selected model and native verification
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-core --lib harness::ide::plan::tests::native_plan_implementation -- --ignored --test-threads=1
+      - name: Apply only an approved verified candidate and authenticate its receipt
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-core --lib harness::ide::application::tests::native_accepted_candidate -- --ignored --test-threads=1
+      - name: Prepare isolation fixture outside verification
+        run: |
+          docker pull alpine:3.22.0
+          echo "ROVIK_HARNESS_IMAGE=$(docker image inspect --format '{{.Id}}' alpine:3.22.0)" >> "$GITHUB_ENV"
+      - name: Rehearse process loss, isolation, cancellation and resource limits
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-harness --test execution --test operations -- --ignored --test-threads=1
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: native-verifier-evaluation
+          path: ${{ runner.temp }}/native-evaluation-v1.json
+          if-no-files-found: warn

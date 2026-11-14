@@ -167,6 +167,70 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   is never replayed automatically. Changed inputs invalidate reusable results;
   successful checks are reused only when reuse is enabled and their inputs
   still match. Final integrity and acceptance checks still run.
+- **Strict polyglot verification (Linux).** The `rovik-harness` headless
+  command binds proposed edits to approved contracts, protected acceptance
+  tests, immutable snapshots and sandbox receipts. C, C++, Rust, Node.js JavaScript,
+  strict TypeScript and Python/pytest fixtures exercise the workflow, with
+  offline dependencies, bounded repairs, approval maintenance
+  and recovery after controller loss. Preparation roles, derived verification plans,
+  reviewed replanning, fresh CI checks and merge-candidate preparation use the same
+  durable ledger. Architecture checks cover configured component boundaries, with
+  import graphs for JavaScript, TypeScript and Python and optional libclang semantic
+  collection for C/C++. Workspace checks include Cargo tests/doctests and CTest.
+  The CLI also provides native pack conformance and a budgeted live-model study
+  runner; published model-quality results require a separately configured study.
+  See [Polyglot harness](docs/design/polyglot-harness.md)
+  for supported targets, measured limits and operator setup.
+- **Verify changes in the IDE.** Open Project Checks to inspect a project's
+  build roots, select a prepared verification setup and run the strict harness
+  against saved changes. Choose this computer or the current project's connected
+  Linux chat host. Review exact approvals and see failed checks, recovery actions
+  and whether a result is stale. Verification preserves the checkout and index
+  and makes no model calls. See the
+  [IDE integration plan](docs/design/polyglot-ide-integration.md).
+- **Verified plan implementation.** **Require verified result** is selected by
+  default on **Implement this plan**. The ordinary chat agent prepares checks in
+  a private source copy, reports progress and asks about missing requirements in
+  the conversation. Review one compact summary, then choose **Implement plan**.
+  Protected tests and a real failing control are staged outside your checkout;
+  native preparation trials must succeed before the review becomes ready. The
+  trusted backend prepares its verifier image and supported locked dependencies
+  on first use. Unrelated example or fixture build roots can be explicitly
+  excluded in the proposal; the review lists the reason and freezes those roots
+  against implementation edits. Exclusions retain the full source snapshot and
+  dependency graph. Automatic preparation currently needs Linux x86_64 with working
+  Docker or rootless Podman, locally or on a connected host, and an
+  OpenAI-compatible Chat Completions model. Rootless Podman also requires the
+  [delegated controller service](docs/design/polyglot-harness.md#rootless-podman-host-requirements);
+  automatic discovery checks host readiness before selecting an engine.
+  Save that model's verification prices
+  once in **Model providers → Verification pricing**. Enter ordinary prices per
+  million tokens, such as `0.225`; budget errors show the saved prices, and
+  **Review model prices** opens their settings from the preparation card. Preparation uses ordinary
+  chat billing; the review shows separate implementation limits. Stop, continue
+  and retry actions remain in the conversation. Review the verified candidate's
+  diff separately before applying it. See the [workflow and language limits](docs/design/polyglot-harness.md#verified-plan-implementation).
+- **Verified Autopilot delivery.** Enable **Require verified delivery** in
+  Autopilot settings and review the task's prepared setup and saved model prices.
+  The controller owns implementation and repairs; restart, budget and approval
+  decisions stay with the task. Applying accepted changes needs an exact delivery
+  approval and a current destination. Cloud tasks can apply and keep results on
+  the host; automatic verified transfer to the desktop is not yet available.
+- **Editor architecture feedback.** Show authenticated architecture findings in
+  Architecture Problems. Local markers and file navigation require matching
+  saved source; edits remove current markers. Cloud findings remain historical
+  host evidence. Reviewed architecture rules also guide verified implementation.
+  Feedback is advisory and cannot grant acceptance.
+- **Local Docker setup.** On startup, Rovik installs Docker when it is missing
+  on a supported desktop. Progress and retry actions appear alongside the
+  browser installation notifications. Linux uses signed distribution packages
+  and the system's administrator prompt; installation starts Docker and adds
+  your account to its access group, which requires signing out and back in.
+  macOS and Windows use Docker's official Desktop installer, verified against
+  its published SHA-256. Complete any system approval, Docker terms or restart
+  prompts. Existing installations are kept. Rovik reports an installed but
+  unavailable daemon as needing setup, rather than ready. This local setup
+  does not install Docker on cloud hosts or enable strict Autopilot verification.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
   `&`, which ends with its command: it goes on as soon as the command has
@@ -1162,7 +1226,7 @@ What one process must not do to another's work is guarded the same way:
 
 ### Git hooks
 
-The Git panel works through libgit2, which runs no hooks, so the panel
+The Git panel uses libgit2 and native Git for LFS filters. libgit2 runs no hooks, so the panel
 runs them itself (`src-tauri/crates/rovik-client/src/git/hooks.rs`), where git would and with
 git's arguments and input:
 
@@ -1190,6 +1254,29 @@ error has a button to try once more without it: **Commit without hooks**,
 pre-push for that one try. prepare-commit-msg and the hooks that come
 after still run, as with git, and a push after such a commit still runs
 pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
+
+For files tracked with `filter=lfs` in Git attributes, **Commit** runs
+Git's LFS clean filter before commit hooks see the index. **Push** checks
+outgoing LFS pointers and uploads their objects before publishing the
+branch, including when there is no LFS pre-push hook. Existing hooks
+(including `core.hooksPath` and Husky) are preserved and still run.
+**Push without hooks** skips repository checks but still requires valid
+LFS pointers and successful object uploads. Git and Git LFS must be
+installed on the machine running these Git operations; Rovik supplies
+the standard filters for its commands without changing global Git
+configuration. LFS uses the repository's remote, LFS endpoint, storage
+and credential-helper settings. Sign in through Git on that machine if
+credentials are missing.
+
+Hydrated LFS assets are compared through the clean filter, so unchanged
+files stay clean in the Git panel. Ordinary images and binaries keep
+their existing Git behavior unless attributes explicitly track them
+with LFS. Raw LFS-tracked files committed by older versions cause Push
+to stop with recovery guidance. Review and repair unpublished commits
+with Git LFS before retrying; Rovik never migrates or rewrites history
+automatically. This support covers Git-panel staging, conflict-resolution
+staging, status and publishing; use native Git LFS checkout/pull when
+hydration is needed after other libgit2 working-tree operations.
 
 The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
 **Git hooks…** (`src/components/GitHooksView.tsx`,
@@ -1690,44 +1777,66 @@ The desktop supplies event publishers and keeps native window callbacks in the
 application layer. Initialization fails if remote chat ownership cannot be
 loaded, rather than treating those chats as local.
 
-Unix windows now attach to a shared backend with singleton ownership and a
-private readiness socket. The packaged app hosts it in `--desktop-backend` mode;
-`rovik-desktopd` provides the same host as a standalone binary.
+Desktop windows attach to a shared backend with singleton ownership and a
+private readiness endpoint (a Unix socket or Windows named pipe). The packaged
+Unix app hosts it in `--desktop-backend` mode; Windows uses the bundled
+`rovik-desktopd` standalone binary.
 `local_backend::ensure_backend` negotiates safe upgrades and attaches to the host,
 or starts that binary and waits for initialization. The handshake identifies the protocol,
 backend boot, and client session; the daemon retains ownership through shutdown.
 A newly launched backend retries transient readiness timeouts within its existing
-30-second startup budget. Authentication and protocol errors still stop startup.
+30-second startup budget. Authentication errors still stop startup. An older,
+incompatible backend leaves the window available to offer a backend update.
+
+After an app update, an outdated backend is offered in a bottom-right notification
+with **Restart backend**. The button replaces the exact backend inspected at the
+click, starts the installed executable, and restores this window's project and
+subscriptions. It interrupts agents, preparation, commands, and terminals across
+all windows; unsaved editor text and chat drafts stay open. Interrupted operations
+are never replayed. Release, protocol, and executable identity checks detect
+updates, including a rebuilt executable with the same release version.
+If the installed app files change while this window is open, relaunch Rovik
+before replacing its backend so both sides use the same protocol. A macOS backend
+that predates explicit restart support must finish its work and release its
+windows before replacement; newer backends support interruption on every desktop
+platform.
 
 The shared backend writes its standard output and diagnostics to `backend.log`
 in its private backend directory under the app data directory. Its output handles
 remain valid after the launching window or `tauri dev` process exits.
-The Unix endpoint also serves bounded typed request/reply calls through
+The endpoint also serves bounded typed request/reply calls through
 `local_backend::rpc::Client`. Requests route by their chat or message identity;
 run start, steering, deletion, and configuration use the existing remote-routing
 operations. Status includes connected hosts, and `call_host` explicitly targets
 a host for operations such as connector setup. The handshake requires client
 acknowledgement before accepting operations; a stalled handshake cannot block
-other clients. A lost or cancelled reply invalidates the client connection, and
-mutations are never retried automatically. Unix command-session recovery is
-explicit; Windows named pipes remain outstanding. Desktop-only commands and
+other clients. Requests run concurrently and replies carry request IDs, so a slow
+preparation or command does not block chat history or other independent requests.
+Reserved control capacity keeps Stop available when ordinary requests reach the
+in-flight limit. Cancelling a caller does not cancel an accepted operation or
+invalidate unrelated requests; transport loss fails pending calls without
+retrying mutations. Command-session recovery is explicit. Desktop-only commands and
 events use their own adapters. Build the standalone host with
 `cargo build -p rovik-client --bin rovik-desktopd` from `src-tauri/`.
 
 Agent controls, connector operations, chat mutations, and CLM commands now use
-`DesktopConnection`, which supplies the same typed replies in embedded and Unix
-IPC modes. Unix desktops select IPC by default; Windows keeps its embedded
-host pending transport support. IPC connection errors
+`DesktopConnection`, which supplies the same typed replies in embedded and local
+IPC modes. Linux, macOS, and Windows desktops select IPC by default. IPC connection errors
 never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 18 provides private client event connections alongside
+use the adapter. Local protocol 23 provides concurrent request/reply calls and private client event connections alongside
 explicit desktop requests. VFS subscriptions now use this transport in both
 embedded and IPC modes. Each client owns its subscriptions; disconnecting it
 cleans up only its resources. Bounded queues fail explicitly if a consumer falls
 behind, and native callback loss cancels its producer. See the
 [desktop backend migration](docs/design/desktop-command-migration.md).
+
+Automatic verified-plan preparation requires the host's `polyglot-preparation`
+capability. Its desktop IPC revision is independent of the cloud wire protocol and
+harness document schemas, which remain v1. Update older hosts before using the new
+preparation workflow.
 
 Chat data and drafts, attachments, CLM tools, memory, AI/project/network settings,
 host operations, and non-browser MCP operations now run behind that boundary.
@@ -2328,8 +2437,8 @@ WSL operations also use desktop RPC; native adapters retain browser/window actio
 Project lifecycle commands and attachment reads now use desktop RPC. Open projects
 are registered per client, with guarded merges/deletes and disconnect cleanup;
 remote results and steering use the chat's project. This completes the listed
-command-family migration. Unix windows attach automatically to the shared host;
-Windows currently uses an embedded backend.
+command-family migration. Linux, macOS, and Windows windows attach automatically
+to the shared host.
 
 Agent and cloud events now reach each UI through a project-scoped replay journal.
 The read connection reconnects independently of commands, and a missed-history
@@ -2381,11 +2490,10 @@ position handling while execution and host connections belong to the backend.
 
 ### Shared desktop backend
 
-On Linux and macOS, Rovik windows share one local backend for chats, execution,
+On Linux, macOS, and Windows, Rovik windows share one local backend for chats, execution,
 and virtual filesystem mounts. Closing a window releases its UI resources;
 backend work continues even when the last window closes. Opening Rovik again
-reattaches to that backend. Windows currently uses an embedded backend while its
-shared transport is being implemented.
+reattaches to that backend.
 
 After a backend crash or lost command session, use **Reconnect** in the connection
 notification. The window keeps unsaved editor text and chat drafts, restores its

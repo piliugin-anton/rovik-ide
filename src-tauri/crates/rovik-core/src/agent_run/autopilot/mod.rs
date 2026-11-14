@@ -3,6 +3,12 @@
 //! plan is implemented and the change checked, and the result delivered,
 //! with nobody at the keyboard.
 //!
+//! An explicitly reviewed strict task keeps this pipeline but uses prepared
+//! immutable environment/oracle assets for Prepare and Tests. Its implementation
+//! pauses for concrete human approvals, then one durable polyglot controller owns
+//! generation and repairs. Native acceptance and an exact application receipt
+//! replace model verdicts and ordinary automatic landing for the remaining stages.
+//!
 //! A task is a pipeline of runs in one chat (D2), not one long run. Its
 //! first run is a Plan-mode run, started by the user's message.
 //!
@@ -41,6 +47,7 @@ mod outcome;
 mod rate_limit;
 mod rows;
 mod stage;
+mod strict;
 #[cfg(test)]
 mod tests;
 
@@ -55,6 +62,7 @@ pub use delivery::{
     plan_title, report_facts, CheckLine, DeliverAsk, Deliverer, Delivering, Delivery, Pushed,
     ReportFacts,
 };
+pub(super) use driver::stage_for_request;
 pub(super) use driver::{
     after_run, drive_lock, driver_turn, go_on_boxed, not_started_why, starts_task, try_drive_lock,
     AtWork,
@@ -80,3 +88,6 @@ pub use stage::{
     latest_task, next_after, next_stage, pipeline, record_of, recorded, records_of, task_state,
     total_spent, Carrier, Next, RateLimitWait, Recorded, Stage, StageRecord, StageRun, Status,
 };
+pub(super) use strict::priced_usage;
+pub(super) use strict::{guard_start as strict_guard_start, stop as stop_strict};
+pub use strict::{reconcile_verified, requires_verified, StrictRun, StrictTask};

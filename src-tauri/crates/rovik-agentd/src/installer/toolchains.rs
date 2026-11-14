@@ -18,7 +18,7 @@
 //! `admin toolchain add` works either way, and `admin toolchain prune`
 //! removes the versions no `.used` file has touched for some days.
 
-use super::{unit, System, CACHES, SHARE_GROUP, TOOLCHAINS, UNIT};
+use super::{System, CACHES, SHARE_GROUP, TOOLCHAINS, UNIT};
 use rovik_core::pinned_browser::Leftover;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -911,8 +911,9 @@ pub(super) fn setup(sys: &System) -> Result<(), String> {
     if sys.systemd() {
         // The unit, for whoever installed before it named the group.
         let path = sys.path(UNIT);
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(&unit()) {
-            sys.write(UNIT, unit().as_bytes(), 0o644)?;
+        let unit = sys.service_unit()?;
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(&unit) {
+            sys.write(UNIT, unit.as_bytes(), 0o644)?;
         }
         sys.run("systemctl", &["daemon-reload"])?;
         let run: Vec<String> = running(sys);

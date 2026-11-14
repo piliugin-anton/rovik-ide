@@ -176,6 +176,11 @@ async fn standalone_ui_sessions_recover_without_an_embedded_fallback() {
 }
 
 #[tokio::test]
+async fn an_explicit_update_replaces_only_the_approved_backend_and_keeps_saved_chats() {
+    desktop_upgrade::check_restart(&executable()).await;
+}
+
+#[tokio::test]
 #[ignore = "requires a built NSIS installer and disposable installation"]
 async fn installer_preserves_a_busy_backend_and_saved_edits() {
     use rovik_client::{

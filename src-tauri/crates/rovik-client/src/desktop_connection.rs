@@ -28,9 +28,17 @@ impl DesktopConnection {
     }
 
     fn new(connection: Connection) -> Self {
+        let desktop = Self::disconnected();
+        desktop.lock().connection = Some(Arc::new(connection));
+        desktop
+    }
+
+    /// Keeps the window available for updating an incompatible running backend.
+    /// Commands fail until an explicit reconnect or replacement attaches a session.
+    pub fn disconnected() -> Self {
         Self {
             state: Mutex::new(State {
-                connection: Some(Arc::new(connection)),
+                connection: None,
                 closed: false,
                 report: Arc::new(|reason| log::warn!("Desktop events disconnected: {reason}")),
             }),
@@ -124,6 +132,57 @@ impl DesktopConnection {
     ) -> Result<(), String> {
         self.reconnect_with(
             Connection::attach_backend(executable, data, config),
+            project,
+        )
+        .await
+    }
+
+    /// Stops the approved old owner, starts the installed backend, and restores this window.
+    #[cfg(any(unix, windows))]
+    pub async fn restart_backend(
+        &self,
+        executable: &std::path::Path,
+        data: &std::path::Path,
+        config: &std::path::Path,
+        expected: &crate::local_backend::control::BackendIdentity,
+        project: Option<(String, String)>,
+    ) -> Result<(), String> {
+        self.reconnect_with(
+            async {
+                let connected =
+                    crate::local_backend::restart_backend(executable, data, config, expected)
+                        .await?;
+                Connection::from_connected(data, connected).await
+            },
+            project,
+        )
+        .await
+    }
+
+    /// Replaces the approved backend through the packaged application launcher.
+    #[cfg(any(unix, windows))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn restart(
+        &self,
+        command: std::process::Command,
+        identity_executable: &std::path::Path,
+        data: &std::path::Path,
+        config: &std::path::Path,
+        expected: &crate::local_backend::control::BackendIdentity,
+        project: Option<(String, String)>,
+    ) -> Result<(), String> {
+        self.reconnect_with(
+            async {
+                let connected = crate::local_backend::restart_command(
+                    command,
+                    identity_executable,
+                    data,
+                    config,
+                    expected,
+                )
+                .await?;
+                Connection::from_connected(data, connected).await
+            },
             project,
         )
         .await

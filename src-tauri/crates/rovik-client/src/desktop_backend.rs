@@ -23,6 +23,8 @@ pub struct DesktopBackend {
     pub pages: Arc<crate::desktop_pages::PageRouter>,
     /// Shared Chrome installation, independent of its observing windows.
     pub browser_install: Arc<crate::browser_install::BrowserInstaller>,
+    /// Shared local Docker setup, independent of its observing windows.
+    pub docker_install: Arc<crate::docker_install::DockerInstaller>,
     /// Replay history for all UI clients.
     pub journal: Arc<crate::desktop_journal::Journal>,
     /// Serializes ownership checks with project opens and destructive changes.
@@ -145,6 +147,7 @@ impl DesktopBackend {
             pages,
             journal,
             browser_install: Default::default(),
+            docker_install: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             lsp: Default::default(),
@@ -172,6 +175,12 @@ impl DesktopBackend {
             }
             Request::AgentStatus => return self.remote.status().await.map(Response::AgentStatus),
             Request::AgentStart(start) => return self.remote.start(*start).await,
+            Request::VerifiedAutopilotStart { .. } => {
+                return Err(rovik_protocol::Fail::new(
+                    rovik_protocol::FailCode::BadRequest,
+                    "Verified Autopilot source bindings are derived by desktop routing, never accepted from a window.",
+                ));
+            }
             Request::AgentSteer { dialog_id, message } => {
                 return self.remote.steer(&dialog_id, message).await
             }
@@ -268,6 +277,9 @@ impl DesktopBackend {
         if self.browser_install.active() {
             return Some("Browser installation is still running");
         }
+        if self.docker_install.active() {
+            return Some("Docker installation is still running");
+        }
         None
     }
 
@@ -289,6 +301,7 @@ impl DesktopBackend {
             log::error!("Could not wait for formatter cleanup: {error}");
         }
         self.browser_install.shutdown().await;
+        self.docker_install.shutdown().await;
         self.core.shutdown().await;
         let terminals = self.terminals.clone();
         if let Err(error) = rovik_core::rt::spawn_blocking(move || terminals.wait_ended()).await {
@@ -298,7 +311,7 @@ impl DesktopBackend {
 }
 
 #[cfg(test)]
-mod routing_tests {
+pub(crate) mod routing_tests {
     use super::*;
     use crate::testing::{identity, Fake};
     use rovik_core::agent_run::events::AgentEvent;
@@ -313,7 +326,7 @@ mod routing_tests {
 
     // Core::open avoids process-wide network and overlay initialization,
     // so these routing tests can run beside other client unit tests.
-    fn backend(root: &std::path::Path) -> DesktopBackend {
+    pub(crate) fn backend(root: &std::path::Path) -> DesktopBackend {
         let config = root.join("config");
         let core = Core::open(
             Paths::new(root.join("data"), config.clone()),
@@ -344,6 +357,7 @@ mod routing_tests {
             pages,
             journal: Default::default(),
             browser_install: Default::default(),
+            docker_install: Default::default(),
             project_changes: Default::default(),
             sessions: Default::default(),
             lsp: Default::default(),
@@ -354,6 +368,22 @@ mod routing_tests {
             remote,
             hosts,
         }
+    }
+
+    #[tokio::test]
+    async fn docker_installation_requires_an_owned_desktop_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = backend(dir.path());
+        let request = crate::desktop_api::DesktopRequest::from(
+            crate::desktop_api::docker::DockerRequest::Install {
+                sink: "unowned".into(),
+            },
+        );
+        assert_eq!(
+            request.dispatch(&backend).await.unwrap_err(),
+            "A client session is required to install Docker"
+        );
+        assert!(!backend.docker_install.active());
     }
 
     #[tokio::test]

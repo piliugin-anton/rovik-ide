@@ -132,6 +132,7 @@ body {
 }
 
 .sidebar .modal-body,
+.sidebar .polyglot-review-body,
 .sidebar .chat-history-error,
 .sidebar .git-inline-error,
 .sidebar .git-panel-error,
@@ -1428,6 +1429,162 @@ body.tree-dragging {
   /* Squeezed to nothing (the chat list and the isolation bar open in a
      short window), the list's padding mustn't spill over the bar. */
   overflow: hidden;
+}
+
+.chat-messages-frame:has(~ .plan-preparation),
+.chat-messages-frame:has(~ .polyglot-review) {
+  /* Reserve the transcript's share before flex shrinking. A zero basis lets a
+     naturally sized review consume all space left above the composer. */
+  flex-basis: 40%;
+}
+
+/* Verification reviews share the chat's finite height with the transcript
+   and composer. Only the evidence body scrolls; actions remain reachable. */
+.polyglot-review {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  min-width: 0;
+  max-height: min(60%, 560px);
+  margin: 0 8px 8px;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.polyglot-review-header,
+.polyglot-review-actions {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+}
+
+.polyglot-review-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.polyglot-review-header h3 {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.polyglot-review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fg-dim) transparent;
+  overflow-wrap: anywhere;
+}
+
+.polyglot-review-body::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.polyglot-review-body::-webkit-scrollbar-thumb {
+  background: var(--fg-dim);
+  border-radius: 4px;
+}
+
+.polyglot-review-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.polyglot-review-body > :first-child {
+  margin-top: 0;
+}
+
+.polyglot-review-body > :last-child {
+  margin-bottom: 0;
+}
+
+.polyglot-review-body > details {
+  margin: 10px 0;
+}
+
+.polyglot-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.polyglot-review-actions > button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* Preparation belongs beside the chat's existing check records. Only expanded
+   review details scroll; the conversation and the primary action stay visible. */
+.chat-verify.plan-preparation {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(42%, 360px);
+  margin: 0 8px 8px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.plan-preparation-heading,
+.plan-preparation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 8px 10px;
+}
+
+.plan-preparation-heading {
+  justify-content: space-between;
+}
+
+.plan-preparation-body {
+  min-height: 0;
+  padding: 0 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  overflow-wrap: anywhere;
+}
+
+.plan-preparation-body p {
+  margin: 0 0 8px;
+}
+
+.plan-preparation-body details {
+  margin: 6px 0;
+}
+
+.plan-preparation-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.plan-preparation-requirements {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+
+.plan-preparation-warning {
+  color: var(--warning);
+}
+
+.plan-preparation-actions > button {
+  max-width: 100%;
+  white-space: normal;
 }
 
 /* Always bottom center of the visible list. It used to be sticky inside
@@ -11212,4 +11369,22 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-dim);
+}
+
+/* Architecture evidence is advisory and scoped to the selected saved source. */
+.architecture-problems {
+  flex: 0 0 auto;
+  max-height: min(32vh, 300px);
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.architecture-problems ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.architecture-problems p {
+  margin: 4px 0;
 }

@@ -230,12 +230,14 @@ pub fn merge_bytes(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<Option<Vec
         let big = order == Some(true);
         let decode = |b: &[u8]| -> String {
             let units: Vec<u16> = b[b.len().min(2)..]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     if big {
-                        u16::from_be_bytes([c[0], c[1]])
+                        u16::from_be_bytes(*c)
                     } else {
-                        u16::from_le_bytes([c[0], c[1]])
+                        u16::from_le_bytes(*c)
                     }
                 })
                 .collect();

@@ -145,7 +145,19 @@ pub fn start(
     let (chat, root, command) = (chat.to_string(), root.to_path_buf(), command.to_string());
     thread::Builder::new()
         .name(format!("background command {id}"))
-        .spawn(move || run(id, chat, root, command, queued, job, told, answer))
+        .spawn(move || {
+            run(
+                id,
+                chat,
+                root,
+                command,
+                queued,
+                job,
+                told,
+                answer,
+                Some(FIRST_OUTPUT),
+            )
+        })
         .map_err(|e| format!("couldn't start a thread for the command: {e}"))?;
     heard.recv().unwrap_or_else(|_| {
         Err("the command's thread ended before it said how the command started".into())
@@ -307,6 +319,7 @@ fn run(
     job: Option<Job>,
     told: Told,
     answer: mpsc::Sender<Result<Report, String>>,
+    first_output: Option<Duration>,
 ) {
     // While the user's allowed hosts are on, held to them, or not run
     // (allowed_hosts.rs).
@@ -330,7 +343,7 @@ fn run(
             &queued,
         )?;
         all().push(background.clone());
-        background.watch(Some(Instant::now() + FIRST_OUTPUT));
+        background.watch(first_output.map(|wait| Instant::now() + wait));
         Ok(background)
     };
     let unmade = |b: &Arc<Background>| b.never_started(confine.as_ref());
@@ -657,6 +670,34 @@ mod tests {
         start(chat, root, command, &|| false, queued(chat), untold()).unwrap()
     }
 
+    /// Synchronize the first report with exit instead of depending on
+    /// sandbox startup finishing within the ordinary output window.
+    fn ended_in_first_report(chat: &str, root: &str, command: &str, told: Told) -> Report {
+        let (answer, heard) = mpsc::channel();
+        let queue = queued(chat);
+        let (chat, root, command) = (chat.to_string(), PathBuf::from(root), command.to_string());
+        let runner = thread::spawn(move || {
+            run(
+                format!("bg{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                chat,
+                root,
+                command,
+                queue,
+                None,
+                told,
+                answer,
+                None,
+            )
+        });
+        let first = heard
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        // All notifications have finished before callers inspect them.
+        runner.join().unwrap();
+        first
+    }
+
     /// Whether the loop of [`beating`] in `root` still runs.
     fn beats(root: &str) -> bool {
         crate::testing::beats(Path::new(root))
@@ -745,7 +786,12 @@ mod tests {
     fn a_command_that_ends_at_once_says_how_in_its_start_and_is_not_kept() {
         let (_dir, root) = folder();
         let chat = "bg-ends-at-once";
-        let first = started(chat, &root, "echo 'port 3000 is taken' >&2; exit 3");
+        let first = ended_in_first_report(
+            chat,
+            &root,
+            "echo 'port 3000 is taken' >&2; exit 3",
+            untold(),
+        );
         assert_eq!(first.status.end, Some(End::Exited(Some(3))));
         assert_eq!(first.output.trim(), "port 3000 is taken");
         assert!(list(chat).is_empty());
@@ -787,9 +833,20 @@ mod tests {
         let first = started(
             chat,
             &root,
-            "echo up; while [ ! -e go ]; do sleep 0.05; done; echo crashed; exit 2",
+            "while [ ! -e ready ]; do sleep 0.05; done; echo up; \
+             while [ ! -e go ]; do sleep 0.05; done; echo crashed; exit 2",
         );
         assert_eq!(first.status.end, None);
+        assert!(first.output.is_empty(), "readiness waits for the test");
+        // A busy runner may return the first report before the shell prints.
+        // Consume actual startup output before allowing the later exit output.
+        std::fs::write(Path::new(&root).join("ready"), "").unwrap();
+        let mut initial = first.output;
+        assert!(until(|| {
+            initial.push_str(&output(chat, &first.status.id).unwrap().output);
+            initial.ends_with('\n')
+        }));
+        assert_eq!(initial.trim(), "up");
         std::fs::write(Path::new(&root).join("go"), "").unwrap();
         let id = first.status.id;
         assert!(until(|| list(chat)
@@ -913,9 +970,8 @@ mod tests {
         let told: Told = Arc::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
         });
-        let first = start(chat, &root, "exit 1", &|| false, queued(chat), told).unwrap();
+        let first = ended_in_first_report(chat, &root, "exit 1", told);
         assert_eq!(first.status.end, Some(End::Exited(Some(1))));
-        thread::sleep(POLL * 4);
         assert_eq!(heard.load(Ordering::SeqCst), 0);
         assert!(tasks(chat).is_empty());
     }

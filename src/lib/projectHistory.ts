@@ -1,7 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { LastProjectData, OpenFile } from '../types';
 
-export async function loadLastProject(): Promise<LastProjectData | null> {
+/** Loads the saved startup folder, reporting a failed read separately from an empty history. */
+export async function loadLastProject(
+  onFailure?: (error: unknown) => void
+): Promise<LastProjectData | null> {
   try {
     const raw = await invoke<string>('load_last_project');
     const parsed = JSON.parse(raw) as LastProjectData;
@@ -12,6 +15,7 @@ export async function loadLastProject(): Promise<LastProjectData | null> {
 
     return parsed;
   } catch (err) {
+    onFailure?.(err);
     console.error('Failed to load last project:', err);
     return null;
   }

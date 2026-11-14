@@ -289,7 +289,7 @@ pub fn git_push_blocking_with(path: String, no_verify: bool) -> Result<PushOutco
         }
         Ok(())
     });
-    if hooks.has("pre-push") {
+    {
         // Where git runs it: the remote's refs known, nothing sent yet. Its
         // input is a line per ref, as git writes it: `<local ref> <local
         // id> <remote ref> <remote id>`, zeros for a ref the remote hasn't.
@@ -306,11 +306,11 @@ pub fn git_push_blocking_with(path: String, no_verify: bool) -> Result<PushOutco
                     )
                 })
                 .collect();
-            hooks
-                .run("pre-push", &[&remote_name, &url], Some(input.as_bytes()))
+            super::lfs::pre_push(&repo, &remote_name, updates, input.as_bytes())
+                .and_then(|()| hooks.run("pre-push", &[&remote_name, &url], Some(input.as_bytes())))
                 .map_err(|e| {
                     *hook_failed.borrow_mut() = Some(e);
-                    git2::Error::from_str("the pre-push hook failed")
+                    git2::Error::from_str("pre-push checks or LFS upload failed")
                 })
         });
     }

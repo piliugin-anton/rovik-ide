@@ -363,6 +363,26 @@ pub fn chat_may_use(conn: &Connection, project_id: Option<&str>, root: &Path) ->
     .map_err(err)
 }
 
+/// The database-owned identity of an opened project at this exact path.
+/// Ambiguous copy/relink decisions must be resolved before sharing trusted state.
+pub fn opened_project_at(conn: &Connection, root: &Path) -> DbResult<Option<String>> {
+    let key = path_key(root);
+    let mut query = conn
+        .prepare("SELECT project_id FROM project_paths WHERE path = ?1 ORDER BY project_id LIMIT 2")
+        .map_err(err)?;
+    let ids = query
+        .query_map([key], |row| row.get::<_, String>(0))
+        .map_err(err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(err)?;
+    if ids.len() > 1 {
+        return Err(
+            "Resolve this folder's project identity before configuring verification".into(),
+        );
+    }
+    Ok(ids.into_iter().next())
+}
+
 pub fn summary(conn: &Connection, id: &str) -> DbResult<Option<ProjectSummary>> {
     let row: Option<(String, String, i64, i64)> = conn
         .query_row(

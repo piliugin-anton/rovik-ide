@@ -20,7 +20,7 @@ interface ResizableProps {
 // opt-ins in styles.css — keep the two in sync.
 const SELECTABLE =
   "input, textarea, [contenteditable]:not([contenteditable='false']), " +
-  '.modal-body, .chat-history-error, ' +
+  '.modal-body, .polyglot-review-body, .chat-history-error, ' +
   '.git-inline-error, .git-panel-error';
 
 function isSelectable(target: EventTarget | null): boolean {

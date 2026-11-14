@@ -1,0 +1,92 @@
+{
+  "c": {
+    "checked-add": {
+      "source": "int op(uint64_t a,uint64_t b,uint64_t *out) { if (UINT64_MAX-a < b) return 1; *out=a+b; return 0; }",
+      "cases": [
+        "uint64_t out=99; assert(op(2,3,&out)==0 && out==5);",
+        "assert(op(UINT64_MAX,0,&out)==0 && out==UINT64_MAX);",
+        "out=99; assert(op(UINT64_MAX,1,&out)==1 && out==99);",
+        "assert(op(0,0,&out)==0 && out==0);"
+      ]
+    },
+    "decimal": {
+      "source": "int op(const char *s,uint64_t *out) { uint64_t value=0; if (!*s) return 1; for (;*s;++s) { if (*s<'0' || *s>'9') return 1; uint64_t digit=(uint64_t)(*s-'0'); if (value>(UINT64_MAX-digit)/10) return 1; value=value*10+digit; } *out=value; return 0; }",
+      "cases": [
+        "uint64_t out=99; assert(op(\"42\",&out)==0 && out==42);",
+        "out=99; assert(op(\"4x\",&out)==1 && out==99);",
+        "assert(op(\"\",&out)==1 && out==99);",
+        "assert(op(\"18446744073709551616\",&out)==1 && out==99);",
+        "assert(op(\"+1\",&out)==1 && out==99);"
+      ]
+    },
+    "copy": {
+      "source": "int op(unsigned char *out,size_t capacity,const unsigned char *source,size_t length) { if (length>capacity) return 1; memcpy(out,source,length); return 0; }",
+      "cases": [
+        "unsigned char out[4]={91,91,91,91}; const unsigned char source[4]={1,2,3,4}; assert(op(out,4,source,2)==0 && out[0]==1 && out[1]==2 && out[2]==91);",
+        "out[0]=91; assert(op(out,2,source,3)==1 && out[0]==91);",
+        "assert(op(out,0,source,0)==0 && out[0]==91);",
+        "assert(op(out,4,source,4)==0 && out[3]==4);"
+      ]
+    }
+  },
+  "cpp": {
+    "checked-add": {
+      "source": "std::optional<uint64_t> op(uint64_t a,uint64_t b) { if (UINT64_MAX-a < b) return {}; return a+b; }",
+      "cases": [
+        "assert(op(2,3)==5);",
+        "assert(op(UINT64_MAX,0)==UINT64_MAX);",
+        "assert(!op(UINT64_MAX,1));",
+        "assert(op(0,0)==0);"
+      ]
+    },
+    "decimal": {
+      "source": "std::optional<uint64_t> op(std::string_view s) { uint64_t value=0; auto result=std::from_chars(s.data(),s.data()+s.size(),value); if (result.ec!=std::errc{} || result.ptr!=s.data()+s.size()) return {}; return value; }",
+      "cases": [
+        "assert(op(\"42\")==42);",
+        "assert(!op(\"4x\"));",
+        "assert(!op(\"\"));",
+        "assert(!op(\"18446744073709551616\"));",
+        "assert(!op(\"+1\"));"
+      ]
+    },
+    "copy": {
+      "source": "bool op(std::span<unsigned char> out,std::span<const unsigned char> source) { if (source.size()>out.size()) return false; std::copy(source.begin(),source.end(),out.begin()); return true; }",
+      "cases": [
+        "unsigned char out[4]={91,91,91,91}; const unsigned char source[4]={1,2,3,4}; assert(op(out,std::span(source).first(2)) && out[0]==1 && out[1]==2 && out[2]==91);",
+        "out[0]=91; assert(!op(std::span(out).first(2),std::span(source).first(3)) && out[0]==91);",
+        "assert(op(std::span(out).first(0),std::span(source).first(0)) && out[0]==91);",
+        "assert(op(out,source) && out[3]==4);"
+      ]
+    }
+  },
+  "rust": {
+    "checked-add": {
+      "source": "fn op(a:u64,b:u64)->Option<u64> { if u64::MAX-a < b {None} else {Some(a+b)} }",
+      "cases": [
+        "assert_eq!(op(2,3),Some(5));",
+        "assert_eq!(op(u64::MAX,0),Some(u64::MAX));",
+        "assert_eq!(op(u64::MAX,1),None);",
+        "assert_eq!(op(0,0),Some(0));"
+      ]
+    },
+    "decimal": {
+      "source": "fn op(input:&str)->Option<u64> { if input.is_empty() || input.bytes().any(|c|!c.is_ascii_digit()) {None} else {input.parse().ok()} }",
+      "cases": [
+        "assert_eq!(op(\"42\"),Some(42));",
+        "assert_eq!(op(\"4x\"),None);",
+        "assert_eq!(op(\"\"),None);",
+        "assert_eq!(op(\"18446744073709551616\"),None);",
+        "assert_eq!(op(\"+1\"),None);"
+      ]
+    },
+    "copy": {
+      "source": "fn op(out:&mut [u8],source:&[u8])->bool { if source.len()>out.len() {return false;} out[..source.len()].copy_from_slice(source); true }",
+      "cases": [
+        "let mut out=[91u8;4]; let source=[1u8,2,3,4]; assert!(op(&mut out,&source[..2]) && out==[1,2,91,91]);",
+        "out[0]=91; assert!(!op(&mut out[..2],&source[..3]) && out[0]==91);",
+        "assert!(op(&mut out[..0],&source[..0]) && out[0]==91);",
+        "assert!(op(&mut out,&source) && out==source);"
+      ]
+    }
+  }
+}
