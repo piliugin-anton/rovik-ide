@@ -15,6 +15,8 @@ export default function PlanPreparationCard(props: {
   target: HarnessTarget;
   planPath: string;
   preparationId?: string;
+  /** Retry resumes active drafts, replaces cancelled/stale sessions, or opens their review. */
+  retry?: boolean;
   profile?: ModelProfile;
   unsavedFiles: readonly string[] | undefined;
   contextProblem?: string | null;
@@ -84,7 +86,7 @@ export default function PlanPreparationCard(props: {
     }
   }
 
-  async function refresh() {
+  async function refresh(retry = false) {
     const id = preparation()?.preparationId ?? props.preparationId;
     if (!id || props.contextProblem) return;
     const scope = generation;
@@ -102,6 +104,11 @@ export default function PlanPreparationCard(props: {
             runId: value.runId,
           });
           if (active(scope)) props.onStart(run);
+        } else if (retry && !props.agentRunning && !problem()) {
+          const resumable = ['preparing', 'blocked'].includes(value.status);
+          if (['cancelled', 'stale'].includes(value.status) || (resumable && providerProblem()))
+            await begin();
+          else if (resumable) await launchPreparation(value.preparationId, scope);
         }
       }
     } catch (cause) {
@@ -182,7 +189,7 @@ export default function PlanPreparationCard(props: {
     contextRevision();
     if (props.preparationId && !attempted) {
       attempted = true;
-      void untrack(refresh);
+      void untrack(() => refresh(props.retry));
     } else if (!attempted && !problem()) {
       attempted = true;
       void untrack(begin);

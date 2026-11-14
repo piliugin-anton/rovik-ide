@@ -44,6 +44,7 @@ function mount(
     context?: () => string | null;
     path?: () => string;
     resumed?: string;
+    retry?: boolean;
     running?: boolean;
     prepare?: (id: string) => Promise<boolean>;
   } = {}
@@ -61,6 +62,7 @@ function mount(
           target={{ root: '/project', dialogId: 'chat' }}
           planPath={options.path?.() ?? savedHarnessPlan.path}
           preparationId={options.resumed}
+          retry={options.retry}
           profile={options.profile?.() ?? planProfile}
           unsavedFiles={options.unsaved?.() ?? []}
           contextProblem={options.context?.()}
@@ -341,4 +343,88 @@ test('reopening a promoted preparation loads the existing run without preparing 
   );
   assert.equal(page.prepared.length, 0);
   assert.equal(page.started.length, 1);
+});
+
+test('Retry does not start paid work while buffers are unsaved, prices are missing, or an agent is running', async () => {
+  for (const options of [
+    { unsaved: () => ['src/unsaved.ts'] },
+    { profile: () => ({ ...planProfile, harnessRates: undefined }) },
+    { running: true },
+  ]) {
+    respond = () => planPreparation('cancelled');
+    const page = mount({ ...options, resumed: 'preparation-1', retry: true });
+    await flush();
+    assert.deepEqual(
+      calls.map((call) => call.request.action),
+      ['preparationStatus']
+    );
+    assert.deepEqual(page.prepared, []);
+    assert.deepEqual(page.started, []);
+    for (const dispose of cleanup.splice(0)) dispose();
+  }
+});
+
+test('a late Retry status cannot recreate preparation after the project changes', async () => {
+  let finish!: (value: PlanPreparation) => void;
+  respond = () =>
+    new Promise((resolve) => {
+      finish = resolve;
+    });
+  const [context, setContext] = createSignal<string | null>(null);
+  const page = mount({ context, resumed: 'preparation-1', retry: true });
+  await flush();
+  setContext('Return to the original project.');
+  finish(planPreparation('stale'));
+  await flush();
+  assert.deepEqual(
+    calls.map((call) => call.request.action),
+    ['preparationStatus']
+  );
+  assert.deepEqual(page.prepared, []);
+  assert.deepEqual(page.started, []);
+});
+
+test('Retry with changed prices creates a new preparation using the currently saved rates', async () => {
+  const rates = { input: 225_000, cachedInput: 4_500, output: 900_000 };
+  respond = (request) =>
+    request.action === 'preparationStatus'
+      ? planPreparation('blocked')
+      : { ...planPreparation('preparing'), preparationId: 'new-preparation' };
+  const page = mount({
+    profile: () => ({ ...planProfile, harnessRates: rates }),
+    resumed: 'preparation-1',
+    retry: true,
+  });
+  await flush();
+  assert.deepEqual(
+    calls.map((call) => call.request.action),
+    ['preparationStatus', 'beginPlanPreparation']
+  );
+  assert.deepEqual(calls[1].request.provider.rates, rates);
+  assert.deepEqual(page.prepared, ['new-preparation']);
+  assert.deepEqual(page.started, []);
+});
+
+test('a failed Retry status read never starts preparation', async () => {
+  respond = () => {
+    throw new Error('Host unavailable');
+  };
+  const page = mount({ resumed: 'preparation-1', retry: true });
+  await flush();
+  assert.match(page.root.textContent!, /Host unavailable/);
+  assert.deepEqual(page.prepared, []);
+  assert.deepEqual(
+    calls.map((call) => call.request.action),
+    ['preparationStatus']
+  );
+});
+
+test('refreshing after Retry does not launch the preparation agent a second time', async () => {
+  respond = () => planPreparation('preparing');
+  const page = mount({ resumed: 'preparation-1', retry: true });
+  await flush();
+  assert.deepEqual(page.prepared, ['preparation-1']);
+  button(page.root, 'Refresh').click();
+  await flush();
+  assert.deepEqual(page.prepared, ['preparation-1']);
 });

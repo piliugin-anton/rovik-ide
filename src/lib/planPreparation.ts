@@ -1,4 +1,6 @@
 import type { ModelProfile, ToolMeta } from '../types';
+import { chatApi } from './chatApi';
+import { isRequestMessage } from './requests';
 import { savedHarnessRates } from './harnessRates';
 import {
   harnessRequest,
@@ -36,6 +38,32 @@ export interface PlanPreparation {
     warnings: string[];
     budgets?: Record<string, number>;
   };
+}
+
+/** Resolve the current request from durable history, including requests outside the loaded page. */
+export async function preparationToRetry(
+  dialogId: string
+): Promise<{ preparationId: string; planPath: string } | undefined> {
+  let before: number | undefined;
+  for (;;) {
+    const page = await chatApi.getMessages(dialogId, before, 500);
+    const request = [...page.messages].reverse().find(isRequestMessage);
+    if (request) {
+      const id = request.meta?.verifiedPreparation;
+      if (id === undefined) return undefined;
+      const path = request.meta?.planPath;
+      if (typeof id !== 'string' || !id || typeof path !== 'string' || !path)
+        throw new Error(
+          'This preparation request is incomplete. Reopen the saved plan to prepare it again.'
+        );
+      return { preparationId: id, planPath: path };
+    }
+    if (!page.hasOlder || !page.messages.length) return undefined;
+    const next = page.messages[0].seq;
+    if (next === undefined || (before !== undefined && next >= before))
+      throw new Error('Could not load the preparation request. Reload this chat and retry.');
+    before = next;
+  }
 }
 
 /** Idle replies remain in the open preparation's private workspace until it finishes or closes. */

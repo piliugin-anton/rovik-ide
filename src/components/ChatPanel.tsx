@@ -102,7 +102,11 @@ import {
   verifiedPlanContextProblem,
 } from '../lib/polyglotPlan';
 import { verificationInputProblem, type HarnessProviderBinding } from '../lib/polyglotHarness';
-import { preparationReplyMetadata, type PlanPreparation } from '../lib/planPreparation';
+import {
+  preparationReplyMetadata,
+  preparationToRetry,
+  type PlanPreparation,
+} from '../lib/planPreparation';
 import AutopilotStrip from './AutopilotStrip';
 import {
   runningCandidate,
@@ -311,6 +315,7 @@ export default function ChatPanel(props: ChatProps) {
     path?: string;
     runId?: string;
     preparationId?: string;
+    retryPreparation?: boolean;
     profile?: ModelProfile;
     projectId: string;
     owner: string;
@@ -3841,11 +3846,64 @@ export default function ChatPanel(props: ChatProps) {
     return undefined;
   }
 
+  let retryingLastTurn = false;
+  let retryDisposed = false;
+  onCleanup(() => {
+    retryDisposed = true;
+  });
   /** Retry after a failed turn (the user's message was delivered earlier). */
-  function retryLastTurn() {
+  async function retryLastTurn() {
     const dialogId = activeDialogId();
-    if (!dialogId || sending()) return;
-    void beginRun(dialogId, { kind: 'retry' }, lastUserWireContent(dialogId));
+    if (!dialogId || sending() || retryingLastTurn) return;
+    const root = props.rootPath();
+    const projectId = props.projectId();
+    const owner = harnessOwner(dialogId);
+    const profile = activeProfile();
+    const current = () =>
+      !retryDisposed &&
+      activeDialogId() === dialogId &&
+      props.rootPath() === root &&
+      props.projectId() === projectId &&
+      harnessOwner(dialogId) === owner &&
+      activeProfile()?.id === profile?.id &&
+      activeProfile()?.model === profile?.model &&
+      activeProfile()?.baseUrl === profile?.baseUrl &&
+      !sending() &&
+      !strictActive();
+    retryingLastTurn = true;
+    try {
+      await store.flush();
+      const preparation = await preparationToRetry(dialogId);
+      if (!current()) return;
+      if (preparation) {
+        if (
+          !root ||
+          !projectId ||
+          store.projectId() !== projectId ||
+          !owner ||
+          !profile ||
+          readOnly()
+        )
+          throw new Error('Return to this plan’s project, chat and model to retry preparation.');
+        setStrictPlan({
+          root,
+          projectId,
+          dialogId,
+          owner,
+          profile,
+          path: preparation.planPath,
+          preparationId: preparation.preparationId,
+          retryPreparation: true,
+        });
+      } else {
+        await beginRun(dialogId, { kind: 'retry' }, lastUserWireContent(dialogId));
+      }
+    } catch (cause) {
+      if (current())
+        notify({ kind: 'error', title: 'Could not retry this request', message: String(cause) });
+    } finally {
+      retryingLastTurn = false;
+    }
   }
 
   /** Continue an interrupted reply. */
@@ -5061,6 +5119,7 @@ export default function ChatPanel(props: ChatProps) {
               planPath={plan.path}
               runId={plan.runId}
               preparationId={plan.preparationId}
+              retryPreparation={plan.retryPreparation}
               profile={profile()}
               agentRunning={isRunning(plan.dialogId)}
               onPreparationChange={(session) => setOpenPreparation({ plan, session })}

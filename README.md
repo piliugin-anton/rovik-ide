@@ -208,7 +208,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   million tokens, such as `0.225`; budget errors show the saved prices, and
   **Review model prices** opens their settings from the preparation card. Preparation uses ordinary
   chat billing; the review shows separate implementation limits. Stop, continue
-  and retry actions remain in the conversation. Review the verified candidate's
+  and retry actions remain in the conversation. **Retry** checks the saved
+  preparation: it resumes active drafts, creates a fresh session for cancelled or
+  stale inputs, and opens completed reviews or existing implementation runs.
+  Retrying never approves implementation. Review the verified candidate's
   diff separately before applying it. See the [workflow and language limits](docs/design/polyglot-harness.md#verified-plan-implementation).
 - **Verified Autopilot delivery.** Enable **Require verified delivery** in
   Autopilot settings and review the task's prepared setup and saved model prices.

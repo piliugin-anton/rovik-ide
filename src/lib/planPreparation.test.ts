@@ -1,9 +1,51 @@
 import '../test/dom';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { preparationReplyMetadata } from './planPreparation';
+import { preparationReplyMetadata, preparationToRetry } from './planPreparation';
+import { chatApi } from './chatApi';
 import { planPreparation } from '../test/polyglotPlanFixtures';
-import type { ToolMeta } from '../types';
+import type { ChatMessage, ToolMeta } from '../types';
+
+const getMessages = chatApi.getMessages;
+afterEach(() => {
+  chatApi.getMessages = getMessages;
+});
+
+const preparationRequest: ChatMessage = {
+  id: 'preparation',
+  role: 'user',
+  content: 'Prepare the plan',
+  meta: { verifiedPreparation: 'preparation-1', planPath: 'plan.md' },
+};
+
+test('Retry ignores steering and system-injected requests but never revives an older preparation', async () => {
+  const messages: ChatMessage[] = [
+    preparationRequest,
+    { id: 'ordinary', role: 'user', content: 'A different task' },
+    { id: 'steering', role: 'user', content: 'Keep going', meta: { steer: { queuedAt: 1 } } },
+    { id: 'check', role: 'user', content: 'Check failed', meta: { harness: 'acceptance' } },
+  ];
+  chatApi.getMessages = async () => ({ messages, hasOlder: true, hasNewer: false });
+  assert.equal(await preparationToRetry('chat'), undefined);
+  messages.splice(1, 1);
+  assert.deepEqual(await preparationToRetry('chat'), {
+    preparationId: 'preparation-1',
+    planPath: 'plan.md',
+  });
+});
+
+test('missing preparation bindings and failed history reads never fall back to an ordinary retry', async () => {
+  chatApi.getMessages = async () => ({
+    messages: [{ ...preparationRequest, meta: { verifiedPreparation: 'preparation-1' } }],
+    hasOlder: false,
+    hasNewer: false,
+  });
+  await assert.rejects(preparationToRetry('chat'), /request is incomplete/);
+  chatApi.getMessages = async () => {
+    throw new Error('Disconnected');
+  };
+  await assert.rejects(preparationToRetry('chat'), /Disconnected/);
+});
 
 const plan = {
   root: '/project',
