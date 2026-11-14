@@ -67,10 +67,9 @@ export default function ProviderModelRates(props: {
                 {field.label}
                 <input
                   class="settings-input"
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  min="0"
-                  step="0.000001"
+                  spellcheck={false}
                   aria-label={`${field.label} per million tokens`}
                   placeholder="Unknown"
                   value={formatHarnessRate(model()?.harnessRates?.[field.key])}

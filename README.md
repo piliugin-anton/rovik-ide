@@ -204,7 +204,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   [delegated controller service](docs/design/polyglot-harness.md#rootless-podman-host-requirements);
   automatic discovery checks host readiness before selecting an engine.
   Save that model's verification prices
-  once in **Model providers → Verification pricing**. Preparation uses ordinary
+  once in **Model providers → Verification pricing**. Enter ordinary prices per
+  million tokens, such as `0.225`; budget errors show the saved prices, and
+  **Review model prices** opens their settings from the preparation card. Preparation uses ordinary
   chat billing; the review shows separate implementation limits. Stop, continue
   and retry actions remain in the conversation. Review the verified candidate's
   diff separately before applying it. See the [workflow and language limits](docs/design/polyglot-harness.md#verified-plan-implementation).

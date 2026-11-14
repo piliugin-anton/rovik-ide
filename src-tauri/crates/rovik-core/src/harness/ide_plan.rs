@@ -113,17 +113,37 @@ pub(super) fn reserve_provider_limits(
     .reservation(limits.context_bytes, control, limits.output_tokens)?;
     limits.token_reservation = limits.token_reservation.max(required.tokens);
     limits.cost_reservation = limits.cost_reservation.max(required.cost_microunits);
-    for (name, required) in [
-        ("model_calls", 1),
-        ("tokens", limits.token_reservation),
-        ("cost_microunits", limits.cost_reservation),
-    ] {
+    for (name, required) in [("model_calls", 1), ("tokens", limits.token_reservation)] {
         check(
             budgets.get(name).is_some_and(|total| *total >= required),
             &format!("The reviewed {name} budget cannot reserve one complete model request ({required}). Reduce context/output limits or prepare a larger explicit budget."),
         )?;
     }
+    let spending_limit = budgets.get("cost_microunits").copied().unwrap_or(0);
+    if !budgets.contains_key("cost_microunits") || spending_limit < limits.cost_reservation {
+        return Err(Error::classified(
+            rovik_harness::FailureCategory::Budget,
+            format!(
+                "The implementation spending limit is {}, but reserving one complete model request requires {} in the provider's billing currency. Saved prices per million tokens: input {}, cached input {}, output {}. Review Model providers → Verification pricing before preparing again. If these prices are correct, choose a model that fits the limit or review a setup with different context, output or spending limits.",
+                currency_units(spending_limit),
+                currency_units(limits.cost_reservation),
+                currency_units(rates.input),
+                currency_units(rates.cached_input),
+                currency_units(rates.output),
+            ),
+        ));
+    }
     Ok(())
+}
+
+fn currency_units(microunits: u64) -> String {
+    let whole = microunits / 1_000_000;
+    let fraction = microunits % 1_000_000;
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{}", format!("{fraction:06}").trim_end_matches('0'))
+    }
 }
 
 pub(super) fn require_unchanged_protected_inputs(
@@ -753,7 +773,7 @@ mod tests {
             reserve_provider_limits(&mut setup.worker, &rates, &setup.budgets)
                 .unwrap_err()
                 .message
-                .contains("cost_microunits")
+                .contains("implementation spending limit")
         );
         setup.budgets.insert("cost_microunits".into(), 1_000_000);
         setup

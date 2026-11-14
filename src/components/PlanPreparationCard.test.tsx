@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
+import { appSettingsPage, closeAppSettings } from '../lib/appSettings';
 import PlanPreparationCard from './PlanPreparationCard';
 import {
   implementationRun,
@@ -99,6 +100,44 @@ test('opening a plan automatically starts preparation in chat without forms or i
   assert.match(page.root.textContent!, /private workspace/);
   assert.equal(page.started.length, 0);
   assert.doesNotMatch(page.root.textContent!, /ephemeral-secret|Accepted|Verified candidate/);
+});
+
+test('a rejected preparation can open saved prices and retry with corrected decimal rates', async () => {
+  const corrected = { input: 225_000, cachedInput: 4_500, output: 900_000 };
+  const [profile, setProfile] = createSignal<ModelProfile>({
+    ...planProfile,
+    harnessRates: { ...corrected, input: 225_000_000 },
+  });
+  respond = () => {
+    throw new Error(
+      'The implementation spending limit is 10, but reserving one complete model request requires 18.770798 in the provider’s billing currency.'
+    );
+  };
+  const page = mount({ profile });
+  await flush();
+  assert.equal(page.prepared.length, 0);
+  assert.match(page.root.querySelector('[role="alert"]')!.textContent!, /18\.770798/);
+  closeAppSettings();
+  try {
+    button(page.root, 'Review model prices').click();
+    assert.equal(appSettingsPage(), 'providers');
+    setProfile({ ...planProfile, harnessRates: corrected });
+    respond = () => {
+      const preparation = planPreparation('preparing');
+      return {
+        ...preparation,
+        providerBinding: { ...preparation.providerBinding!, rates: corrected },
+      };
+    };
+    button(page.root, 'Prepare plan').click();
+    await flush();
+    assert.deepEqual(calls.at(-1).request.provider.rates, corrected);
+    assert.deepEqual(page.prepared, ['preparation-1']);
+    assert.equal(page.root.querySelectorAll('[role="alert"]').length, 0);
+    assert.equal(page.started.length, 0, 'correcting prices does not approve implementation');
+  } finally {
+    closeAppSettings();
+  }
 });
 
 test('one compact review starts the controller with the exact prepared identity', async () => {

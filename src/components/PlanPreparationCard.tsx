@@ -248,6 +248,12 @@ export default function PlanPreparationCard(props: {
       >
         <p class="chat-verify-progress">
           {props.executionLabel} · {props.profile?.label ?? 'Choose a model'}
+          <Show when={props.profile && savedHarnessRates(props.profile)}>
+            {' · '}
+            <button type="button" class="link-button" onClick={() => openAppSettings('providers')}>
+              Review model prices
+            </button>
+          </Show>
         </p>
         <Show when={problem() || providerProblem() || error()}>
           <p role="alert">{problem() || providerProblem() || error()}</p>

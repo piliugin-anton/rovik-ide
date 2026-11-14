@@ -1225,6 +1225,66 @@ mod tests {
     }
 
     #[test]
+    fn decimal_model_prices_prepare_within_the_default_limit_and_wrong_units_are_actionable() {
+        let (_directory, project, original) = issued();
+        let mut selected = provider();
+        selected.rates = rovik_protocol::harness::ModelRates {
+            input: 225_000,
+            cached_input: 4_500,
+            output: 900_000,
+        };
+        for cached in [false, true] {
+            let mut mispriced = selected.clone();
+            if cached {
+                mispriced.rates.cached_input = 225_000_000;
+            } else {
+                mispriced.rates.input = 225_000_000;
+            }
+            let error = project
+                .begin_preparation("priced", &original.plan.path, mispriced, true, vec![])
+                .unwrap_err();
+            assert_eq!(error.category, rovik_harness::FailureCategory::Budget);
+            assert!(error.message.contains("spending limit is 10"));
+            assert!(error.message.contains("requires 18.770798"));
+            assert!(error.message.contains(if cached {
+                "input 0.225, cached input 225, output 0.9"
+            } else {
+                "input 225, cached input 0.0045, output 0.9"
+            }));
+            assert!(error
+                .message
+                .contains("Model providers → Verification pricing"));
+            assert!(!error.message.contains("microunits"));
+        }
+        let count: i64 = project
+            .database()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM preparations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "unfunded preparation must not start an agent session"
+        );
+        let view = project
+            .begin_preparation(
+                "priced",
+                &original.plan.path,
+                selected.clone(),
+                true,
+                vec![],
+            )
+            .unwrap();
+        let record = project
+            .load_preparation(view["preparationId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(record.status, "preparing");
+        assert_eq!(record.provider.rates, selected.rates);
+        assert_eq!(record.worker.cost_reservation, 26_137);
+        assert_eq!(record.budgets["cost_microunits"], 10_000_000);
+        assert_eq!(record.snapshot_digest, original.snapshot_digest);
+    }
+
+    #[test]
     fn beginning_preparation_captures_untracked_source_without_creating_approvals_or_editing_project(
     ) {
         let (_directory, project, record) = issued();

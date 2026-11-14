@@ -110,3 +110,32 @@ test('missing or invalid saved prices remain unknown and cancelling edits preser
     dispose();
   }
 });
+
+test('fractional provider prices reach the model profile without changing their units', () => {
+  const [providers, setProviders] = createSignal([provider()]);
+  const root = container();
+  const dispose = render(
+    () => <ModelProvidersSettings providers={providers()} onChange={setProviders} />,
+    root
+  );
+  try {
+    button(root, 'Edit').click();
+    assert.equal(input(root, 'Input price').type, 'text', 'preserve decimal text before parsing');
+    price(root, 'Input price', '0.225');
+    price(root, 'Cached input price', '0.0045');
+    price(root, 'Output price', '0.90');
+    button(root, 'Save').click();
+    const profile = resolveProfile(providers(), { providerId: 'provider', modelId: 'paid' });
+    assert.deepEqual(profile?.harnessRates, {
+      input: 225_000,
+      cachedInput: 4_500,
+      output: 900_000,
+    });
+    button(root, 'Edit').click();
+    assert.equal(input(root, 'Input price').value, '0.225');
+    assert.equal(input(root, 'Cached input price').value, '0.0045');
+    assert.equal(input(root, 'Output price').value, '0.9');
+  } finally {
+    dispose();
+  }
+});
