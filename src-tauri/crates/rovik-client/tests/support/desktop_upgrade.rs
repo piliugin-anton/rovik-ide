@@ -238,7 +238,6 @@ pub async fn check_restart(executable: &Path) {
         desktop_connection::DesktopConnection,
         local_backend::control::{update_status, BackendIdentity},
     };
-    use std::io::Write;
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("data");
     let config = root.path().join("config");
@@ -283,19 +282,31 @@ pub async fn check_restart(executable: &Path) {
     assert!(!matching.restart_required);
     let updated = root.path().join("updated-backend.exe");
     std::fs::copy(executable, &updated).unwrap();
-    // Native loaders permit trailing bytes. Simulate a distinct same-version build
-    // without requiring a second expensive compile of the complete application.
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(&updated)
-        .unwrap()
-        .write_all(b"same-version update fixture")
-        .unwrap();
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::io::Write;
+        // ELF and PE loaders permit trailing bytes, giving this copy a distinct
+        // fingerprint without rebuilding the complete application.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&updated)
+            .unwrap()
+            .write_all(b"same-version update fixture")
+            .unwrap();
+    }
     #[cfg(target_os = "macos")]
     {
-        // Apple Silicon validates signatures when loading the changed fixture.
+        // Trailing bytes invalidate Mach-O's layout before codesign can sign it.
+        // A different signing identifier changes the fingerprint while preserving
+        // a valid executable and the application's release version.
         let signed = rovik_core::process::command("/usr/bin/codesign")
-            .args(["--force", "--sign", "-"])
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "dev.rovik.tests.updated-backend",
+            ])
             .arg(&updated)
             .output()
             .unwrap();
@@ -303,6 +314,16 @@ pub async fn check_restart(executable: &Path) {
             signed.status.success(),
             "{}",
             String::from_utf8_lossy(&signed.stderr)
+        );
+        let verified = rovik_core::process::command("/usr/bin/codesign")
+            .args(["--verify", "--strict"])
+            .arg(&updated)
+            .output()
+            .unwrap();
+        assert!(
+            verified.status.success(),
+            "{}",
+            String::from_utf8_lossy(&verified.stderr)
         );
     }
     let status = update_status(&updated, &data).await.unwrap().unwrap();
