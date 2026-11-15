@@ -19,6 +19,26 @@ use std::{
 };
 
 pub(super) const TOOL: &str = "prepare_verified_plan";
+
+/// Submission guidance included in every preparation system prompt.
+pub(super) const SUBMISSION_INSTRUCTIONS: &str = r#"## Submitting the preparation recipe
+
+1. Use read to inspect `.rovik-preparation/template.json`. Fill a copy of that JSON document using the saved plan, inspected code and the measured facts below. Preserve the service-owned runtime, model and budget settings.
+2. The document has top-level `setup`, `oracleFiles` and `negativeControlFiles`. The requirements, profiles, design and scope belong inside `setup`. In the two file lists, `path` is the intended repository-relative test/source path, while `source` is the relative path to the staged file under `.rovik-preparation/oracle/` or `.rovik-preparation/control/`. Write those staged files first. Existing protected tests can be selected without copying them.
+3. Use write to save the completed document at `.rovik-preparation/submission.json`. It must already exist and contain valid JSON, without Markdown fences or comments, before submission. Read it back to check the field names and staged paths. Use the supplied template and the profile/requirement examples below; do not invent runtime versions, test IDs or evidence.
+
+Call `prepare_verified_plan` with this argument object:
+
+```json
+{
+  "input_path": ".rovik-preparation/submission.json"
+}
+```
+
+`input_path` is the only argument and is spelled in snake_case. Its value is a string path relative to the issued private workspace, not an absolute path or a path in the user's checkout. Pass the object above as the tool arguments; do not wrap it in `name`/`arguments`, send a bare path string, or put the recipe's `setup`, `oracleFiles` or `negativeControlFiles` directly in the call. Do not add approval flags, preparation IDs, provider credentials or runtime overrides. The service supplies the preparation identity and authority.
+
+If the tool reports a validation error or failed trial, inspect its diagnostics, correct the JSON or staged files with write, and call the same tool with the submission path again. A text reply cannot submit the recipe. Stop once the service reports `ready` with a review: that means preparation is ready for human review, not that implementation has started or succeeded."#;
+
 const MAX_TURNS: u32 = 80;
 const MAX_TOOL_CALLS: u32 = 160;
 const MAX_DURATION: Duration = Duration::from_secs(30 * 60);
@@ -286,7 +306,7 @@ pub(super) fn schema() -> Value {
         "name":TOOL,
         "description":"Submit the prepared verification recipe for trusted validation and user review. This never approves inputs, starts implementation, applies changes, or claims verification. Fix reported preparation errors and submit again. All assets must be inside the issued preparation workspace.",
         "parameters":{"type":"object","additionalProperties":false,
-            "properties":{"input_path":{"type":"string","description":"Relative path to the prepared JSON recipe inside this private workspace."}},
+            "properties":{"input_path":{"type":"string","description":"Relative path to an existing prepared JSON recipe inside this private workspace, for example .rovik-preparation/submission.json. The recipe contents belong in that file, not in the tool arguments."}},
             "required":["input_path"]}
     }})
 }

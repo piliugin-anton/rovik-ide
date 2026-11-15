@@ -73,6 +73,22 @@ baseline/control trials; invalid inputs or unexpected results return to the agen
 for correction. A compiler failure alone cannot demonstrate test sensitivity.
 Preparation does not change production source in the checkout or grant acceptance.
 
+The preparation agent's system prompt includes an explicit submission example.
+It reads `.rovik-preparation/template.json`, fills the recipe's `setup`,
+`oracleFiles` and `negativeControlFiles`, and saves
+`.rovik-preparation/submission.json` in the issued private workspace. The arguments
+to `prepare_verified_plan` contain only the file's relative path:
+
+```json
+{
+  "input_path": ".rovik-preparation/submission.json"
+}
+```
+
+The recipe contents are not tool arguments. Validation errors ask the agent to
+repair the staged recipe or files and submit the path again; a `ready` result
+ends preparation for human review without approving or starting implementation.
+
 On first use, the trusted backend builds the verifier from its bundled recipe,
 measures the installed tools and prepares compatible locked dependencies. These
 assets are cached on the execution host and checked before reuse. Preparation can

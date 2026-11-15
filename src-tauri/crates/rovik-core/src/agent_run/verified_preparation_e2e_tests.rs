@@ -176,6 +176,59 @@ async fn preparation_writes_only_drafts_and_text_cannot_claim_completion() {
 }
 
 #[tokio::test]
+async fn preparation_prompt_shows_the_exact_submission_arguments_after_validation_errors() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "inline-recipe",
+            name: "prepare_verified_plan",
+            args: json!({"setup":{},"oracleFiles":[],"negativeControlFiles":[]}),
+        },
+        Reply::Text("Preparation needs corrections."),
+    ])
+    .await;
+    let (mut run, entry) = private_run(&h, &url).await;
+    assert_eq!(run.go(entry).await, "error");
+    let rows = h.messages().await;
+    let error = result_of(&rows, "inline-recipe");
+    assert!(error.call_failed());
+    assert!(error.content.contains("Provide only input_path"));
+
+    let requests = seen.lock().unwrap();
+    assert!(
+        requests.len() >= 2,
+        "the agent can repair a rejected submission"
+    );
+    for request in requests.iter() {
+        let prompt = system_prompt(request);
+        let example = prompt
+            .split_once("Call `prepare_verified_plan` with this argument object:\n\n```json\n")
+            .expect("the model's system prompt must show the tool argument object")
+            .1
+            .split_once("\n```")
+            .unwrap()
+            .0;
+        let arguments: Value = serde_json::from_str(example).unwrap();
+        assert_eq!(
+            arguments,
+            json!({"input_path":".rovik-preparation/submission.json"})
+        );
+        let tool = request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["function"]["name"] == "prepare_verified_plan")
+            .unwrap();
+        let parameters = &tool["function"]["parameters"];
+        assert_eq!(parameters["required"], json!(["input_path"]));
+        assert_eq!(parameters["additionalProperties"], false);
+        assert_eq!(parameters["properties"]["input_path"]["type"], "string");
+        assert!(prompt.contains(".rovik-preparation/template.json"));
+        assert!(prompt.contains("`setup`, `oracleFiles` and `negativeControlFiles`"));
+    }
+}
+
+#[tokio::test]
 async fn forged_preparation_commands_and_delegation_never_execute() {
     let h = harness(&[("source.txt", "original")]).await;
     let (url, _) = model(vec![

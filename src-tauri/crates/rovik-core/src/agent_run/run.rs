@@ -2133,8 +2133,8 @@ impl Run {
             });
             tools.push(super::verified_preparation::schema());
             system_prompt = Some(format!(
-                "You are preparing verification inputs for a reviewed plan, not implementing it. Work only in the issued private workspace. Read project files as needed; write all draft inputs under .rovik-preparation/. Never implement source changes, approve inputs, start a controller, or claim verification or implementation succeeded. The trusted service owns dependency installation and trial checks. Ask concise questions with ask_user when requirements cannot be determined from the plan. Finish only by calling prepare_verified_plan with the prepared recipe's relative path; use its validation errors to correct the recipe. A text response cannot submit preparation.\n\n{}\n\n{}",
-                preparation.instructions, project_context,
+                "You are preparing verification inputs for a reviewed plan, not implementing it. Work only in the issued private workspace. Read project files as needed; write all draft inputs under .rovik-preparation/. Never implement source changes, approve inputs, start a controller, or claim verification or implementation succeeded. The trusted service owns dependency installation and trial checks. Ask concise questions with ask_user when requirements cannot be determined from the plan. Finish only by calling prepare_verified_plan with the prepared recipe's relative path; use its validation errors to correct the recipe. A text response cannot submit preparation.\n\n{}\n\n{}\n\n{}",
+                super::verified_preparation::SUBMISSION_INSTRUCTIONS, preparation.instructions, project_context,
             ));
         }
         let continue_reply = std::mem::take(&mut self.continue_reply);
