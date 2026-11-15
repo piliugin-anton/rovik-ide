@@ -84,7 +84,15 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     )?;
     let Strict(value) =
         serde_json::from_slice(bytes).map_err(|e| Error::new(format!("invalid JSON: {e}")))?;
-    serde_json::from_value(value).map_err(|e| Error::new(format!("invalid schema: {e}")))
+    serde_path_to_error::deserialize(value).map_err(|e| {
+        let path = e.path().to_string();
+        let path = if path.is_empty() || path == "." {
+            "$"
+        } else {
+            &path
+        };
+        Error::new(format!("invalid schema at {path}: {}", e.inner()))
+    })
 }
 
 /// Sorted UTF-8 keys, no whitespace or floats. This is not RFC 8785.
@@ -98,6 +106,22 @@ pub fn canonical<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_errors_identify_the_nested_field_and_array_element_to_repair() {
+        type Recipe =
+            std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>;
+        let error = decode::<Recipe>(
+            br#"{"design":{"resourceContracts":["No retained state",{"owner":"module"}]}}"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("design.resourceContracts[1]"),
+            "{error}"
+        );
+        assert!(error.message.contains("expected a string"), "{error}");
+    }
+
     #[test]
     fn ambiguous_json_is_rejected_at_every_depth() {
         for bytes in [

@@ -530,6 +530,29 @@ fn select_preparation_engine(
     )))
 }
 
+fn submission_example(template: &Value, facts: &BTreeMap<String, String>) -> Result<String> {
+    let mut example: Value = wire::decode(include_bytes!("preparation-submission-example.json"))?;
+    for field in [
+        "environment",
+        "worker",
+        "budgets",
+        "durationMs",
+        "protectedPaths",
+    ] {
+        example["setup"][field] = template["setup"][field].clone();
+    }
+    for field in ["node_version", "npm_version"] {
+        let value = facts.get(field).ok_or_else(|| {
+            Error::new(format!("Prepared runtime is missing the measured {field}."))
+        })?;
+        example["setup"]["profiles"][0]["facts"][field] = json!(value);
+    }
+    let bytes = serde_json::to_vec_pretty(&example).map_err(|e| Error::new(e.to_string()))?;
+    // Guidance must obey the same closed schema as actual submissions.
+    wire::decode::<Submission>(&bytes)?;
+    String::from_utf8(bytes).map_err(|e| Error::new(e.to_string()))
+}
+
 fn write_template(
     project: &IdeProject,
     record: &PreparationRecord,
@@ -556,7 +579,10 @@ fn write_template(
             serde_json::to_vec_pretty(&template).map_err(|e| Error::new(e.to_string()))?,
         )?;
     }
-    Ok(format!("Prepare verification for the saved plan, without implementing production code. You work only in a disposable private source copy; the original project must stay unchanged. Read the plan and existing code, identify real requirements and architecture decisions, and ask the user in chat only when a requirement cannot be determined.\n\nUse {DRAFTS}/template.json as the submission schema and write {DRAFTS}/submission.json. Fill the setup profiles, requirements with actual native test case IDs, design citations, scoped writable paths and independently authored protected tests. Profile facts must match these measured runtime facts: {}. The immutable runtime and selected model/budgets are supplied by the service and cannot be changed by your document. Each profile is {{\"id\":\"main\",\"manifest\":\"package.json\",\"language\":\"javascript\",\"facts\":{{}},\"configurations\":[{{\"id\":\"default\",\"target\":\"linux-x86_64\",\"features\":[],\"default_features\":false,\"build_targets\":[\"protected-tests\"],\"flags\":[],\"runtime\":\"node\"}}],\"protectedTestPaths\":[\"tests/acceptance.mjs\"],\"typescriptProject\":null}}. Required profile fact names are supplied below. Requirements are {{\"id\":\"behavior\",\"statement\":\"observable behavior\",\"owner\":\"component-name\",\"casesByConfiguration\":{{\"main/default\":[\"exact executed case ID\"]}}}}. Design citations are {{\"file\":\"src/file\",\"symbol\":\"existing_symbol\",\"rationale\":\"why reuse or change\"}}. Configuration keys intentionally use snake_case; surrounding setup fields use camelCase.\n\nDiscovered build roots: {}.\n\nEvery observed manifest must be selected, or explicitly proposed in setup.excludedBuildRoots as {{\"manifest\":\"examples/demo/package.json\",\"rationale\":\"why this example is unrelated to the saved plan\"}}. Exclusions are shown for human review and freeze the entire root against edits/deletion. Never exclude the repository root or an ancestor of a selected root; dependencies and native checks still use the complete captured source.\n\nRequired profile fact names: {}. Copy only those names for each language; the measured environment contains additional facts for other languages.\n\nClosed adapter settings: JavaScript/TypeScript use module_system=esm, test_runner=node:test, dependency_policy=npm-ci-offline-no-scripts, runtime=node. Python uses test_runner=pytest, dependency_policy=hashed-wheels-offline, import_policy=isolated-pytest, runtime=cpython. These runtime profiles require target=linux-x86_64, features=[], default_features=false and build_targets=[protected-tests]. TypeScript requires flags=[--strict,--noEmitOnError] and a selected protected typescriptProject; JavaScript/Python require flags=[] and no typescriptProject. Use exact measured language runtime/compiler versions. Rust uses runtime=linux-native, std_or_no_std=std and execution_target equal to the selected target; choose edition/MSRV from the manifest. Staged Rust oracle files must be new direct-child .rs integration tests under the selected crate tests/ directory. Existing tests are selected without copying or modifying them. The original Cargo project must compile before newly staged tests are installed; missing production APIs cannot be supplied through oracle files. Existing C/C++ protected tests are supported, but new CMake oracle files require a separately reviewed build configuration.\n\nStage each proposed oracle file beneath {DRAFTS}/oracle/ and list it as {{\"path\":\"repository-relative-test-path\",\"source\":\"{DRAFTS}/oracle/file\"}} in oracleFiles. Existing tests may be selected without copying. Runtime JavaScript/TypeScript tests use node:test and run from /oracle against /build/project (TypeScript output is /build/project/dist); Python uses pytest against /build/project. Rust integration tests run in a private Cargo build copy, never in the project checkout. Discover exact executed case IDs, not filenames. The service prepares locked dependencies and executes real baseline/control trials when you submit. Do not run commands or create dependency caches. Correct your case IDs, oracle and control from its actual diagnostics and resubmit until ready.\n\nCreate a relevant, real source mutation in files beneath {DRAFTS}/control/; list each changed source as {{\"path\":\"src/file\",\"source\":\"{DRAFTS}/control/file\"}} in negativeControlFiles. It must preserve build inputs and all protected tests, compile, and fail the named behavioral negativeControlCases. A compilation failure, fake report or arbitrary failing test does not prove sensitivity. Do not edit the private original source just to make a control; submit isolated staged copies. Document any expected failures of the original source in baselineFailures. New APIs which cannot be tested against the baseline may require a real user decision; never invent passing evidence.\n\nOnly prepare_verified_plan with the submission path submits these drafts. It validates and reports errors for repair; it does not approve or run implementation. Stop once the tool reports ready. The user will review one summary before implementation starts.\n\nRead-restricted paths: {}. Write-restricted paths: {}.",serde_json::to_string(&runtime.assets.facts).map_err(|e|Error::new(e.to_string()))?,serde_json::to_string(&inventory).map_err(|e|Error::new(e.to_string()))?,serde_json::to_string(&BTreeMap::from([("rust",rovik_harness::profile::Language::Rust.required_fields()),("c",rovik_harness::profile::Language::C.required_fields()),("cpp",rovik_harness::profile::Language::Cpp.required_fields()),("javascript",rovik_harness::profile::Language::JavaScript.required_fields()),("typescript",rovik_harness::profile::Language::TypeScript.required_fields()),("python",rovik_harness::profile::Language::Python.required_fields())])).map_err(|e|Error::new(e.to_string()))?,record.denied_read.join(", "),record.denied_write.join(", ")))
+    let example = submission_example(&template, &runtime.assets.facts)?;
+    // Refresh service-owned guidance on retry while preserving the agent's drafts.
+    fs::write(workspace.join(DRAFTS).join("example.json"), &example)?;
+    Ok(format!("Prepare verification for the saved plan, without implementing production code. You work only in a disposable private source copy; the original project must stay unchanged. Read the plan and existing code, identify real requirements and architecture decisions, and ask the user in chat only when a requirement cannot be determined.\n\nUse {DRAFTS}/template.json as the submission schema and write {DRAFTS}/submission.json. Fill the setup profiles, requirements with actual native test case IDs, design citations, scoped writable paths and independently authored protected tests. Profile facts must match these measured runtime facts: {}. The immutable runtime and selected model/budgets are supplied by the service and cannot be changed by your document. Each profile is {{\"id\":\"main\",\"manifest\":\"package.json\",\"language\":\"javascript\",\"facts\":{{}},\"configurations\":[{{\"id\":\"default\",\"target\":\"linux-x86_64\",\"features\":[],\"default_features\":false,\"build_targets\":[\"protected-tests\"],\"flags\":[],\"runtime\":\"node\"}}],\"protectedTestPaths\":[\"tests/acceptance.mjs\"],\"typescriptProject\":null}}. Required profile fact names are supplied below. Requirements are {{\"id\":\"behavior\",\"statement\":\"observable behavior\",\"owner\":\"component-name\",\"casesByConfiguration\":{{\"main/default\":[\"exact executed case ID\"]}}}}. Design citations are {{\"file\":\"src/file\",\"symbol\":\"existing_symbol\",\"rationale\":\"why reuse or change\"}}. Configuration keys intentionally use snake_case; surrounding setup fields use camelCase.\n\nDiscovered build roots: {}.\n\nEvery observed manifest must be selected, or explicitly proposed in setup.excludedBuildRoots as {{\"manifest\":\"examples/demo/package.json\",\"rationale\":\"why this example is unrelated to the saved plan\"}}. Exclusions are shown for human review and freeze the entire root against edits/deletion. Never exclude the repository root or an ancestor of a selected root; dependencies and native checks still use the complete captured source.\n\nRequired profile fact names: {}. Copy only those names for each language; the measured environment contains additional facts for other languages.\n\nClosed adapter settings: JavaScript/TypeScript use module_system=esm, test_runner=node:test, dependency_policy=npm-ci-offline-no-scripts, runtime=node. Python uses test_runner=pytest, dependency_policy=hashed-wheels-offline, import_policy=isolated-pytest, runtime=cpython. These runtime profiles require target=linux-x86_64, features=[], default_features=false and build_targets=[protected-tests]. TypeScript requires flags=[--strict,--noEmitOnError] and a selected protected typescriptProject; JavaScript/Python require flags=[] and no typescriptProject. Use exact measured language runtime/compiler versions. Rust uses runtime=linux-native, std_or_no_std=std and execution_target equal to the selected target; choose edition/MSRV from the manifest. Staged Rust oracle files must be new direct-child .rs integration tests under the selected crate tests/ directory. Existing tests are selected without copying or modifying them. The original Cargo project must compile before newly staged tests are installed; missing production APIs cannot be supplied through oracle files. Existing C/C++ protected tests are supported, but new CMake oracle files require a separately reviewed build configuration.\n\nStage each proposed oracle file beneath {DRAFTS}/oracle/ and list it as {{\"path\":\"repository-relative-test-path\",\"source\":\"{DRAFTS}/oracle/file\"}} in oracleFiles. Existing tests may be selected without copying. Runtime JavaScript/TypeScript tests use node:test and run from /oracle against /build/project (TypeScript output is /build/project/dist); Python uses pytest against /build/project. Rust integration tests run in a private Cargo build copy, never in the project checkout. Discover exact executed case IDs, not filenames. The service prepares locked dependencies and executes real baseline/control trials when you submit. Do not run commands or create dependency caches. Correct your case IDs, oracle and control from its actual diagnostics and resubmit until ready.\n\nCreate a relevant, real source mutation in files beneath {DRAFTS}/control/; list each changed source as {{\"path\":\"src/file\",\"source\":\"{DRAFTS}/control/file\"}} in negativeControlFiles. It must preserve build inputs and all protected tests, compile, and fail the named behavioral negativeControlCases. A compilation failure, fake report or arbitrary failing test does not prove sensitivity. Do not edit the private original source just to make a control; submit isolated staged copies. Document any expected failures of the original source in baselineFailures. New APIs which cannot be tested against the baseline may require a real user decision; never invent passing evidence.\n\nOnly prepare_verified_plan with the submission path submits these drafts. It validates and reports errors for repair; it does not approve or run implementation. Stop once the tool reports ready. The user will review one summary before implementation starts.\n\nComplete worked submission.json example (also saved as {DRAFTS}/example.json):\n\n```json\n{example}\n```\n\nThis illustrates a JavaScript project whose classify(value) currently returns value > 0, with a plan to include zero. Replace its business fields, language profile, paths and cases with your actual project; preserve the service-owned environment, worker, budgets and duration. Its staged oracle defines node:test cases positive, zero and negative against /build/project/src/classify.mjs. Its staged control changes the predicate to value > 10 so zero still fails. Baseline failures are declared only for the unchanged zero case. These example files are not created for you; stage your real tests and mutation before submitting. Use the discovered build roots and language facts above for Rust, TypeScript, Python, C and C++ or mixed projects. An empty collection in template.json does not change its element type.\n\nRead-restricted paths: {}. Write-restricted paths: {}.",serde_json::to_string(&runtime.assets.facts).map_err(|e|Error::new(e.to_string()))?,serde_json::to_string(&inventory).map_err(|e|Error::new(e.to_string()))?,serde_json::to_string(&BTreeMap::from([("rust",rovik_harness::profile::Language::Rust.required_fields()),("c",rovik_harness::profile::Language::C.required_fields()),("cpp",rovik_harness::profile::Language::Cpp.required_fields()),("javascript",rovik_harness::profile::Language::JavaScript.required_fields()),("typescript",rovik_harness::profile::Language::TypeScript.required_fields()),("python",rovik_harness::profile::Language::Python.required_fields())])).map_err(|e|Error::new(e.to_string()))?,record.denied_read.join(", "),record.denied_write.join(", ")))
 }
 
 /// Submit only staged preparation artifacts for this exact agent/project/chat binding.
@@ -602,7 +628,12 @@ impl IdeProject {
     ) -> Result<Value> {
         let workspace = self.preparation_workspace(&record.id)?;
         let mut submission: Submission =
-            wire::decode(&read_staged(&workspace, input_path, STAGED_FILE_LIMIT)?)?;
+            wire::decode(&read_staged(&workspace, input_path, STAGED_FILE_LIMIT)?).map_err(
+                |error| Error::classified(error.category, format!(
+                    "Invalid preparation submission {input_path:?}: {}. Repair the named field using {DRAFTS}/example.json and resubmit the same path.",
+                    error.message,
+                )),
+            )?;
         let mut runtime = record.runtime.clone().ok_or_else(|| {
             Error::new("Prepare the trusted execution environment before submitting.".into())
         })?;
@@ -1233,6 +1264,155 @@ mod tests {
         (directory, project, record)
     }
 
+    fn guidance() -> (tempfile::TempDir, IdeProject, PreparationRecord, String) {
+        let (directory, project, mut record) = issued();
+        record.runtime = Some(Runtime {
+            engine: Engine {
+                kind: EngineKind::Docker,
+                executable: "unused-example-engine".into(),
+            },
+            assets: PreparedEnvironment {
+                image_digest: Digest::of(b"example-image"),
+                toolchain_manifest: directory.path().join("toolchain.json"),
+                recipe_digest: Digest::of(b"example-recipe"),
+                backend_version: "example-backend".into(),
+                facts: BTreeMap::from([
+                    ("node_version".into(), "24.4.0".into()),
+                    ("npm_version".into(), "11.4.2".into()),
+                ]),
+            },
+            dependencies: None,
+            dependency_manifests: BTreeSet::new(),
+        });
+        let workspace = project.preparation_workspace(&record.id).unwrap();
+        let instructions = write_template(&project, &record, &workspace).unwrap();
+        (directory, project, record, instructions)
+    }
+
+    #[test]
+    fn complete_submission_guidance_matches_the_schema_and_refreshes_without_losing_drafts() {
+        let (_directory, project, record, instructions) = guidance();
+        let workspace = project.preparation_workspace(&record.id).unwrap();
+        let example_path = workspace.join(DRAFTS).join("example.json");
+        let example = fs::read_to_string(&example_path).unwrap();
+        let submitted: Submission = wire::decode(example.as_bytes()).unwrap();
+        submitted.setup.worker.validate().unwrap();
+        assert_eq!(submitted.setup.worker.model_id, record.worker.model_id);
+        assert_eq!(submitted.setup.budgets, record.budgets);
+        assert_eq!(
+            submitted.setup.protected_paths.as_slice(),
+            std::slice::from_ref(&record.plan.path)
+        );
+        assert_eq!(submitted.setup.profiles[0].facts["node_version"], "24.4.0");
+        assert_eq!(
+            submitted.setup.baseline_failures[0].case_ids,
+            BTreeSet::from(["zero".into()])
+        );
+        assert_eq!(submitted.oracle_files.len(), 1);
+        assert_eq!(submitted.negative_control_files.len(), 1);
+        assert!(!example.contains("COPY_MEASURED"));
+        assert!(!example.contains("must-not-persist"));
+        let inline = instructions
+            .split_once("Complete worked submission.json example")
+            .unwrap()
+            .1
+            .split_once("```json\n")
+            .unwrap()
+            .1
+            .split_once("\n```")
+            .unwrap()
+            .0;
+        assert_eq!(
+            inline, example,
+            "the agent must see the complete on-disk example in its instructions"
+        );
+
+        let draft = workspace.join(DRAFTS).join("submission.json");
+        fs::write(&draft, "the agent's existing draft").unwrap();
+        fs::write(&example_path, "old guidance").unwrap();
+        write_template(&project, &record, &workspace).unwrap();
+        wire::decode::<Submission>(&fs::read(example_path).unwrap()).unwrap();
+        assert_eq!(
+            fs::read_to_string(draft).unwrap(),
+            "the agent's existing draft"
+        );
+    }
+
+    #[test]
+    fn malformed_submission_errors_name_the_exact_value_instead_of_guessing_at_collections() {
+        let (_directory, project, mut record, _) = guidance();
+        let workspace = project.preparation_workspace(&record.id).unwrap();
+        let example: Value =
+            wire::decode(&fs::read(workspace.join(DRAFTS).join("example.json")).unwrap()).unwrap();
+        let path = format!("{DRAFTS}/submission.json");
+        for (pointer, expected, value) in [
+            (
+                "/setup/design/components/classification",
+                "setup.design.components.classification",
+                json!({"responsibility":"Own classification"}),
+            ),
+            (
+                "/setup/design/publicApiChanges/0",
+                "setup.design.publicApiChanges[0]",
+                json!({"description":"Preserve API"}),
+            ),
+            (
+                "/setup/design/resourceContracts/0",
+                "setup.design.resourceContracts[0]",
+                json!({"owner":"classification"}),
+            ),
+            (
+                "/setup/design/errorContracts/0",
+                "setup.design.errorContracts[0]",
+                json!({"error":"none"}),
+            ),
+            (
+                "/setup/design/mechanismAlternatives/0",
+                "setup.design.mechanismAlternatives[0]",
+                json!({"alternative":"strategy"}),
+            ),
+            (
+                "/setup/design/concurrencyContract",
+                "setup.design.concurrencyContract",
+                json!({"synchronization":"none"}),
+            ),
+            (
+                "/setup/profiles/0/facts/node_version",
+                "setup.profiles[0].facts.node_version",
+                json!({"version":"24.4.0"}),
+            ),
+            (
+                "/setup/baselineFailures/0",
+                "setup.baselineFailures[0]",
+                json!("zero"),
+            ),
+            (
+                "/setup/baselineFailures/0/caseIds/0",
+                "setup.baselineFailures[0].caseIds[0]",
+                json!({"id":"zero"}),
+            ),
+        ] {
+            let mut invalid = example.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            let bytes = serde_json::to_vec(&invalid).unwrap();
+            fs::write(workspace.join(&path), &bytes).unwrap();
+            let error = project
+                .submit_prepared_assets(&mut record, &path)
+                .unwrap_err();
+            assert!(error.message.contains(expected), "{pointer}: {error}");
+            assert!(error.message.contains(&path), "{error}");
+            assert!(
+                error.message.contains(".rovik-preparation/example.json"),
+                "{error}"
+            );
+            assert_eq!(fs::read(workspace.join(&path)).unwrap(), bytes);
+            assert_eq!(record.status, "preparing");
+        }
+        // Correcting the bad value restores a decodable recipe without deleting
+        // the required design or converting baseline records to strings.
+        wire::decode::<Submission>(&serde_json::to_vec(&example).unwrap()).unwrap();
+    }
+
     #[test]
     fn decimal_model_prices_prepare_within_the_default_limit_and_wrong_units_are_actionable() {
         let (_directory, project, original) = issued();
@@ -1607,18 +1787,11 @@ mod tests {
                 "CI must exercise delegated rootless Podman"
             );
         }
-        let mut proposal: Value = serde_json::from_slice(
-            &fs::read(context.workspace_root.join(DRAFTS).join("template.json")).unwrap(),
+        // Exercise the full example supplied to the agent through real trials.
+        let proposal: Value = wire::decode(
+            &fs::read(context.workspace_root.join(DRAFTS).join("example.json")).unwrap(),
         )
         .unwrap();
-        let setup = &mut proposal["setup"];
-        setup["boundedContext"] = json!("Classification");
-        setup["writePaths"] = json!(["src/**"]);
-        setup["profiles"] = json!([{"id":"main","manifest":"package.json","language":"javascript","facts":{"node_version":runtime.assets.facts["node_version"],"npm_version":runtime.assets.facts["npm_version"],"module_system":"esm","test_runner":"node:test","dependency_policy":"npm-ci-offline-no-scripts"},"configurations":[{"id":"tests","target":"linux-x86_64","features":[],"default_features":false,"build_targets":["protected-tests"],"flags":[],"runtime":"node"}],"protectedTestPaths":["tests/acceptance.mjs"]}]);
-        setup["requirements"] = json!([{"id":"BOUNDARY","statement":"Include zero and preserve positive and negative classification","owner":"classification","casesByConfiguration":{"main/tests":["positive","zero","negative"]}}]);
-        setup["design"] = json!({"components":{"classification":"Own numeric inclusion"},"existingCode":[{"file":"src/classify.mjs","symbol":"classify","rationale":"Existing predicate owns inclusion"}],"publicApiChanges":[],"resourceContracts":["No retained state"],"errorContracts":["No new errors"],"concurrencyContract":"Pure predicate","mechanismPressure":"One comparison expresses the rule","mechanismAlternatives":["A strategy adds unnecessary dispatch"],"mechanismCost":"No additional state or dispatch"});
-        setup["negativeControlCases"] = json!(["zero"]);
-        setup["baselineFailures"] = json!([{"profileId":"main","configurationId":"tests","caseIds":["zero"],"rationale":"Equality defect requested by the saved plan"}]);
         let drafts = context.workspace_root.join(DRAFTS);
         fs::create_dir(drafts.join("oracle")).unwrap();
         fs::create_dir(drafts.join("control")).unwrap();
@@ -1628,9 +1801,6 @@ mod tests {
             source.replace("value > 0", "value > 10"),
         )
         .unwrap();
-        proposal["oracleFiles"] = json!([{"path":"tests/acceptance.mjs","source":format!("{DRAFTS}/oracle/acceptance.mjs")}]);
-        proposal["negativeControlFiles"] =
-            json!([{"path":"src/classify.mjs","source":format!("{DRAFTS}/control/classify.mjs")}]);
         fs::write(
             drafts.join("submission.json"),
             serde_json::to_vec(&proposal).unwrap(),

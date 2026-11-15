@@ -73,8 +73,16 @@ baseline/control trials; invalid inputs or unexpected results return to the agen
 for correction. A compiler failure alone cannot demonstrate test sensitivity.
 Preparation does not change production source in the checkout or grant acceptance.
 
-The preparation agent's system prompt includes an explicit submission example.
-It reads `.rovik-preparation/template.json`, fills the recipe's `setup`,
+The preparation agent's system prompt includes a complete worked `submission.json`
+example, also written to `.rovik-preparation/example.json`. Its environment, model,
+budgets and measured tool versions come from the current preparation. The example's
+JavaScript classification task illustrates the nested types; the agent replaces its
+business facts, language profiles, paths and cases with inspected project evidence.
+The example is checked against the submission schema and exercised by the native
+automatic-preparation acceptance test. It is refreshed on retry without replacing
+the agent's draft.
+
+The agent reads `.rovik-preparation/template.json`, fills the recipe's `setup`,
 `oracleFiles` and `negativeControlFiles`, and saves
 `.rovik-preparation/submission.json` in the issued private workspace. The arguments
 to `prepare_verified_plan` contain only the file's relative path:
@@ -85,8 +93,12 @@ to `prepare_verified_plan` contain only the file's relative path:
 }
 ```
 
-The recipe contents are not tool arguments. Validation errors ask the agent to
-repair the staged recipe or files and submit the path again; a `ready` result
+The recipe contents are not tool arguments. Schema errors identify the exact field
+and array element, such as `setup.design.resourceContracts[0]`, plus the expected
+type. The guidance distinguishes string-valued component/fact maps and arrays of
+contract strings from object arrays such as `baselineFailures` and
+`excludedBuildRoots`. Validation errors ask the agent to repair that field or the
+staged files and submit the path again; a `ready` result
 ends preparation for human review without approving or starting implementation.
 
 Source imports keep slow reads and file synchronization outside the ledger's write

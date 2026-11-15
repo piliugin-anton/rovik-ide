@@ -224,6 +224,10 @@ async fn preparation_prompt_shows_the_exact_submission_arguments_after_validatio
         assert_eq!(parameters["additionalProperties"], false);
         assert_eq!(parameters["properties"]["input_path"]["type"], "string");
         assert!(prompt.contains(".rovik-preparation/template.json"));
+        assert!(prompt.contains(".rovik-preparation/example.json"));
+        assert!(prompt.contains("setup.design.resourceContracts[0]"));
+        assert!(prompt.contains("`setup.baselineFailures` is an array of OBJECTS"));
+        assert!(prompt.contains("`setup.profiles[].facts` maps fact names to STRINGS"));
         assert!(prompt.contains("`setup`, `oracleFiles` and `negativeControlFiles`"));
     }
 }
