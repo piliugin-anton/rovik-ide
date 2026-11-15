@@ -36,6 +36,13 @@ captured input and selected configuration. Later edits, unsaved buffers or chang
 configuration invalidate that current-result claim. This operation verifies saved
 changes; it does not apply an implementation or deploy the project.
 
+The Git tab uses Git LFS filters for staging, restoring files and switching to or
+from an LFS-tracked tree, so restored assets contain their content rather than
+pointer text. Restoring from the index preserves staged changes; restoring from
+HEAD resets them. Checkout hooks run once after the requested HEAD is selected.
+Commented `.gitattributes` examples do not activate LFS or require its executable.
+Repositories without LFS keep the ordinary checkout path.
+
 The ordered [IDE integration plan](polyglot-ide-integration.md) tracks verified plan
 implementation, Autopilot integration and editor architecture feedback.
 
@@ -80,7 +87,13 @@ JavaScript classification task illustrates the nested types; the agent replaces 
 business facts, language profiles, paths and cases with inspected project evidence.
 The example is checked against the submission schema and exercised by the native
 automatic-preparation acceptance test. It is refreshed on retry without replacing
-the agent's draft.
+the agent's draft. The same Rust submission types generate the TypeScript contract
+in `src/lib/generated/preparation.ts` and the private workspace's
+`.rovik-preparation/schema.ts`; the latter describes data types, not executable
+verification authority. `npm run generate:preparation-types` refreshes the checked-in
+frontend contract, and a read-only Rust comparison test detects drift. Shared
+submission and workspace guides keep the agent prompt and examples aligned with
+that contract.
 
 The agent reads `.rovik-preparation/template.json`, fills the recipe's `setup`,
 `oracleFiles` and `negativeControlFiles`, and saves
@@ -105,8 +118,14 @@ Source imports keep slow reads and file synchronization outside the ledger's wri
 transaction, so status polling and preparation retries can make progress together,
 including with large binary assets. Artifact cleanup still excludes unfinished
 publications. A temporary storage error preserves the preparation's drafts and
-status; retry after the competing operation finishes. Actual source or plan changes
-still invalidate the captured preparation.
+status; retry after the competing operation finishes. Status polling checks the
+saved plan, deadline and selected untracked paths without importing every source
+file again. Full source and baseline freshness checks remain mandatory when the
+agent resumes or submits and before a reviewed preparation becomes implementation.
+Source edits detected at those boundaries invalidate the captured preparation.
+Retry also restores missing captured source that current read restrictions allow,
+while preserving existing files and agent drafts; it never restores secrets or
+source that remains restricted.
 
 On first use, the trusted backend builds the verifier from its bundled recipe,
 measures the installed tools and prepares compatible locked dependencies. These
@@ -155,6 +174,12 @@ promotion does not reset that spending. **Stop preparation** cancels active work
 **Continue preparation** resumes a still-current session, and **Prepare again**
 captures a new session when the earlier one is cancelled, stale or blocked. Normal
 chat retry/continuation also preserves the current preparation binding when valid.
+After reopening a chat, its first ordinary follow-up restores the latest durable
+active preparation before dispatch, preserving the user's message and private
+workspace routing. A recovery failure blocks dispatch rather than silently using
+the normal project workspace. Explicit **Close** remains an opt-out across
+restarts; an explicit resume clears it. A newer ordinary request, inactive
+preparation, command, or changed project/host/model is not silently rebound.
 After implementation starts, **Recover interrupted implementation** and
 **Cancel implementation** operate on its durable run and accounting. Any additional
 required approval remains an explicit blocked decision.
@@ -315,7 +340,11 @@ The store publishes synchronized blobs before registering references. Reads
 verify exact length and SHA-256, and reject symlinks and hard links. SQLite uses
 foreign keys, WAL, full synchronization, one atomic initial migration and immutable
 history triggers. State updates and their events share one transaction.
-Concurrent controllers must reload after a revision conflict.
+Concurrent controllers must reload after a revision conflict. Plan admission and
+execution share phase-dependency rules: a Fast check cannot depend on Risk or
+Final work, a Risk check can depend on Fast or Risk work, and Final checks depend
+only on Final checks. This applies to manually registered setups as well as plans
+derived by the IDE; future-phase checks are never treated as already completed.
 
 Storage paths support Windows drive prefixes and macOS's root-owned `/var` and
 `/tmp` aliases. The store retains the checked target path; other directory symlinks
@@ -533,7 +562,9 @@ first-use setup or a restart can still be necessary. Existing installations are
 never replaced merely because their daemon is stopped or inaccessible.
 
 Readiness uses explicit local endpoints and checks for a running Linux container
-daemon. An installed executable alone is insufficient. This installs the local
+daemon. Linux checks include the rootless socket under an absolute
+`XDG_RUNTIME_DIR` and the user's Docker Desktop socket, without adopting remote
+Docker contexts. An installed executable alone is insufficient. This installs the local
 prerequisite only: the strict runner still executes on Linux. Automatic plan
 preparation builds its trusted image and supported locked dependencies on a Linux
 x86_64 execution host; imported setups still need their own pinned assets.
@@ -556,6 +587,11 @@ identity require that capability too. Update an older host before using this flo
 support for basic verification alone is insufficient. The local desktop IPC
 protocol is 22. The cloud wire protocol and harness document schemas remain v1;
 their version numbers are independent of the desktop IPC revision.
+Cloud starts and durable continuations bound to verified preparation allow the
+service's 30-minute preparation budget plus a 60-second transport grace. This
+31-minute request deadline also applies when the request uses the large HTTP
+payload path. Ordinary WebSocket calls retain their 60-second communication
+deadline; ordinary large HTTP calls keep their existing 10-minute limit.
 
 An approved bug-fix or API-refactor plan with explicit behavioral acceptance
 criteria is the intended first implementation use case. Strict tasks use one
@@ -695,6 +731,20 @@ directives, Python wildcard imports and dynamic Python import machinery/reflecti
 checker. Python project modules cannot shadow standard-library names. The current
 Python search layout is the project root followed by prepared wheels and
 interpreter roots; custom `sys.path` and zip import roots are unsupported.
+Resolution uses the pinned interpreter's exact extension, source and bytecode
+suffix priority. If a project-local native extension or bytecode file wins that
+resolution, the check blocks rather than attributing execution to a sibling `.py`
+file. External native packages remain opaque graph leaves.
+
+The JavaScript checker supports a bounded syntactic subset, not general dataflow
+analysis. Reflective `eval`, `Function` and function-constructor access, global-object
+aliases, unresolved computed global access, `Reflect` APIs, and descriptor/prototype
+reflection are unsupported. Calls or constructors reached through unresolved
+computed properties, including aliases extracted from those properties, also
+block the check. Ordinary data indexing,
+class constructors and supported static global properties remain available.
+Recognized literal, concatenated and aliased keys are checked conservatively;
+this does not establish complete analysis of arbitrary JavaScript reflection.
 
 The controller independently validates the observed graph and rejects direct or
 transitive forbidden paths. A graph does not count as behavioral test evidence.
@@ -792,7 +842,10 @@ job; stopped, rejected and cancelled runs cannot accept or resume. Before final
 acceptance, the gate, approval validity and candidate revision are rechecked under
 the same SQLite write transaction that commits acceptance. Repository integration
 still needs its own revision check when an operator later applies or merges an
-exported candidate.
+exported candidate. Acceptance still holds that write transaction during full
+artifact and source verification; large histories can therefore delay other
+ledger writers. Shortening this window requires separating immutable verification
+from fresh authority/accounting checks without weakening the atomic decision.
 
 Operator commands use the same absolute state directory as `run`:
 
@@ -813,7 +866,9 @@ The immutable intake's authority must grant `operate` for cancel/recover/resume,
 Approval grants and revocations retain their subject-specific authority checks.
 These are trusted management capabilities, unavailable through the worker broker.
 Retention requires access to the private controller store and never runs as a
-worker tool.
+worker tool. Retention holds the exclusive artifact-publication lock while
+verifying and removing orphan blobs, but does not hold SQLite's writer lock for
+that file IO. Registered evidence remains protected.
 
 After controller loss, run `status`, then `recover`. Recovery also rechecks earlier
 job identities, since a daemon may finish a create request after its client loses
@@ -849,7 +904,10 @@ Completed infrastructure failures without failed behavioral cases can retry up t
 `worker.infrastructure_retries_per_check` times (default one, at most three),
 within the existing check budget and deadline. An authenticated pass for the same
 source, check, configuration and complete evidence binding creates an immutable
-recovery link; the original observation stays unchanged. Interrupted operations
+recovery link; the original observation stays unchanged. If the controller exits
+after settling a successful retry but before recording its recovery links,
+resuming the cached check reconstructs them idempotently without rerunning the
+check or spending another reservation. Interrupted operations
 with unknown execution or usage still require recovery and reconciliation.
 Infrastructure failures do not trigger code repair. The repaired candidate goes
 through scope, risk, review and fresh final checks again. Earlier failures remain
