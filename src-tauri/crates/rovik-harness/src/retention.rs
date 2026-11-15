@@ -22,6 +22,10 @@ impl Ledger {
             grace_seconds >= 86_400,
             "retention grace must be at least one day",
         )?;
+        // Acquire publication ownership first: a publisher registers its blob
+        // under a short SQL transaction while still holding a shared lock.
+        let publication = self.artifact_lock_file()?;
+        publication.lock()?;
         let tx = rusqlite::Transaction::new_unchecked(
             &self.connection,
             rusqlite::TransactionBehavior::Immediate,

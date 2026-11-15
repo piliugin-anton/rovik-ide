@@ -297,6 +297,15 @@ impl IdeProject {
             && record.run_id.is_none()
         {
             if let Err(error) = self.require_fresh_preparation(&record) {
+                // A storage failure says nothing about the source's freshness.
+                // Keep the issued drafts and review available for a later retry.
+                if matches!(
+                    error.category,
+                    rovik_harness::FailureCategory::Infrastructure
+                        | rovik_harness::FailureCategory::Internal
+                ) {
+                    return Err(error);
+                }
                 record.status = "stale".into();
                 record.error = Some(error.to_string());
                 self.database()?.execute("UPDATE preparations SET value=json_set(value,'$.status','stale','$.error',?2) WHERE id=?1 AND json_extract(value,'$.status') IN ('preparing','ready','blocked') AND json_extract(value,'$.runId') IS NULL",params![record.id,record.error])?;
@@ -1368,6 +1377,54 @@ mod tests {
         assert_eq!(saved.error.as_deref(), Some(error.to_string().as_str()));
         assert!(saved.runtime.is_none());
         assert!(!project.state.join("preparation-runtime").exists());
+        assert!(ActivePreparation::begin(&project, &record.id).is_ok());
+    }
+
+    #[test]
+    fn storage_failures_preserve_preparation_drafts_and_allow_retry_after_recovery() {
+        let (directory, project, mut record) = issued();
+        record.error = Some("The previous trial needs correction.".into());
+        project.save_active_preparation(&record).unwrap();
+        let draft = project
+            .preparation_workspace(&record.id)
+            .unwrap()
+            .join(DRAFTS)
+            .join("submission.json");
+        fs::write(&draft, "draft from the failed attempt").unwrap();
+        let before = record_json(&record).unwrap();
+        let database = Connection::open(project.state.join("ledger.sqlite3")).unwrap();
+        database.execute_batch("CREATE TRIGGER fail_publication BEFORE INSERT ON artifacts BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;").unwrap();
+
+        let error = project.preparation_status(&record.id).unwrap_err();
+        assert_eq!(error.category, rovik_harness::FailureCategory::Internal);
+        assert!(error.message.contains("injected storage failure"));
+        assert_eq!(
+            record_json(&project.load_preparation(&record.id).unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(
+            fs::read_to_string(&draft).unwrap(),
+            "draft from the failed attempt"
+        );
+
+        database
+            .execute_batch("DROP TRIGGER fail_publication")
+            .unwrap();
+        assert_eq!(
+            project.preparation_status(&record.id).unwrap()["status"],
+            "preparing"
+        );
+        let project_id = Digest::of(project.root.as_os_str().as_encoded_bytes()).to_string();
+        let (_, resumed) = bound_project(
+            &directory.path().join("private"),
+            &project.root,
+            &project_id,
+            &record.id,
+            "chat",
+            &provider().profile,
+        )
+        .unwrap();
+        assert_eq!(resumed.id, record.id);
         assert!(ActivePreparation::begin(&project, &record.id).is_ok());
     }
 

@@ -89,6 +89,13 @@ The recipe contents are not tool arguments. Validation errors ask the agent to
 repair the staged recipe or files and submit the path again; a `ready` result
 ends preparation for human review without approving or starting implementation.
 
+Source imports keep slow reads and file synchronization outside the ledger's write
+transaction, so status polling and preparation retries can make progress together,
+including with large binary assets. Artifact cleanup still excludes unfinished
+publications. A temporary storage error preserves the preparation's drafts and
+status; retry after the competing operation finishes. Actual source or plan changes
+still invalidate the captured preparation.
+
 On first use, the trusted backend builds the verifier from its bundled recipe,
 measures the installed tools and prepares compatible locked dependencies. These
 assets are cached on the execution host and checked before reuse. Preparation can

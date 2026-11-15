@@ -59,7 +59,12 @@ pub(super) fn publish(
 ) -> Result<()> {
     let content = ledger
         .store_source(fs::File::open(file)?, runner::now_ms()?)
-        .map_err(|error| Error::new(format!("Store source file {path:?}: {}", error.message)))?;
+        .map_err(|error| {
+            Error::classified(
+                error.category,
+                format!("Store source file {path:?}: {}", error.message),
+            )
+        })?;
     if &content != expected {
         return Err(Error::new(format!(
             "Source file {path:?} changed during capture. Inspect the project again."

@@ -17,6 +17,15 @@ use std::{collections::BTreeMap, path::Path, time::Duration};
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
+        if matches!(
+            e.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        ) {
+            return Self::classified(
+                crate::FailureCategory::Infrastructure,
+                format!("Verification storage is busy with another operation ({e}). Wait for it to finish, then retry."),
+            );
+        }
         Self::classified(
             crate::FailureCategory::Internal,
             format!("ledger operation failed: {e}"),
@@ -156,10 +165,14 @@ impl Ledger {
         now: u64,
         publish: impl FnOnce(&ArtifactStore) -> Result<ArtifactRef>,
     ) -> Result<ArtifactRef> {
-        // Serialize publication with retention, including reuse of an aged orphan.
+        // Retention must not remove a reused orphan before it is registered.
+        // Use a shared file lock for that lifetime so slow source IO does not
+        // hold SQLite's single writer lock or block another preparation.
+        let publication = self.artifact_lock_file()?;
+        publication.lock_shared()?;
+        let reference = publish(&self.artifacts)?;
         let tx =
             rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        let reference = publish(&self.artifacts)?;
         self.connection.execute(
             "INSERT OR IGNORE INTO artifacts VALUES(?1,?2,?3,?4,?5)",
             params![
@@ -185,6 +198,38 @@ impl Ledger {
         )?;
         tx.commit()?;
         Ok(reference)
+    }
+
+    /// Open the shared publication/exclusive retention lock before any SQL write transaction.
+    pub(crate) fn artifact_lock_file(&self) -> Result<std::fs::File> {
+        let path = self.root.join("artifact-publication.lock");
+        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+            require(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "artifact publication lock is not a regular file",
+            )?;
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
+        }
+        let file = options.open(path)?;
+        require(
+            file.metadata()?.is_file(),
+            "artifact publication lock is not a regular file",
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            require(
+                file.metadata()?.nlink() == 1,
+                "artifact publication lock has external hard links",
+            )?;
+        }
+        Ok(file)
     }
     /// Store canonical JSON, preserving exact bytes used for its digest.
     pub fn store_json(&self, kind: &str, value: &impl Serialize, now: u64) -> Result<ArtifactRef> {
@@ -561,5 +606,139 @@ impl Ledger {
             self.copy_to(&Digest::parse(&row?)?, std::io::sink())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    struct DuringRead<F> {
+        inspect: Option<F>,
+        bytes: &'static [u8],
+    }
+
+    impl<F: FnOnce()> Read for DuringRead<F> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(inspect) = self.inspect.take() {
+                inspect();
+            }
+            self.bytes.read(buffer)
+        }
+    }
+
+    #[test]
+    fn a_source_stream_does_not_lock_out_another_preparation_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("state");
+        let importing = Ledger::open(&root).unwrap();
+        let retrying = Ledger::open(&root).unwrap();
+        retrying.connection.busy_timeout(Duration::ZERO).unwrap();
+        let mut retry = None;
+        let source = importing
+            .store_source(
+                DuringRead {
+                    inspect: Some(|| {
+                        retry = Some(retrying.store_json(
+                            "operation",
+                            &serde_json::json!({"attempt":"after-failed-preparation"}),
+                            1,
+                        ));
+                    }),
+                    bytes: b"source snapshot",
+                },
+                1,
+            )
+            .unwrap();
+        let retry = retry
+            .unwrap()
+            .expect("source IO must not own SQLite's write lock");
+        assert_eq!(importing.read(&source.digest).unwrap(), b"source snapshot");
+        retrying.verify_reference(&retry).unwrap();
+        importing.verify_artifacts().unwrap();
+    }
+
+    #[test]
+    fn retention_cannot_remove_a_reused_orphan_before_its_registration() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("state");
+        let ledger = Ledger::open(&root).unwrap();
+        let orphan = ledger
+            .artifacts
+            .put("source", "text/plain", b"reused source")
+            .unwrap();
+        std::fs::File::open(root.join("artifacts").join(orphan.digest.hex()))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(172800))
+            .unwrap();
+        let collector = Ledger::open(&root).unwrap();
+        let stored = ledger
+            .publish(1, |store| {
+                let reference = store.put("source", "text/plain", b"reused source")?;
+                assert!(
+                    matches!(
+                        collector.artifact_lock_file()?.try_lock(),
+                        Err(std::fs::TryLockError::WouldBlock)
+                    ),
+                    "retention must remain excluded until the durable registration commits"
+                );
+                Ok(reference)
+            })
+            .unwrap();
+        assert_eq!(stored, orphan);
+        let report = collector.retention(86400, true).unwrap();
+        assert!(report.orphan_digests.is_empty());
+        assert_eq!(report.retained_registered, 1);
+        assert_eq!(collector.read(&stored.digest).unwrap(), b"reused source");
+    }
+
+    #[test]
+    fn failed_source_reads_release_publication_ownership_before_retry() {
+        struct FailedRead;
+        impl Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("interrupted source read"))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("state");
+        let ledger = Ledger::open(&root).unwrap();
+        assert!(ledger.store_source(FailedRead, 1).is_err());
+        let retrying = Ledger::open(&root).unwrap();
+        let ownership = retrying.artifact_lock_file().unwrap();
+        ownership
+            .try_lock()
+            .expect("a failed publication must release its lock");
+        drop(ownership);
+        let stored = retrying.store_source(&b"retried source"[..], 2).unwrap();
+        assert_eq!(ledger.read(&stored.digest).unwrap(), b"retried source");
+        assert_eq!(
+            ledger.retention(86400, true).unwrap().retained_registered,
+            1
+        );
+    }
+
+    #[test]
+    fn sqlite_contention_is_retryable_and_a_later_write_can_succeed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("state");
+        let ledger = Ledger::open(&root).unwrap();
+        ledger.connection.busy_timeout(Duration::ZERO).unwrap();
+        let mut competing = Connection::open(root.join("ledger.sqlite3")).unwrap();
+        let transaction = competing
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let error = ledger
+            .store_json("operation", &serde_json::json!({"attempt":1}), 1)
+            .unwrap_err();
+        assert_eq!(error.category, crate::FailureCategory::Infrastructure);
+        assert!(error.message.contains("retry"));
+        transaction.rollback().unwrap();
+        let stored = ledger
+            .store_json("operation", &serde_json::json!({"attempt":2}), 2)
+            .unwrap();
+        ledger.verify_reference(&stored).unwrap();
+        ledger.verify_artifacts().unwrap();
     }
 }
