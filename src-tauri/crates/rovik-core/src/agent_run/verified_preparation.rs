@@ -381,6 +381,15 @@ impl Run {
             .await
         }
         .await;
+        self.record_preparation_result(tc, result).await
+    }
+
+    /// Persist trial diagnostics before the agent can repair and resubmit.
+    pub(super) async fn record_preparation_result(
+        &mut self,
+        tc: &ToolCall,
+        result: Result<Value, String>,
+    ) -> Result<(), String> {
         let (ready, content, outcome) = submission_result(result);
         if ready {
             if let Some(preparation) = &mut self.preparation {
@@ -403,7 +412,7 @@ fn submission_result(result: Result<Value, String>) -> (bool, String, Outcome) {
         ),
         Ok(value) => (
             false,
-            format!("Verification preparation needs corrections. Read these trial diagnostics, repair the staged recipe or oracle, and submit again. Implementation has not started.\n{value}"),
+            format!("Error: verification preparation needs corrections. Read these trial diagnostics, repair the staged recipe or oracle, and submit again. Implementation has not started.\n{value}"),
             Outcome::Failed,
         ),
         Err(error) => (false, format!("Error: {error}"), Outcome::Failed),

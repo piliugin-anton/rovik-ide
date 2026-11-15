@@ -174,6 +174,8 @@ promotion does not reset that spending. **Stop preparation** cancels active work
 **Continue preparation** resumes a still-current session, and **Prepare again**
 captures a new session when the earlier one is cancelled, stale or blocked. Normal
 chat retry/continuation also preserves the current preparation binding when valid.
+Failed verification trials are saved as failed tool results with their diagnostics,
+so the agent can repair the staged inputs and resubmit within the same session.
 Opening a chat with interrupted preparation tool calls restores its status and
 controls without starting a model request or replaying a submission. A current
 idle session shows **Preparation paused** and **Continue preparation**; cancelled

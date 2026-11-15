@@ -2,6 +2,7 @@
 //! giving that run implementation authority or command execution.
 
 use super::*;
+use crate::chat_db::store::ToolCall;
 
 #[tokio::test]
 async fn preparation_host_capability_is_required_for_durable_continuations() {
@@ -173,6 +174,35 @@ async fn preparation_writes_only_drafts_and_text_cannot_claim_completion() {
         h.events_of("fileWritten").is_empty(),
         "private drafts must not appear as editor source changes"
     );
+}
+
+#[tokio::test]
+async fn failed_trials_are_stored_and_repeated_submissions_remain_answered() {
+    let h = harness(&[]).await;
+    let (mut run, _) = private_run(&h, &format!("http://127.0.0.1:{NOTHING_LISTENS}")).await;
+    for id in ["first-trial", "retried-trial"] {
+        let call = ToolCall {
+            id: id.into(),
+            name: "prepare_verified_plan".into(),
+            arguments: json!({"input_path":".rovik-preparation/submission.json"}).to_string(),
+            extra_content: None,
+        };
+        let mut reply = run::new_message("assistant", "Submitting verification.");
+        reply.tool_calls = Some(vec![call.clone()]);
+        run.append(vec![reply]).await.unwrap();
+        run.record_preparation_result(
+            &call,
+            Ok(json!({"status":"preparing","trial":{"ready":false,"diagnostics":"expected test ID absent"}})),
+        )
+        .await
+        .unwrap();
+        let rows = h.messages().await;
+        let result = result_of(&rows, id);
+        assert!(result.call_failed());
+        assert!(result.content.starts_with("Error:"));
+        assert!(result.content.contains("expected test ID absent"));
+        assert!(!run.preparation.as_ref().unwrap().submitted);
+    }
 }
 
 #[tokio::test]
