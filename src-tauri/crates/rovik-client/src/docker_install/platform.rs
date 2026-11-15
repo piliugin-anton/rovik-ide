@@ -87,12 +87,33 @@ fn windows_home() -> PathBuf {
 }
 
 pub(super) fn endpoints() -> Vec<String> {
-    if cfg!(windows) {
+    local_endpoints(
+        std::env::consts::OS,
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+fn local_endpoints(os: &str, runtime: Option<&Path>, home: Option<&Path>) -> Vec<String> {
+    if os == "windows" {
         return vec!["npipe:////./pipe/docker_engine".into()];
     }
     let mut endpoints = vec!["unix:///var/run/docker.sock".into()];
-    if cfg!(target_os = "macos") {
-        if let Some(home) = dirs::home_dir() {
+    if os == "linux" {
+        if let Some(runtime) = runtime.filter(|path| path.is_absolute()) {
+            endpoints.push(format!("unix://{}", runtime.join("docker.sock").display()));
+        }
+        if let Some(home) = home {
+            endpoints.push(format!(
+                "unix://{}",
+                home.join(".docker/desktop/docker.sock").display()
+            ));
+        }
+    }
+    if os == "macos" {
+        if let Some(home) = home {
             endpoints.push(format!(
                 "unix://{}",
                 home.join(".docker/run/docker.sock").display()
@@ -209,6 +230,21 @@ async fn install_windows(installer: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn readiness_includes_local_rootless_and_desktop_sockets_without_remote_contexts() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        let home = directory.path().join("home");
+        let sockets = local_endpoints("linux", Some(&runtime), Some(&home));
+        assert!(sockets.contains(&format!("unix://{}", runtime.join("docker.sock").display())));
+        assert!(sockets.contains(&format!(
+            "unix://{}",
+            home.join(".docker/desktop/docker.sock").display()
+        )));
+        assert!(local_endpoints("linux", Some(Path::new("relative")), None)
+            .iter()
+            .all(|s| s == "unix:///var/run/docker.sock"));
+    }
     #[test]
     fn only_known_distribution_packages_are_elevated_and_the_user_is_an_argument() {
         assert!(linux_packages("ID=ubuntu\nID_LIKE=debian")
