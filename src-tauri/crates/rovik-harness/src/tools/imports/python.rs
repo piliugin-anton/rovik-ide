@@ -13,15 +13,22 @@ struct Environment {
     paths: Vec<PathBuf>,
     builtins: BTreeSet<String>,
     standard: BTreeSet<String>,
+    suffixes: Vec<String>,
 }
 
 struct Resolver {
     project: PathBuf,
     roots: Vec<PathBuf>,
     builtins: BTreeSet<String>,
+    suffixes: Vec<String>,
 }
 impl Resolver {
-    fn new(project: &Path, roots: Vec<PathBuf>, builtins: BTreeSet<String>) -> Result<Self> {
+    fn new(
+        project: &Path,
+        roots: Vec<PathBuf>,
+        builtins: BTreeSet<String>,
+        suffixes: Vec<String>,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
         require(project.is_dir(), "Python project is not a directory")?;
         let mut existing = vec![project.clone()];
@@ -39,11 +46,13 @@ impl Resolver {
             project,
             roots: existing,
             builtins,
+            suffixes,
         })
     }
     fn target(&self, path: &Path, name: &str) -> Result<Target> {
         let path = path.canonicalize()?;
         if let Ok(relative) = path.strip_prefix(&self.project) {
+            require(path.is_dir() || path.extension().is_some_and(|ext| ext == "py"), "local Python native extensions and bytecode need a separately registered architecture checker")?;
             return Ok(Target {
                 id: relative
                     .iter()
@@ -65,21 +74,13 @@ impl Resolver {
             external: true,
         })
     }
-    fn module_file(directory: &Path, part: &str) -> Result<Option<PathBuf>> {
-        let file = directory.join(format!("{part}.py"));
-        if file.is_file() {
-            return Ok(Some(file));
-        }
-        if directory.is_dir() {
-            for entry in std::fs::read_dir(directory)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with(&format!("{part}."))
-                    && name.ends_with(".so")
-                    && entry.file_type()?.is_file()
-                {
-                    return Ok(Some(entry.path()));
-                }
+    fn module_file(&self, directory: &Path, part: &str) -> Result<Option<PathBuf>> {
+        // Use the pinned interpreter's exact suffix priority. A native module
+        // wins over a Python sibling; arbitrary *.so names are not importable.
+        for suffix in &self.suffixes {
+            let path = directory.join(format!("{part}{suffix}"));
+            if path.is_file() {
+                return Ok(Some(path));
             }
         }
         Ok(None)
@@ -108,11 +109,11 @@ impl Resolver {
             let mut found = None;
             for root in &search {
                 let directory = root.join(part);
-                if let Some(init) = Self::module_file(&directory, "__init__")? {
+                if let Some(init) = self.module_file(&directory, "__init__")? {
                     found = Some((init, Some(directory)));
                     break;
                 }
-                if let Some(file) = Self::module_file(root, part)? {
+                if let Some(file) = self.module_file(root, part)? {
                     found = Some((file, None));
                     break;
                 }
@@ -184,7 +185,7 @@ pub(super) fn resolve(
     imports: &[Import],
 ) -> Result<Vec<Vec<Target>>> {
     use super::super::{args, checked, runtime};
-    let bytes = checked(&args(&[runtime::PYTHON, "-I", "-c", "import json,sys; print(json.dumps({'paths':sys.path,'builtins':list(sys.builtin_module_names),'standard':list(sys.stdlib_module_names)}))"]), Path::new("/build"))?;
+    let bytes = checked(&args(&[runtime::PYTHON, "-I", "-c", "import json,sys,importlib.machinery as m; print(json.dumps({'paths':sys.path,'builtins':list(sys.builtin_module_names),'standard':list(sys.stdlib_module_names),'suffixes':m.EXTENSION_SUFFIXES+m.SOURCE_SUFFIXES+m.BYTECODE_SUFFIXES}))"]), Path::new("/build"))?;
     let environment: Environment = crate::wire::decode(bytes.as_bytes())?;
     // Frozen/preloaded standard modules may win before pytest extends sys.path.
     // Refuse that ambiguity rather than claiming a project shadow is authoritative.
@@ -201,7 +202,12 @@ pub(super) fn resolve(
     }
     let mut roots = vec![PathBuf::from("/build/site")];
     roots.extend(environment.paths);
-    let resolver = Resolver::new(Path::new(runtime::PROJECT), roots, environment.builtins)?;
+    let resolver = Resolver::new(
+        Path::new(runtime::PROJECT),
+        roots,
+        environment.builtins,
+        environment.suffixes,
+    )?;
     imports
         .iter()
         .map(|import| resolver.resolve(import))
@@ -211,6 +217,64 @@ pub(super) fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_and_bytecode_modules_cannot_hide_behind_python_siblings() {
+        let directory = tempfile::tempdir().unwrap();
+        let resolver = Resolver::new(
+            directory.path(),
+            vec![],
+            BTreeSet::new(),
+            vec![
+                ".cpython-fixture.so".into(),
+                ".abi3.so".into(),
+                ".so".into(),
+                ".py".into(),
+                ".pyc".into(),
+            ],
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("module.py"), "").unwrap();
+        std::fs::write(directory.path().join("module.so"), "").unwrap();
+        assert!(resolver
+            .lookup("module")
+            .unwrap_err()
+            .message
+            .contains("native extensions"));
+        std::fs::remove_file(directory.path().join("module.so")).unwrap();
+        // An unrelated ABI suffix must not be guessed to be loadable.
+        std::fs::write(directory.path().join("module.wrong-abi.so"), "").unwrap();
+        assert_eq!(
+            resolver.lookup("module").unwrap().unwrap()[0].id,
+            "module.py"
+        );
+        std::fs::remove_file(directory.path().join("module.py")).unwrap();
+        std::fs::write(directory.path().join("module.pyc"), "").unwrap();
+        assert!(resolver
+            .lookup("module")
+            .unwrap_err()
+            .message
+            .contains("bytecode"));
+    }
+
+    #[test]
+    #[ignore = "requires the pinned native Python interpreter"]
+    fn python_module_precedence_matches_the_native_interpreter() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("module.py"), "").unwrap();
+        std::fs::write(directory.path().join("module.so"), "").unwrap();
+        let output = std::process::Command::new("python3").args(["-I", "-c", "import json,sys,importlib.machinery as m; print(json.dumps({'suffixes':m.EXTENSION_SUFFIXES+m.SOURCE_SUFFIXES+m.BYTECODE_SUFFIXES,'selected':m.PathFinder.find_spec('module',[sys.argv[1]]).origin}))"]).arg(directory.path()).output().unwrap();
+        assert!(output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let suffixes = serde_json::from_value(value["suffixes"].clone()).unwrap();
+        let resolver = Resolver::new(directory.path(), vec![], BTreeSet::new(), suffixes).unwrap();
+        assert_eq!(
+            resolver
+                .module_file(directory.path(), "module")
+                .unwrap()
+                .unwrap(),
+            PathBuf::from(value["selected"].as_str().unwrap())
+        );
+    }
     #[test]
     fn relative_imports_namespace_packages_and_initializers_are_all_dependencies() {
         let dir = tempfile::tempdir().unwrap();
@@ -225,7 +289,13 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "").unwrap();
         }
-        let resolver = Resolver::new(dir.path(), vec![], ["sys".into()].into()).unwrap();
+        let resolver = Resolver::new(
+            dir.path(),
+            vec![],
+            ["sys".into()].into(),
+            vec![".so".into(), ".py".into(), ".pyc".into()],
+        )
+        .unwrap();
         let import = Import {
             source: "pkg/domain.py".into(),
             module: ".helpers".into(),
@@ -273,6 +343,7 @@ mod tests {
             project.path(),
             vec![dependencies.path().into()],
             Default::default(),
+            vec![".so".into(), ".py".into(), ".pyc".into()],
         )
         .unwrap();
         let allowed = resolver.lookup("allowed").unwrap().unwrap();

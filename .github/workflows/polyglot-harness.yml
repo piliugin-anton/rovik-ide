@@ -88,6 +88,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -97,6 +100,9 @@ jobs:
         run: |
           cargo test --locked -p rovik-harness
           cargo clippy --locked -p rovik-harness --tests -- -D warnings
+      - name: Compare import analysis with Node and CPython
+        working-directory: src-tauri
+        run: cargo test --locked -p rovik-harness --lib tools::imports -- --ignored --test-threads=1
       - name: Prepare protected native toolchain outside verification
         run: |
           bash scripts/build-harness-tool.sh
