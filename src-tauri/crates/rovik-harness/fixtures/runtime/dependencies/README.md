@@ -7,6 +7,8 @@ harness controllers.
 
 - `fixture-identity-1.0.0.tgz`: npm package `fixture-identity` 1.0.0, ESM;
   `index.mjs` contains `export default function identity(value) { return value; }`.
+  Its declared `index.d.ts` exercises ambient type resolution from the protected
+  TypeScript config in runtime and architecture checks.
 - `fixture_identity-1.0.0-py3-none-any.whl`: Python wheel `fixture-identity`
   1.0.0; `fixture_identity/__init__.py` contains `def identity(value): return value`.
 

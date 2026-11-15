@@ -74,11 +74,7 @@ pub(super) fn configuration(input: &NativeInput) -> Result<(&Configuration, Stri
     let version = match profile.language {
         Language::Rust => {
             let version = execute(&["/usr/local/cargo/bin/rustc", "--version"])?;
-            require(
-                version.split_whitespace().nth(1)
-                    == Some(profile.facts["minimum_supported_rust_version"].as_str()),
-                "MSRV needs its own registered compiler",
-            )?;
+            profile.check_rust_compiler(version.split_whitespace().nth(1).unwrap_or_default())?;
             require(
                 execute(&[
                     "/usr/local/cargo/bin/rustup",
@@ -88,7 +84,10 @@ pub(super) fn configuration(input: &NativeInput) -> Result<(&Configuration, Stri
                 ])?
                 .lines()
                 .any(|v| v == config.target),
-                "target standard library missing",
+                format!(
+                    "Rust standard library for target {} is not installed in the verifier image",
+                    config.target
+                ),
             )?;
             require(
                 profile.facts["std_or_no_std"] == "std",
@@ -579,8 +578,15 @@ fn dispatch(request: &Request) -> Result<Value> {
             }
             let (config, compiler) = configuration(&input)?;
             if request.operation == Operation::Probe {
+                let unsupported = if input.profile.language == Language::Rust
+                    && !input.profile.verifies_rust_msrv()?
+                {
+                    vec!["MSRV compatibility is not verified: the selected compiler is newer than the declared minimum"]
+                } else {
+                    vec![]
+                };
                 return Ok(
-                    json!({"language":input.profile.language,"profile_resolution":"resolved","compiler":compiler,"configuration_digest":config.digest()?,"observed":{"compiler":compiler},"configured":input.profile.facts,"uncertain":[],"capabilities":["compile","protected-consumer",if input.profile.language==Language::Rust {"cargo-resolved-graph"}else{"configured-build-graph"}],"unsupported_obligations":[]}),
+                    json!({"language":input.profile.language,"profile_resolution":"resolved","compiler":compiler,"configuration_digest":config.digest()?,"observed":{"compiler":compiler},"configured":input.profile.facts,"uncertain":[],"capabilities":["compile","protected-consumer",if input.profile.language==Language::Rust {"cargo-resolved-graph"}else{"configured-build-graph"}],"unsupported_obligations":unsupported}),
                 );
             }
             let mut graph = if input.profile.language == Language::Rust {

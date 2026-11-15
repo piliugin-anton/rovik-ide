@@ -269,7 +269,7 @@ fn real_runtime_imports_enforce_layers_reexports_initializers_aliases_and_resolu
                 payload: serde_json::to_value(&input).unwrap(),
             };
             let request_text = format!("{}\n", serde_json::to_string(&request).unwrap());
-            let compiler = serde_json::json!({"compilerOptions":{"module":"NodeNext","target":"ES2022","types":[],"paths":{"@infra/*":["/build/project/infrastructure/*"]}},"files":[format!("/build/project/{domain_path}"),format!("/build/project/{shared_path}"),format!("/build/project/{infra_path}")]}).to_string();
+            let compiler = serde_json::json!({"compilerOptions":{"module":"NodeNext","target":"ES2022","types":["fixture-identity"],"paths":{"@infra/*":["/build/project/infrastructure/*"]}},"files":[format!("/build/project/{domain_path}"),format!("/build/project/{shared_path}"),format!("/build/project/{infra_path}")]}).to_string();
             let oracle = fixtures::snapshot(
                 &ledger,
                 "oracle",

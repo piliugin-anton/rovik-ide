@@ -263,6 +263,14 @@ fn every_native_profile_requires_pinned_assets_and_explicit_target_facts() {
             .iter()
             .map(|s| ((*s).into(), "explicit-fixture-value".into()))
             .collect();
+        if language == Language::Rust {
+            profile
+                .facts
+                .insert("minimum_supported_rust_version".into(), "1.85".into());
+            profile
+                .facts
+                .insert("execution_target".into(), "x86_64-unknown-linux-gnu".into());
+        }
         profile.configurations.push(Configuration {
             id: "default".into(),
             target: "x86_64-unknown-linux-gnu".into(),

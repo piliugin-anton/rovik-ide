@@ -144,6 +144,34 @@ pub struct Profile {
     pub public_consumer_commands: Vec<String>,
 }
 impl Profile {
+    /// Selected verification compiler; legacy profiles explicitly verify their MSRV.
+    pub fn rust_compiler_version(&self) -> &str {
+        self.facts
+            .get("rust_version")
+            .or_else(|| self.facts.get("minimum_supported_rust_version"))
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+
+    /// Check the observed compiler without treating a newer compiler as MSRV evidence.
+    pub fn check_rust_compiler(&self, observed: &str) -> Result<()> {
+        require(
+            rust_version(observed)? == rust_version(self.rust_compiler_version())?,
+            format!("Rust compiler mismatch: selected {}, installed {observed}; select the measured rust_version, keeping the manifest MSRV unchanged", self.rust_compiler_version()),
+        )
+    }
+
+    /// Whether this compiler can provide evidence for the declared minimum version.
+    pub fn verifies_rust_msrv(&self) -> Result<bool> {
+        Ok(rust_version(self.rust_compiler_version())?
+            == rust_version(
+                self.facts
+                    .get("minimum_supported_rust_version")
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+            )?)
+    }
+
     /// Templates, floating facts, incomplete matrices and unknown keys block execution.
     pub fn require_resolved(&self) -> Result<()> {
         require(self.schema_version == 1, "unsupported profile version")?;
@@ -170,9 +198,10 @@ impl Profile {
             )?;
         }
         require(
-            self.facts
-                .keys()
-                .all(|k| self.language.required_fields().contains(&k.as_str())),
+            self.facts.keys().all(|k| {
+                self.language.required_fields().contains(&k.as_str())
+                    || (self.language == Language::Rust && k == "rust_version")
+            }),
             "unknown profile fact",
         )?;
         require(
@@ -180,9 +209,22 @@ impl Profile {
             "profile has no configurations",
         )?;
         unique(self.configurations.iter().map(|c| c.id.as_str()))?;
+        if self.language == Language::Rust {
+            require(
+                rust_version(self.rust_compiler_version())?
+                    >= rust_version(&self.facts["minimum_supported_rust_version"])?,
+                "selected rust_version is older than the manifest minimum_supported_rust_version",
+            )?;
+        }
         for c in &self.configurations {
             id(&c.target)?;
             id(&c.runtime)?;
+            if self.language == Language::Rust {
+                require(
+                    c.target.split('-').count() >= 3 && c.target == self.facts["execution_target"],
+                    "Rust target must be a Rust target triple (for example x86_64-unknown-linux-gnu) matching execution_target; linux-x86_64 is only a JavaScript/TypeScript/Python runtime label",
+                )?;
+            }
             require(
                 !c.build_targets.is_empty(),
                 "configuration has no build targets",
@@ -192,4 +234,23 @@ impl Profile {
         }
         unique(self.public_consumer_commands.iter().map(String::as_str))
     }
+}
+
+fn rust_version(value: &str) -> Result<[u32; 3]> {
+    let parts = value.split('.').collect::<Vec<_>>();
+    require(
+        (2..=3).contains(&parts.len()),
+        "Rust versions must be explicit stable major.minor or major.minor.patch versions",
+    )?;
+    let mut result = [0; 3];
+    for (index, part) in parts.iter().enumerate() {
+        require(
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()),
+            "Rust versions must contain numeric stable version components",
+        )?;
+        result[index] = part
+            .parse()
+            .map_err(|_| crate::Error::new("Rust version component is out of range".into()))?;
+    }
+    Ok(result)
 }

@@ -170,7 +170,7 @@ pub(super) fn index(input: &NativeInput, operation: Operation) -> Result<Value> 
         std::fs::write("/build/resolve-imports.mjs", include_str!("resolve.mjs"))?;
         write_json(
             "/build/imports.json",
-            &json!({"imports":imports,"emitted":emitted,"typescript_project":input.typescript_project}),
+            &json!({"imports":imports,"emitted":emitted,"typescript_project":input.typescript_project.as_ref().map(|_| format!("{}/{}", runtime::PROJECT, runtime::TYPESCRIPT_CONFIG))}),
         )?;
         let bytes = checked_source(
             &args(&[

@@ -12,6 +12,7 @@ use crate::{
 /// Production profiles register their own locked workspace commands.
 pub fn rust_reference_command(profile: &Profile) -> Result<CommandDefinition> {
     profile.require_resolved()?;
+    profile.check_rust_compiler("1.85.1")?;
     require(
         profile.language == Language::Rust
             && profile.facts.get("edition").is_some_and(|s| s == "2021")

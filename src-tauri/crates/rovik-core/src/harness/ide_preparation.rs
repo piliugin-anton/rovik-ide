@@ -1429,6 +1429,9 @@ mod tests {
     #[test]
     fn complete_submission_guidance_matches_the_schema_and_refreshes_without_losing_drafts() {
         let (_directory, project, record, instructions) = guidance();
+        assert!(instructions.contains("set rust_version to the measured rust_version"));
+        assert!(instructions.contains("never the linux-x86_64 runtime label"));
+        assert!(instructions.contains(".rovik-verification.tsconfig.json"));
         let workspace = project.preparation_workspace(&record.id).unwrap();
         let example_path = workspace.join(DRAFTS).join("example.json");
         let example = fs::read_to_string(&example_path).unwrap();

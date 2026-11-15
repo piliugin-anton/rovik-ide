@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
 pub(super) const PROJECT: &str = "/build/project";
+pub(super) const TYPESCRIPT_CONFIG: &str = ".rovik-verification.tsconfig.json";
 pub(super) const NODE: &str = "/usr/local/bin/node";
 const NPM: &str = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
 const TSC: &str = "/usr/local/lib/node_modules/typescript/bin/tsc";
@@ -79,6 +80,24 @@ pub(crate) fn validate_node_lock(manifest: &Value, lock: &Value) -> Result<()> {
     Ok(())
 }
 
+fn stage_typescript_project(oracle: &Path, root: &Path) -> Result<std::path::PathBuf> {
+    let bytes = std::fs::read(oracle)?;
+    let config: Value = crate::wire::decode(&bytes)?;
+    require(
+        config.is_object() && config.get("extends").is_none() && config.get("references").is_none(),
+        "Use a self-contained protected TypeScript JSON project without extends or references",
+    )?;
+    // Resolve source paths and ambient packages from the prepared build root.
+    // Never overwrite candidate files or let them replace the approved config.
+    let path = root.join(TYPESCRIPT_CONFIG);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    std::io::Write::write_all(&mut file, &bytes)?;
+    Ok(path)
+}
+
 fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<()> {
     let root = Path::new(PROJECT);
     let manifest: Value = read(root.join("package.json"))?;
@@ -112,7 +131,8 @@ fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<
             !Path::new("/build/project/dist").exists(),
             "TypeScript output must be generated in a fresh directory",
         )?;
-        let project = format!("/oracle/{typescript_project}");
+        let project =
+            stage_typescript_project(&Path::new("/oracle").join(typescript_project), root)?;
         // These flags cannot be weakened by repository tsconfig files. The project
         // itself is an approved oracle asset, including its source selection.
         checked_source(
@@ -120,7 +140,7 @@ fn prepare_node(typescript_project: Option<&str>, source_root: &Path) -> Result<
                 NODE,
                 TSC,
                 "--project",
-                &project,
+                &project.to_string_lossy(),
                 "--strict",
                 "--noEmitOnError",
                 "--noCheck",
@@ -331,6 +351,83 @@ pub(super) fn check(input: &TestInput) -> Result<TestOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires ROVIK_TYPESCRIPT_COMPILER pointing to the pinned TypeScript CLI"]
+    fn real_typescript_resolves_ambient_packages_from_the_prepared_build_root() {
+        let compiler = std::env::var("ROVIK_TYPESCRIPT_COMPILER").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let oracle = dir.path().join("oracle/web/tsconfig.json");
+        std::fs::create_dir_all(oracle.parent().unwrap()).unwrap();
+        for package in ["@types/node", "vite"] {
+            std::fs::create_dir_all(root.join("node_modules").join(package)).unwrap();
+        }
+        std::fs::write(
+            root.join("node_modules/@types/node/index.d.ts"),
+            "declare const nodeType: string;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/vite/client.d.ts"),
+            "declare const viteType: string;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("main.ts"),
+            "export const value = nodeType + viteType;",
+        )
+        .unwrap();
+        let config = serde_json::json!({"compilerOptions":{"types":["vite/client","node"],"noEmit":true},"files":[root.join("main.ts")]});
+        std::fs::write(&oracle, serde_json::to_vec(&config).unwrap()).unwrap();
+        let compile = |path: &Path| {
+            std::process::Command::new("node")
+                .arg(&compiler)
+                .arg("--project")
+                .arg(path)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let before = compile(&oracle);
+        assert!(!before.status.success());
+        assert!(String::from_utf8_lossy(&before.stdout).contains("TS2688"));
+        let staged = stage_typescript_project(&oracle, &root).unwrap();
+        let after = compile(&staged);
+        assert!(
+            after.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&after.stdout),
+            String::from_utf8_lossy(&after.stderr)
+        );
+        std::fs::remove_file(root.join("node_modules/vite/client.d.ts")).unwrap();
+        assert!(
+            !compile(&staged).status.success(),
+            "missing declared types must still fail"
+        );
+    }
+
+    #[test]
+    fn protected_typescript_config_is_staged_beside_dependencies_without_overwriting_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let oracle = dir.path().join("oracle.json");
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let config = br#"{"compilerOptions":{"types":["vite/client","node"]},"include":["src"]}"#;
+        std::fs::write(&oracle, config).unwrap();
+        let path = stage_typescript_project(&oracle, &root).unwrap();
+        assert_eq!(path.parent(), Some(root.as_path()));
+        assert_eq!(std::fs::read(&path).unwrap(), config);
+        assert!(stage_typescript_project(&oracle, &root).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), config);
+        for config in [r#"{"extends":"./candidate.json"}"#, r#"{"references":[]}"#] {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&oracle, config).unwrap();
+            assert!(stage_typescript_project(&oracle, &root).is_err());
+            assert!(!path.exists());
+            std::fs::write(&path, "reserved").unwrap();
+        }
+    }
+
     #[test]
     fn python_locks_require_pinned_hashed_wheels_and_reject_options_and_urls() {
         validate_python_lock("").unwrap();

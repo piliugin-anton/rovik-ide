@@ -198,7 +198,7 @@ pub fn quota_runtime(
         ),
     ];
     if typescript {
-        oracle.push(("compiler.json", r#"{"compilerOptions":{"module":"NodeNext","target":"ES2022","types":[],"skipLibCheck":false},"files":["/build/project/implementations/quota/quota.ts"]}"#));
+        oracle.push(("compiler.json", r#"{"compilerOptions":{"module":"NodeNext","target":"ES2022","types":["fixture-identity"],"skipLibCheck":false},"files":["/build/project/implementations/quota/quota.ts"]}"#));
     }
     setup.oracle = fixtures::snapshot(ledger, "protected-runtime-oracle-v1", &oracle)?;
     setup.registry.commands = vec![command.clone()];

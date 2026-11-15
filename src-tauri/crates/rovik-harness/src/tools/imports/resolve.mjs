@@ -9,8 +9,9 @@ const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const root = '/build/project';
 const resolutions = new Map();
 if (input.typescript_project) {
-  const project = fs.realpathSync(`/oracle/${input.typescript_project}`);
-  if (!project.startsWith('/oracle/')) throw new Error('Compiler project escaped the oracle');
+  const project = fs.realpathSync(input.typescript_project);
+  if (project !== `${root}/.rovik-verification.tsconfig.json`)
+    throw new Error('Compiler project escaped its protected staging path');
   const config = JSON.parse(fs.readFileSync(project, 'utf8'));
   if (config.extends || config.references)
     throw new Error(

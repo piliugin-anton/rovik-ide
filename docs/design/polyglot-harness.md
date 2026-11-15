@@ -176,6 +176,18 @@ captures a new session when the earlier one is cancelled, stale or blocked. Norm
 chat retry/continuation also preserves the current preparation binding when valid.
 Failed verification trials are saved as failed tool results with their diagnostics,
 so the agent can repair the staged inputs and resubmit within the same session.
+Rust profiles preserve the manifest's `minimum_supported_rust_version` and may
+select a separate measured `rust_version` for verification. Without that optional
+fact, legacy profiles still require the MSRV compiler. A newer selected compiler
+does not establish MSRV compatibility; the probe reports that unsupported
+obligation. Rust configurations use target triples such as
+`x86_64-unknown-linux-gnu`, not the `linux-x86_64` JS/Python runtime label.
+Protected TypeScript configs are self-contained JSON without `extends` or
+`references`. The verifier stages them as `.rovik-verification.tsconfig.json`
+inside the prepared build root, beside its locked offline dependencies. Relative
+source/config paths are relative to that root. Compilation and architecture
+resolution use the same staged config; a candidate collision with the reserved
+filename is rejected rather than overwritten.
 Opening a chat with interrupted preparation tool calls restores its status and
 controls without starting a model request or replaying a submission. A current
 idle session shows **Preparation paused** and **Continue preparation**; cancelled

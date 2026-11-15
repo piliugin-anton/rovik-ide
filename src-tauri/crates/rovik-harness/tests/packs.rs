@@ -23,6 +23,44 @@ fn input(ledger: &Ledger) -> NativeInput {
         typescript_project: None,
     }
 }
+
+#[test]
+fn rust_compiler_selection_preserves_msrv_and_rejects_runtime_target_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
+    let mut profile = input(&ledger).profile;
+    profile.check_rust_compiler("1.85.1").unwrap();
+    assert!(profile.verifies_rust_msrv().unwrap());
+    assert!(profile.check_rust_compiler("1.99.1").is_err());
+    profile.facts.insert("rust_version".into(), "1.99.1".into());
+    profile.require_resolved().unwrap();
+    profile.check_rust_compiler("1.99.1").unwrap();
+    assert!(!profile.verifies_rust_msrv().unwrap());
+    assert_eq!(profile.facts["minimum_supported_rust_version"], "1.85.1");
+    for version in ["1.84.0", "stable", "1.99.1-nightly", "", "1.99.1.0"] {
+        profile.facts.insert("rust_version".into(), version.into());
+        assert!(profile.require_resolved().is_err(), "{version}");
+    }
+    profile.facts.insert("rust_version".into(), "1.99.1".into());
+    profile
+        .facts
+        .insert("minimum_supported_rust_version".into(), "1.85".into());
+    profile.require_resolved().unwrap();
+    profile.configurations[0].target = "linux-x86_64".into();
+    profile
+        .facts
+        .insert("execution_target".into(), "linux-x86_64".into());
+    assert!(profile
+        .require_resolved()
+        .unwrap_err()
+        .message
+        .contains("Rust target triple"));
+    profile.configurations[0].target = "x86_64-unknown-linux-gnu".into();
+    assert!(
+        profile.require_resolved().is_err(),
+        "execution_target must agree"
+    );
+}
 fn graph(input: &NativeInput) -> Graph {
     Graph {
         precision: Precision::CargoResolved,
@@ -189,6 +227,16 @@ fn configured_cargo_features_and_cmake_compile_graphs_observe_real_dependency_ed
         let mut files = vec![];
         let cmake=format!("cmake_minimum_required(VERSION 3.25)\nproject(graph LANGUAGES {})\noption(FORBIDDEN \"edge\" OFF)\nadd_executable(consumer src/main.{})\nif(FORBIDDEN)\n target_compile_definitions(consumer PRIVATE FORBIDDEN)\nendif()\nenable_testing()\nadd_test(NAME consumer-smoke COMMAND consumer)\n",if language==Language::C {"C"}else{"CXX"},if language==Language::C {"c"}else{"cpp"});
         if language == Language::Rust {
+            // The pinned fixture compiler can verify a project whose declared
+            // minimum is older, without pretending to have tested that minimum.
+            input
+                .profile
+                .facts
+                .insert("rust_version".into(), "1.85.1".into());
+            input
+                .profile
+                .facts
+                .insert("minimum_supported_rust_version".into(), "1.80".into());
             input.profile.configurations[0].flags.clear();
             input.profile.configurations[0].build_targets = vec!["domain".into()];
             files.extend([("Cargo.toml","[workspace]\nmembers=[\"domain\",\"io\"]\nresolver=\"2\"\n"),("Cargo.lock","version = 3\n[[package]]\nname = \"domain\"\nversion = \"0.1.0\"\ndependencies = [\"io\"]\n[[package]]\nname = \"io\"\nversion = \"0.1.0\"\n"),("domain/Cargo.toml","[package]\nname=\"domain\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[dependencies]\nio={path=\"../io\", optional=true}\n[features]\nexternal=[\"dep:io\"]\n"),("domain/src/lib.rs","pub fn value()->u32 { 1 }\n"),("io/Cargo.toml","[package]\nname=\"io\"\nversion=\"0.1.0\"\nedition=\"2021\"\n"),("io/src/lib.rs","pub fn value()->u32 { 2 }\n")]);
