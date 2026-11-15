@@ -26,18 +26,16 @@ impl Ledger {
         // under a short SQL transaction while still holding a shared lock.
         let publication = self.artifact_lock_file()?;
         publication.lock()?;
-        let tx = rusqlite::Transaction::new_unchecked(
-            &self.connection,
-            rusqlite::TransactionBehavior::Immediate,
-        )?;
+        // Publication owns all artifact registration. This exclusive lock keeps
+        // the registry stable without holding SQLite's writer during file IO.
         self.verify_artifacts()?;
-        let (count, bytes): (i64, i64) = tx.query_row(
+        let (count, bytes): (i64, i64) = self.connection.query_row(
             "SELECT COUNT(*),COALESCE(SUM(byte_count),0) FROM artifacts",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let registered = {
-            let mut statement = tx.prepare("SELECT digest FROM artifacts")?;
+            let mut statement = self.connection.prepare("SELECT digest FROM artifacts")?;
             let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
             rows.collect::<std::result::Result<BTreeSet<_>, _>>()?
         };
@@ -74,12 +72,36 @@ impl Ledger {
             #[cfg(unix)]
             fs::File::open(self.root.join("artifacts"))?.sync_all()?;
         }
-        tx.commit()?;
         Ok(RetentionReport {
             retained_registered: count as u64,
             retained_bytes: bytes as u64,
             orphan_digests: orphans,
             applied: apply,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn artifact_retention_does_not_need_the_sqlite_writer_while_scanning() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("state");
+        let ledger = Ledger::open(&root).unwrap();
+        ledger
+            .store("source", "text/plain", b"retained", 0)
+            .unwrap();
+        ledger
+            .connection
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+        let mut concurrent = rusqlite::Connection::open(root.join("ledger.sqlite3")).unwrap();
+        let transaction = concurrent
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let report = ledger.retention(86400, true).unwrap();
+        assert_eq!(report.retained_registered, 1);
+        transaction.rollback().unwrap();
     }
 }
