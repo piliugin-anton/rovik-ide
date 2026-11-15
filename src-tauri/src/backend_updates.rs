@@ -44,7 +44,7 @@ impl Installation {
         &self.executable
     }
 
-    async fn verify(&self) -> Result<&Path, String> {
+    async fn verify(&self) -> Result<(&Path, &str), String> {
         for (path, expected) in &self.images {
             let build = rovik_client::local_backend::control::executable_build(path)
                 .await
@@ -56,7 +56,13 @@ impl Installation {
                 );
             }
         }
-        Ok(&self.executable)
+        let build = self
+            .images
+            .iter()
+            .find(|(path, _)| path == &self.executable)
+            .map(|(_, build)| build.as_str())
+            .ok_or("The installed backend identity is missing")?;
+        Ok((&self.executable, build))
     }
 }
 
@@ -114,9 +120,12 @@ pub async fn desktop_backend_update_status(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    rovik_client::local_backend::control::update_status(installation.verify().await?, &data)
-        .await
-        .map_err(|error| error.to_string())
+    rovik_client::local_backend::control::update_status_for_build(
+        installation.verify().await?.1,
+        &data,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Replaces only the host identity approved by the notification and restores this window's project.
@@ -156,7 +165,7 @@ pub async fn desktop_restart_backend(
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
-    let executable = installation.verify().await?;
+    let (executable, _) = installation.verify().await?;
     #[cfg(unix)]
     {
         let mut command = crate::rovik_command()?;
@@ -232,7 +241,14 @@ mod tests {
                 Installation::capture_paths(executable.clone(), vec![executable.clone(), launcher])
                     .await
                     .unwrap();
-            assert_eq!(installation.verify().await.unwrap(), executable);
+            let (verified_path, verified_build) = installation.verify().await.unwrap();
+            assert_eq!(verified_path, executable);
+            assert_eq!(
+                verified_build,
+                rovik_client::local_backend::control::executable_build(&executable)
+                    .await
+                    .unwrap()
+            );
             std::fs::write(root.path().join(changed), "installed-b").unwrap();
             assert!(installation
                 .verify()

@@ -265,7 +265,22 @@ pub async fn update_status(
         return Ok(None);
     };
     let build = executable_build(executable).await?;
-    Ok(Some(BackendUpdateStatus {
+    status_for_host(host, build).map(Some)
+}
+
+/// Inspect using an executable fingerprint already verified by this window.
+pub async fn update_status_for_build(
+    build: &str,
+    data: &Path,
+) -> io::Result<Option<BackendUpdateStatus>> {
+    let Some(host) = inspect(&super::directory(data)).await? else {
+        return Ok(None);
+    };
+    status_for_host(host, build.to_owned()).map(Some)
+}
+
+fn status_for_host(host: Hello, build: String) -> io::Result<BackendUpdateStatus> {
+    Ok(BackendUpdateStatus {
         restart_required: can_replace(&host, env!("CARGO_PKG_VERSION"), PROTOCOL, &build)?,
         backend_boot: host.boot,
         backend_version: host.version,
@@ -274,7 +289,7 @@ pub async fn update_status(
         app_protocol: PROTOCOL,
         backend_build: host.build,
         app_build: build,
-    }))
+    })
 }
 
 /// Fingerprints a packaged executable off the async executor. Native windows can
