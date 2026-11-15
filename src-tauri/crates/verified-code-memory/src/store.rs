@@ -10,10 +10,10 @@ use crate::retrieval::{
 };
 use chrono::{DateTime, Utc};
 use rusqlite::types::Value;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MAX_RETRIEVAL_LIMIT: usize = 32;
@@ -27,6 +27,35 @@ const LEXICAL_POOL: usize = 80;
 
 /// How many distinct admissible file claims one query retains.
 const FILE_POOL: usize = 40;
+
+// Switching a new file to WAL can fail immediately during concurrent opens,
+// even with SQLite's busy timeout. Retry only that idempotent configuration.
+fn enable_wal(connection: &Connection) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        match connection.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+                    && started.elapsed() < Duration::from_secs(5) =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn check_schema_version(connection: &Connection) -> Result<()> {
+    let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema > SCHEMA_VERSION {
+        return Err(VcmError::UnsupportedSchema {
+            actual: schema,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    Ok(())
+}
 
 /// SQLite-backed memory store with FTS5 lexical retrieval.
 #[derive(Debug)]
@@ -52,27 +81,24 @@ impl MemoryStore {
         Self::initialize(Connection::open_in_memory()?)
     }
 
-    fn initialize(connection: Connection) -> Result<Self> {
-        let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema > SCHEMA_VERSION {
-            return Err(VcmError::UnsupportedSchema {
-                actual: schema,
-                supported: SCHEMA_VERSION,
-            });
-        }
+    fn initialize(mut connection: Connection) -> Result<Self> {
+        connection.busy_timeout(Duration::from_secs(5))?;
+        check_schema_version(&connection)?;
+        enable_wal(&connection)?;
+        connection.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
+        // Acquire the writer before reading migration state. A deferred
+        // transaction cannot wait when upgrading an existing read snapshot
+        // while another desktop/daemon connection is writing.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_schema_version(&transaction)?;
         // The records and the file index first, the full-text index after the
         // columns are settled: FTS5 keeps an external-content index in step
         // with the table through these triggers, and a trigger that fires
         // against an index which never had the row is what SQLite reports as
         // `SQLITE_CORRUPT_VTAB`. So an older file is brought up to date before
         // anything can fire (see `rebuild_full_text`).
-        connection.execute_batch(
+        transaction.execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA foreign_keys = ON;
-            PRAGMA busy_timeout = 5000;
-
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -134,18 +160,19 @@ impl MemoryStore {
             "#,
         )?;
 
-        add_missing_columns(&connection)?;
+        add_missing_columns(&transaction)?;
         // After the columns: an older file gains `identity` there, and an index
         // over a column that isn't there yet is an error, not a no-op.
-        connection.execute(
+        transaction.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_identity ON memories(repo, identity)",
             [],
         )?;
-        backfill_claim_hashes(&connection)?;
-        backfill_files(&connection)?;
-        create_full_text(&connection)?;
-        rebuild_full_text(&connection)?;
-        crate::sync::initialize(&connection)?;
+        backfill_claim_hashes(&transaction)?;
+        backfill_files(&transaction)?;
+        create_full_text(&transaction)?;
+        rebuild_full_text(&transaction)?;
+        crate::sync::initialize(&transaction)?;
+        transaction.commit()?;
 
         Ok(Self {
             connection,

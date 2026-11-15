@@ -4,7 +4,7 @@
 //! host paths are never transported.
 
 use crate::{claim_hash, MemoryRecord, MemoryStore, Result, SharedMemoryStore, VcmError};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -66,8 +66,7 @@ pub struct Progress {
     pub received: i64,
 }
 
-pub(crate) fn initialize(c: &Connection) -> Result<()> {
-    let transaction = c.unchecked_transaction()?;
+pub(crate) fn initialize(c: &rusqlite::Transaction<'_>) -> Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS memory_sync_clock (
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1), replica TEXT NOT NULL,
@@ -158,7 +157,6 @@ pub(crate) fn initialize(c: &Connection) -> Result<()> {
     // Publish the replication schema and its version atomically. Old binaries
     // must not reopen this store and clear it without advancing its epoch.
     c.pragma_update(None, "user_version", crate::store::SCHEMA_VERSION)?;
-    transaction.commit()?;
     Ok(())
 }
 
