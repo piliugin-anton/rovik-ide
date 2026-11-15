@@ -97,18 +97,24 @@ pub async fn check(executable: &Path) {
     window.close().await.unwrap();
     drop(other);
     drop(client);
+    let mut last_reply = None;
+    let mut attempts = 0;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let reply = upgrade(&dir, &ready.boot).await;
+            attempts += 1;
             if matches!(reply, Reply::Retiring) {
                 break;
             }
             assert!(matches!(reply, Reply::Busy(_)), "{reply:?}");
+            last_reply = Some(reply);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|error| {
+        panic!("Backend did not retire after {attempts} upgrade replies: {error}; last reply: {last_reply:?}")
+    });
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(status) = daemon.0.try_wait().unwrap() {
