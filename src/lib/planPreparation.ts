@@ -71,6 +71,11 @@ export function closePreparationReply(dialogId: string, preparationId: string): 
   localStorage.setItem(`rovik.preparation.closed.${dialogId}`, preparationId);
 }
 
+/** Whether this exact preparation was explicitly closed, including before a restart. */
+export function preparationReplyClosed(dialogId: string, preparationId: string): boolean {
+  return localStorage.getItem(`rovik.preparation.closed.${dialogId}`) === preparationId;
+}
+
 /** Explicitly resuming the same preparation reverses its previous UI exit. */
 export function reopenPreparationReply(dialogId: string, preparationId: string): void {
   const key = `rovik.preparation.closed.${dialogId}`;
@@ -95,11 +100,7 @@ export async function restorePreparationReply(
     throw new Error(
       'The chat or project changed while restoring preparation. Send again in the intended chat.'
     );
-  if (
-    !previous ||
-    localStorage.getItem(`rovik.preparation.closed.${target.dialogId}`) === previous.preparationId
-  )
-    return;
+  if (!previous || preparationReplyClosed(target.dialogId, previous.preparationId)) return;
   const preparation = await status(previous.preparationId);
   if (!current())
     throw new Error(

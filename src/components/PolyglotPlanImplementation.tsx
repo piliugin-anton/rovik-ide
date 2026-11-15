@@ -49,6 +49,7 @@ export default function PolyglotPlanImplementation(props: {
   const [plan, setPlan] = createSignal<HarnessPlan>();
   const [preparedSnapshot, setPreparedSnapshot] = createSignal<string>();
   const [restart, setRestart] = createSignal(false);
+  const preparationId = () => (restart() ? undefined : props.preparationId);
   const [run, setRun] = createSignal<HarnessRun>();
   const [approval, setApproval] = createSignal<HarnessApproval>();
   const [review, setReview] = createSignal<HarnessChangeReview>();
@@ -186,7 +187,7 @@ export default function PolyglotPlanImplementation(props: {
         <PlanPreparationCard
           target={props.target}
           planPath={props.planPath ?? ''}
-          preparationId={restart() ? undefined : props.preparationId}
+          preparationId={preparationId()}
           retry={props.retryPreparation}
           profile={props.profile}
           unsavedFiles={props.unsavedFiles}

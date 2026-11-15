@@ -29,6 +29,8 @@ async function page(
     runningImplementation?: boolean;
     deferHistory?: boolean;
     skipRetry?: boolean;
+    interrupted?: boolean;
+    closedPreparation?: boolean;
   } = {}
 ) {
   localStorage.clear();
@@ -36,12 +38,14 @@ async function page(
   const invoke = (window as any).__TAURI_INTERNALS__.invoke;
   const calls: { command: string; args: any }[] = [];
   const dialog = {
-    id: `retry-${status ?? 'ordinary'}`,
+    id: `${options.interrupted ? 'interrupted' : 'retry'}-${status ?? 'ordinary'}${options.closedPreparation ? '-closed' : ''}`,
     title: 'Plan',
     createdAt: 1,
     updatedAt: 2,
     messageCount: 2,
   };
+  if (options.closedPreparation)
+    localStorage.setItem(`rovik.preparation.closed.${dialog.id}`, 'preparation-1');
   const request: MessageRow = {
     id: 'request',
     dialogId: dialog.id,
@@ -70,7 +74,23 @@ async function page(
     error: 'Interrupted preparation',
     meta: { failure: { kind: 'network', message: 'Disconnected', attempts: 1 } },
   };
-  const messages = [request, failure];
+  const interruptedCall = (id: string, seq: number): MessageRow => ({
+    ...failure,
+    id,
+    seq,
+    error: null,
+    meta: null,
+    toolCalls: [
+      {
+        id,
+        name: 'prepare_verified_plan',
+        arguments: '{"input_path":".rovik-preparation/submission.json"}',
+      },
+    ],
+  });
+  const messages = options.interrupted
+    ? [request, interruptedCall('old-call', 2), interruptedCall('latest-call', 3)]
+    : [request, failure];
   let finishHistory: (() => void) | undefined;
   (window as any).__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
     calls.push({ command, args });
@@ -141,10 +161,13 @@ async function page(
   const retry = [...root.querySelectorAll('button')].find(
     (button) => button.textContent?.trim() === 'Retry'
   );
-  assert.ok(retry, root.textContent ?? 'Retry is visible');
-  assert.equal(calls.filter((call) => call.command === 'agent_start').length, 0);
+  if (!options.interrupted) assert.ok(retry, root.textContent ?? 'Retry is visible');
+  assert.equal(
+    calls.filter((call) => call.command === 'agent_start').length,
+    options.interrupted && !status ? 1 : 0
+  );
   if (!options.skipRetry) {
-    retry.click();
+    retry!.click();
     await flush();
   }
   return {
@@ -163,6 +186,53 @@ async function page(
       calls.filter((call) => call.command === 'polyglot_harness').map((call) => call.args.request),
   };
 }
+
+for (const status of ['preparing', 'blocked', 'cancelled', 'stale', 'ready'] as const) {
+  test(`opening interrupted ${status} preparation restores its controls without replaying tool calls`, async () => {
+    const result = await page(status, {
+      interrupted: true,
+      skipRetry: true,
+      paginated: status === 'blocked',
+    });
+    assert.deepEqual(result.starts(), []);
+    assert.deepEqual(
+      result.operations().map((operation) => operation.action),
+      ['preparationStatus']
+    );
+    assert.ok(result.root.querySelector('[aria-label="Plan preparation"]'));
+    assert.equal(result.root.querySelectorAll('.tool-call-spinner').length, 0);
+    if (status === 'preparing') {
+      assert.match(result.root.textContent!, /Preparation paused/);
+      const button = [...result.root.querySelectorAll('button')].find(
+        (button) => button.textContent?.trim() === 'Continue preparation'
+      );
+      assert.ok(button);
+      button.click();
+      await flush();
+      assert.equal(result.starts().length, 1);
+      assert.equal(result.starts()[0].start.message.meta.verifiedPreparation, 'preparation-1');
+    }
+  });
+}
+
+test('opening interrupted ordinary work still offers its pending calls through resume', async () => {
+  const result = await page(undefined, { interrupted: true, skipRetry: true });
+  assert.equal(result.starts().length, 1);
+  assert.equal(result.starts()[0].start.kind, 'resume');
+  assert.deepEqual(result.operations(), []);
+});
+
+test('opening an explicitly closed preparation neither reopens its card nor replays its tools', async () => {
+  const result = await page('preparing', {
+    interrupted: true,
+    skipRetry: true,
+    closedPreparation: true,
+  });
+  assert.deepEqual(result.starts(), []);
+  assert.deepEqual(result.operations(), []);
+  assert.equal(result.root.querySelector('[aria-label="Plan preparation"]'), null);
+  assert.equal(result.root.querySelectorAll('.tool-call-spinner').length, 0);
+});
 
 for (const status of ['cancelled', 'stale'] as const) {
   test(`chat Retry replaces a ${status} preparation with a fresh session before starting the agent`, async () => {

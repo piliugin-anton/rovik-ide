@@ -256,6 +256,16 @@ export default function MessageList(props: {
   const resultOf = (tc: ChatToolCall) => toolIndex().results.get(tc);
   /** Live progress (keyed by call id) is the newest call's with that id. */
   const newestOfId = (tc: ChatToolCall) => toolIndex().latest.get(tc.id) === tc;
+  const liveToolCalls = createMemo(() => {
+    if (!props.sending || props.starting || props.chat?.hasNewer) return new Set<ChatToolCall>();
+    const latest = [...messages()].reverse().find((message) => message.role !== 'tool');
+    return new Set(
+      latest?.role === 'assistant' && !latest.error && !latest.meta?.interrupted
+        ? (latest.toolCalls ?? [])
+        : []
+    );
+  });
+  const isCallRunning = (call: ChatToolCall) => liveToolCalls().has(call);
 
   const runningPlanReview: ReviewMeta = {
     kind: 'plan',
@@ -383,7 +393,7 @@ export default function MessageList(props: {
       toolCall={tc}
       result={resultOf(tc)}
       notLive={!newestOfId(tc)}
-      running={props.sending}
+      running={isCallRunning(tc)}
       note={props.toolNotes?.[tc.id]}
       superseded={todoCallStates().superseded.has(tc.id)}
       interrupted={tc.id === todoCallStates().latest && todoCallStates().interruptedLatest}
@@ -1791,6 +1801,7 @@ export default function MessageList(props: {
                               dialogId={props.dialogId}
                               result={resultOf}
                               running={props.sending}
+                              isCallRunning={isCallRunning}
                               superseded={run()!.calls.every((c) =>
                                 todoCallStates().superseded.has(c.id)
                               )}

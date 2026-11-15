@@ -108,6 +108,7 @@ import {
   closePreparationReply,
   reopenPreparationReply,
   preparationToRetry,
+  preparationReplyClosed,
   type PlanPreparation,
 } from '../lib/planPreparation';
 import AutopilotStrip from './AutopilotStrip';
@@ -3856,13 +3857,24 @@ export default function ChatPanel(props: ChatProps) {
     const dialogId = activeDialogId();
     const chat = activeChat();
     // Wait until the newest messages are loaded and nothing is running.
-    if (!dialogId || !chat || chat.hasNewer || sending() || !activeProfile()) return;
+    if (
+      loadingHistory() ||
+      !draftsJudged() ||
+      !dialogId ||
+      !chat ||
+      chat.hasNewer ||
+      sending() ||
+      !activeProfile()
+    )
+      return;
     if (resumed.has(dialogId)) return;
     // A remote chat's daemon picks its run up itself (K07). The task as
     // stored: the page held may show none of its records.
     if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place, taskStages())) return;
     resumed.add(dialogId);
-    untrack(() => void beginRun(dialogId, { kind: 'resume' }, lastUserWireContent(dialogId)));
+    // Preparation may have expired, finished, or been cancelled while closed.
+    // Restore its controls first; reopening a chat must not replay a submission.
+    untrack(() => void recoverLastTurn('resume', false));
   });
 
   /** Stop: the run ends as soon as it can; what it waits on is answered "no". */
@@ -3904,6 +3916,11 @@ export default function ChatPanel(props: ChatProps) {
   });
   /** Retry after a failed turn (the user's message was delivered earlier). */
   async function retryLastTurn() {
+    await recoverLastTurn('retry', true);
+  }
+
+  /** Startup restores preparation for inspection; only an explicit Retry launches it. */
+  async function recoverLastTurn(kind: 'retry' | 'resume', retryPreparation: boolean) {
     const dialogId = activeDialogId();
     if (!dialogId || sending() || retryingLastTurn) return;
     const root = props.rootPath();
@@ -3926,6 +3943,8 @@ export default function ChatPanel(props: ChatProps) {
       const preparation = await preparationToRetry(dialogId);
       if (!current()) return;
       if (preparation) {
+        if (!retryPreparation && preparationReplyClosed(dialogId, preparation.preparationId))
+          return;
         if (strictActive()) return;
         if (
           !root ||
@@ -3944,14 +3963,19 @@ export default function ChatPanel(props: ChatProps) {
           profile,
           path: preparation.planPath,
           preparationId: preparation.preparationId,
-          retryPreparation: true,
+          retryPreparation,
         });
       } else {
-        await beginRun(dialogId, { kind: 'retry' }, lastUserWireContent(dialogId));
+        await beginRun(dialogId, { kind }, lastUserWireContent(dialogId));
       }
     } catch (cause) {
       if (current())
-        notify({ kind: 'error', title: 'Could not retry this request', message: String(cause) });
+        notify({
+          kind: 'error',
+          title:
+            kind === 'retry' ? 'Could not retry this request' : 'Could not restore this request',
+          message: String(cause),
+        });
     } finally {
       retryingLastTurn = false;
     }

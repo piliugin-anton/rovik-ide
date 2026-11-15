@@ -235,7 +235,9 @@ export default function PlanPreparationCard(props: {
                 ? 'Preparation needs updating'
                 : problem() || providerProblem() || error() || status() === 'blocked'
                   ? 'Preparation needs attention'
-                  : 'Preparing your plan'}
+                  : status() === 'preparing' && !busy() && !launching() && !props.agentRunning
+                    ? 'Preparation paused'
+                    : 'Preparing your plan'}
         </strong>
         <button
           type="button"

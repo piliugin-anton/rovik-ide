@@ -174,6 +174,11 @@ promotion does not reset that spending. **Stop preparation** cancels active work
 **Continue preparation** resumes a still-current session, and **Prepare again**
 captures a new session when the earlier one is cancelled, stale or blocked. Normal
 chat retry/continuation also preserves the current preparation binding when valid.
+Opening a chat with interrupted preparation tool calls restores its status and
+controls without starting a model request or replaying a submission. A current
+idle session shows **Preparation paused** and **Continue preparation**; cancelled
+or stale sessions offer **Prepare again**, and completed preparations open for
+review. Historical unanswered calls do not inherit a later tool step's spinner.
 After reopening a chat, its first ordinary follow-up restores the latest durable
 active preparation before dispatch, preserving the user's message and private
 workspace routing. A recovery failure blocks dispatch rather than silently using
