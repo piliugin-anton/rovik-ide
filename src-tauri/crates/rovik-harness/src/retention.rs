@@ -71,6 +71,7 @@ impl Ledger {
             for digest in &orphans {
                 fs::remove_file(self.root.join("artifacts").join(digest.hex()))?;
             }
+            #[cfg(unix)]
             fs::File::open(self.root.join("artifacts"))?.sync_all()?;
         }
         tx.commit()?;

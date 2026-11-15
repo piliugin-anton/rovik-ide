@@ -668,7 +668,9 @@ mod tests {
             .artifacts
             .put("source", "text/plain", b"reused source")
             .unwrap();
-        std::fs::File::open(root.join("artifacts").join(orphan.digest.hex()))
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("artifacts").join(orphan.digest.hex()))
             .unwrap()
             .set_modified(std::time::SystemTime::now() - Duration::from_secs(172800))
             .unwrap();
