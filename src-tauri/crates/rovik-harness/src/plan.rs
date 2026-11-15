@@ -16,6 +16,18 @@ pub enum Phase {
     Final,
 }
 
+impl Phase {
+    /// A dependency must run no later than its dependent; final evidence stays clean.
+    pub(crate) fn accepts_dependency(self, parent: Self) -> bool {
+        matches!(
+            (self, parent),
+            (Self::Fast, Self::Fast)
+                | (Self::Risk, Self::Fast | Self::Risk)
+                | (Self::Final, Self::Final)
+        )
+    }
+}
+
 /// The registry, not the worker, determines whether case inventory is required.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -297,8 +309,8 @@ impl CheckPlan {
                         "required check depends on advisory work",
                     )?;
                     require(
-                        check.phase != Phase::Final || parent.phase == Phase::Final,
-                        "final check depends on non-final build outputs",
+                        check.phase.accepts_dependency(parent.phase),
+                        "check dependency violates phase order or final isolation",
                     )?;
                 }
                 if check

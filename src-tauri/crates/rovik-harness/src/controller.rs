@@ -752,6 +752,12 @@ impl Controller {
                     || attempts.len() > setup.worker.infrastructure_retries_per_check as usize
                     || cancel.is_cancelled()
                 {
+                    self.recover_completed_attempts(
+                        &setup.run_id,
+                        &input.digest,
+                        &attempts,
+                        &result,
+                    )?;
                     return Ok(result);
                 }
             } else {
@@ -814,21 +820,7 @@ impl Controller {
             "verification budget exhausted",
         )?;
         if result.status == Status::Pass {
-            for attempt in attempts {
-                if let Some(previous) = self.ledger.completed_check(
-                    &setup.run_id,
-                    &attempt.operation_key,
-                    &input.digest,
-                )? {
-                    if previous.infrastructure_retryable() {
-                        self.ledger.record_infrastructure_recovery(
-                            &previous,
-                            &result,
-                            runner::now_ms()?,
-                        )?;
-                    }
-                }
-            }
+            self.recover_completed_attempts(&setup.run_id, &input.digest, &attempts, &result)?;
         } else if result.infrastructure_retryable()
             && attempts.len() < setup.worker.infrastructure_retries_per_check as usize
             && !cancel.is_cancelled()
@@ -837,6 +829,35 @@ impl Controller {
         }
         Ok(result)
     }
+    // Completion and each recovery link are durable independently. Replaying this
+    // on cache hits closes process-loss windows, including partial multi-link writes.
+    fn recover_completed_attempts(
+        &self,
+        run_id: &str,
+        input: &Digest,
+        attempts: &[&crate::operations::Operation],
+        result: &evidence::CheckResult,
+    ) -> Result<()> {
+        if result.status != Status::Pass {
+            return Ok(());
+        }
+        for attempt in attempts {
+            if let Some(previous) =
+                self.ledger
+                    .completed_check(run_id, &attempt.operation_key, input)?
+            {
+                if previous.infrastructure_retryable() {
+                    self.ledger.record_infrastructure_recovery(
+                        &previous,
+                        result,
+                        runner::now_ms()?,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn context(
         &self,
         setup: &TaskSetup,
@@ -1606,7 +1627,7 @@ impl Controller {
                         .plan
                         .checks
                         .iter()
-                        .filter(|s| s.phase != phase)
+                        .filter(|s| s.phase != phase && phase.accepts_dependency(s.phase))
                         .map(|s| (s.check_id.clone(), s.configuration_digest.clone()))
                         .collect();
                     while !pending.is_empty() {

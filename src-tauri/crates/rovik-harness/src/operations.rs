@@ -83,10 +83,17 @@ impl Ledger {
             "infrastructure recovery lacks authenticated receipts",
         )?;
         self.connection.execute(
-            "INSERT INTO infrastructure_recoveries VALUES(?1,?2,?3)",
+            "INSERT INTO infrastructure_recoveries VALUES(?1,?2,?3) ON CONFLICT(previous_result_id) DO NOTHING",
             params![previous.result_id, replacement.result_id, integer(now)?],
         )?;
-        Ok(())
+        let recorded: String = self.connection.query_row(
+            "SELECT replacement_result_id FROM infrastructure_recoveries WHERE previous_result_id=?1",
+            [&previous.result_id], |row| row.get(0),
+        )?;
+        require(
+            recorded == replacement.result_id,
+            "infrastructure recovery already names a different result",
+        )
     }
 
     /// Explicit links from incomplete infrastructure observations to exact successful retries.

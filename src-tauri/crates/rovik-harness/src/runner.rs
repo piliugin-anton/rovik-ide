@@ -1115,8 +1115,13 @@ mod recovery_tests {
         }
     }
 
-    #[test]
-    fn infrastructure_recovery_requires_authentic_same_binding_results_and_keeps_failures() {
+    fn completed_attempts() -> (
+        tempfile::TempDir,
+        Controller,
+        crate::controller::TaskSetup,
+        EvidenceKey,
+        Vec<CheckResult>,
+    ) {
         let directory = tempfile::tempdir().unwrap();
         let mut controller = Controller {
             ledger: Ledger::open(&directory.path().join("state")).unwrap(),
@@ -1180,7 +1185,15 @@ mod recovery_tests {
                 .ledger
                 .claim(
                     &setup.run_id,
-                    &format!("attempt-{index}"),
+                    &if index == 0 {
+                        Digest::of_json(&("check", &input.digest))
+                            .unwrap()
+                            .to_string()
+                    } else if index == 1 {
+                        format!("{}:1", Digest::of_json(&("check", &input.digest)).unwrap())
+                    } else {
+                        "independent-behavioral-failure".into()
+                    },
                     "check",
                     &input.digest,
                     "test-controller",
@@ -1232,6 +1245,53 @@ mod recovery_tests {
                 .unwrap();
             results.push(result);
         }
+        (directory, controller, setup, key, results)
+    }
+
+    #[test]
+    fn cached_success_reconstructs_recovery_links_after_process_loss_without_rerunning_checks() {
+        let (directory, mut controller, setup, key, results) = completed_attempts();
+        assert!(controller
+            .ledger
+            .infrastructure_recoveries(&setup.run_id)
+            .unwrap()
+            .is_empty());
+        let budget = controller.ledger.budgets(&setup.run_id).unwrap();
+        // Reopen durable state at the crash window: both attempts settled but
+        // the controller had not written the automatic recovery link yet.
+        controller.ledger = Ledger::open(&directory.path().join("state")).unwrap();
+        for _ in 0..2 {
+            let result = controller
+                .check(
+                    &setup,
+                    &setup.base,
+                    &key,
+                    &setup.plan.checks[0],
+                    "check",
+                    &Cancellation::default(),
+                )
+                .unwrap();
+            assert_eq!(result.result_id, results[1].result_id);
+            assert_eq!(
+                controller
+                    .ledger
+                    .infrastructure_recoveries(&setup.run_id)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(controller.ledger.budgets(&setup.run_id).unwrap(), budget);
+            assert_eq!(
+                controller.resolved_failures(&setup, &results).unwrap(),
+                [results[0].result_id.clone()].into()
+            );
+        }
+    }
+
+    #[test]
+    fn infrastructure_recovery_requires_authentic_same_binding_results_and_keeps_failures() {
+        let (_directory, controller, setup, _key, results) = completed_attempts();
+        let now = now_ms().unwrap();
         controller
             .ledger
             .record_infrastructure_recovery(&results[0], &results[1], now)

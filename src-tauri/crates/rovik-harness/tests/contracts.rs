@@ -347,3 +347,37 @@ fn configuration_case_mapping_requires_a_complete_nonempty_matrix_and_exact_case
         assert!(invalid.validate(&registry).is_err(), "{mutation}");
     }
 }
+
+#[test]
+fn externally_registered_plans_reject_dependencies_on_future_phases() {
+    let directory = tempfile::tempdir().unwrap();
+    let ledger = rovik_harness::ledger::Ledger::open(&directory.path().join("state")).unwrap();
+    let setup = rovik_harness::fixtures::quota_rust(
+        &ledger,
+        "phase-admission",
+        Digest::of(b"image"),
+        "base",
+    )
+    .unwrap();
+    for phase in [Phase::Fast, Phase::Risk] {
+        let mut invalid = setup.clone();
+        let mut dependent = invalid.plan.checks[0].clone();
+        dependent.check_id = "early-dependent".into();
+        dependent.phase = phase;
+        dependent.dependencies = vec![invalid.plan.checks[0].check_id.clone()];
+        invalid.plan.checks.push(dependent);
+        let error = invalid.validate(&ledger).unwrap_err();
+        assert!(error.message.contains("phase order"), "{error}");
+    }
+    let mut valid = setup;
+    let mut fast = valid.plan.checks[0].clone();
+    fast.check_id = "early-prerequisite".into();
+    fast.phase = Phase::Fast;
+    fast.dependencies.clear();
+    let mut risk = fast.clone();
+    risk.check_id = "later-dependent".into();
+    risk.phase = Phase::Risk;
+    risk.dependencies = vec![fast.check_id.clone()];
+    valid.plan.checks.extend([risk, fast]);
+    valid.validate(&ledger).unwrap();
+}
