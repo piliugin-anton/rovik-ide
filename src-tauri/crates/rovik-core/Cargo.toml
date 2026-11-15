@@ -16,6 +16,7 @@ rovik-harness = { workspace = true, features = ["preparation"] }
 verified-code-memory.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ts-rs.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
 bytes = "1.12.1"

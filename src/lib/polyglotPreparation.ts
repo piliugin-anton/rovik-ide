@@ -1,112 +1,18 @@
-/** Values are suggested only; the execution host validates all pins and protected inputs. */
-export type HarnessLanguage = 'rust' | 'c' | 'cpp' | 'javascript' | 'typescript' | 'python';
-export interface HarnessConfiguration {
-  id: string;
-  target: string;
-  features: string[];
-  default_features: boolean;
-  build_targets: string[];
-  flags: string[];
-  runtime: string;
-}
-export interface WorkspaceProfileInput {
-  id: string;
-  manifest: string;
-  language: HarnessLanguage;
-  facts: Record<string, string>;
-  configurations: HarnessConfiguration[];
-  protectedTestPaths: string[];
-  typescriptProject?: string;
-}
-export interface WorkspaceSetupInput {
-  name: string;
-  intent: string;
-  boundedContext: string;
-  writePaths: string[];
-  protectedPaths: string[];
-  profiles: WorkspaceProfileInput[];
-  requirements: {
-    id: string;
-    statement: string;
-    owner: string;
-    casesByConfiguration: Record<string, string[]>;
-  }[];
-  design: {
-    components: Record<string, string>;
-    existingCode: { file: string; symbol: string; rationale: string }[];
-    publicApiChanges: string[];
-    resourceContracts: string[];
-    errorContracts: string[];
-    concurrencyContract: string;
-    mechanismPressure: string;
-    mechanismAlternatives: string[];
-    mechanismCost: string;
-  };
-  environment: {
-    imageDigest: string;
-    engine: 'docker' | 'podman';
-    toolchainManifestPath: string;
-    dependencyDirectory: string;
-  };
-  negativeControlRevision: string;
-  negativeControlCases: string[];
-  baselineFailures: {
-    profileId: string;
-    configurationId: string;
-    caseIds: string[];
-    rationale: string;
-  }[];
-  worker: {
-    model_id: string;
-    context_bytes: number;
-    output_tokens: number;
-    timeout_ms: number;
-    token_reservation: number;
-    cost_reservation: number;
-    format_repairs: number;
-    infrastructure_retries_per_check: number;
-  };
-  budgets: Record<string, number>;
-  durationMs: number;
-}
-export const PROFILE_FACTS: Record<HarnessLanguage, readonly string[]> = {
-  rust: [
-    'edition',
-    'minimum_supported_rust_version',
-    'execution_target',
-    'std_or_no_std',
-    'allocation_policy',
-    'panic_policy',
-    'unsafe_scope',
-  ],
-  c: [
-    'language_standard',
-    'target_abi',
-    'hosted_or_freestanding',
-    'allocation_policy',
-    'threading_and_interrupt_policy',
-  ],
-  cpp: [
-    'standard_library_lock',
-    'language_standard',
-    'target_abi',
-    'exceptions_policy',
-    'rtti_policy',
-    'allocation_policy',
-    'abi_compatibility_policy',
-    'threading_model',
-  ],
-  javascript: ['node_version', 'npm_version', 'module_system', 'test_runner', 'dependency_policy'],
-  typescript: [
-    'node_version',
-    'npm_version',
-    'typescript_version',
-    'module_system',
-    'test_runner',
-    'dependency_policy',
-  ],
-  python: ['python_version', 'pytest_version', 'test_runner', 'dependency_policy', 'import_policy'],
-};
+/** Wire types and language facts are generated from the Rust preparation contract. */
+import {
+  PROFILE_FACTS,
+  type Language as HarnessLanguage,
+  type WorkspaceProfileInput,
+  type WorkspaceSetupInput,
+} from './generated/preparation';
+export { PROFILE_FACTS };
+export type {
+  Language as HarnessLanguage,
+  Configuration as HarnessConfiguration,
+  WorkspaceProfileInput,
+  WorkspaceSetupInput,
+} from './generated/preparation';
+
 export function lines(text: string): string[] {
   return text
     .split(/\r?\n/)

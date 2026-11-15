@@ -76,23 +76,30 @@ struct PreparationRecord {
 }
 
 /// One explicitly staged file. Its source stays beneath the issued workspace.
-#[derive(Deserialize)]
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename = "PreparationStagedFile")]
 struct StagedFile {
     path: String,
     source: String,
 }
 
 /// Machine-authored preparation proposal, not an approval or a verdict.
-#[derive(Deserialize)]
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename = "PreparationRecipe")]
 struct Submission {
     setup: crate::harness::ide_prepare::WorkspaceSetupInput,
     #[serde(default)]
+    #[ts(as = "Option<_>", optional)]
     oracle_files: Vec<StagedFile>,
     /// Real source edits exercised by the controller's negative-control check.
     negative_control_files: Vec<StagedFile>,
 }
+
+#[path = "ide_preparation_types.rs"]
+mod types;
+pub use types::typescript_preparation_contract;
 
 fn pattern(path: &str) -> String {
     path.strip_suffix('/')
@@ -148,15 +155,85 @@ impl IdeProject {
         Ok(project)
     }
 
-    fn require_fresh_preparation(&self, record: &PreparationRecord) -> Result<()> {
+    fn restore_preparation_source(
+        &self,
+        record: &PreparationRecord,
+        workspace: &Path,
+    ) -> Result<()> {
+        let metadata = fs::symlink_metadata(workspace)?;
+        check(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Preparation workspace must remain a private directory.",
+        )?;
+        let ledger = self.ledger()?;
+        let source: Snapshot = wire::decode(&ledger.read(&record.snapshot_digest)?)?;
+        rovik_harness::scope::validate_tree_paths(source.files.keys().map(String::as_str), true)?;
+        for (path, entry) in &source.files {
+            if crate::restricted_files::looks_secret(path)
+                || record
+                    .denied_read
+                    .iter()
+                    .any(|pattern| rovik_harness::scope::matches(pattern, path))
+            {
+                continue;
+            }
+            // Only captured source can be restored. Agent drafts are never part
+            // of this snapshot, and existing source files remain untouched.
+            let parts = path.split('/').collect::<Vec<_>>();
+            let mut parent = workspace.to_path_buf();
+            for part in &parts[..parts.len() - 1] {
+                parent.push(part);
+                match fs::create_dir(&parent) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+                let metadata = fs::symlink_metadata(&parent)?;
+                check(
+                    metadata.is_dir() && !metadata.file_type().is_symlink(),
+                    "Preparation source cannot traverse a symlink or non-directory.",
+                )?;
+            }
+            let destination = workspace.join(path);
+            match fs::symlink_metadata(&destination) {
+                Ok(metadata) => {
+                    check(
+                        metadata.is_file() && !metadata.file_type().is_symlink(),
+                        "Preparation source must remain a regular file.",
+                    )?;
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            let mut restored = tempfile::NamedTempFile::new_in(&parent)?;
+            ledger.copy_to(&entry.content.digest, &mut restored)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                restored
+                    .as_file()
+                    .set_permissions(fs::Permissions::from_mode(if entry.mode == 0o100755 {
+                        0o700
+                    } else {
+                        0o600
+                    }))?;
+            }
+            restored
+                .persist_noclobber(destination)
+                .map_err(|error| error.error)?;
+        }
+        Ok(())
+    }
+
+    fn require_preparation_metadata(&self, record: &PreparationRecord) -> Result<Self> {
         check(
             record.deadline_ms > runner::now_ms()?,
             "The preparation expired. Prepare this plan again.",
         )?;
         let project = self.preparation_project(record)?;
         if record.automatic_untracked {
-            let now: BTreeSet<String> =
-                decode(project.inspect(BTreeSet::new())?["untracked"].clone())?;
+            let now = project.untracked_inputs()?;
             check(
                 now == record.untracked,
                 "The project's untracked files changed. Prepare the current project again.",
@@ -166,6 +243,32 @@ impl IdeProject {
             project.read_plan(&record.plan.path)?.digest == record.plan.digest,
             "The saved plan changed. Prepare its current version again.",
         )?;
+        Ok(project)
+    }
+
+    fn invalidate_preparation(&self, record: &PreparationRecord, error: &Error) -> Result<()> {
+        // Storage failure is not evidence that the source or plan changed.
+        if matches!(
+            error.category,
+            rovik_harness::FailureCategory::Infrastructure
+                | rovik_harness::FailureCategory::Internal
+        ) {
+            return Ok(());
+        }
+        self.database()?.execute("UPDATE preparations SET value=json_set(value,'$.status','stale','$.error',?2) WHERE id=?1 AND json_extract(value,'$.status') IN ('preparing','ready','blocked') AND json_extract(value,'$.runId') IS NULL", params![record.id, error.to_string()])?;
+        Ok(())
+    }
+
+    fn require_fresh_preparation(&self, record: &PreparationRecord) -> Result<()> {
+        let result = self.check_preparation_source(record);
+        if let Err(error) = &result {
+            self.invalidate_preparation(record, error)?;
+        }
+        result
+    }
+
+    fn check_preparation_source(&self, record: &PreparationRecord) -> Result<()> {
+        let project = self.require_preparation_metadata(record)?;
         check(
             project
                 .observe_snapshot(&record.untracked, None)?
@@ -207,10 +310,9 @@ impl IdeProject {
         )?;
         let binding = plan::binding(&provider)?;
         let plan = self.read_plan(path)?;
-        let inspection = self.inspect(BTreeSet::new())?;
         let automatic_untracked = untracked.is_empty();
         let untracked: BTreeSet<String> = if automatic_untracked {
-            decode(inspection["untracked"].clone())?
+            self.untracked_inputs()?
         } else {
             untracked.into_iter().collect()
         };
@@ -296,7 +398,7 @@ impl IdeProject {
         if matches!(record.status.as_str(), "preparing" | "ready" | "blocked")
             && record.run_id.is_none()
         {
-            if let Err(error) = self.require_fresh_preparation(&record) {
+            if let Err(error) = self.require_preparation_metadata(&record) {
                 // A storage failure says nothing about the source's freshness.
                 // Keep the issued drafts and review available for a later retry.
                 if matches!(
@@ -306,9 +408,7 @@ impl IdeProject {
                 ) {
                     return Err(error);
                 }
-                record.status = "stale".into();
-                record.error = Some(error.to_string());
-                self.database()?.execute("UPDATE preparations SET value=json_set(value,'$.status','stale','$.error',?2) WHERE id=?1 AND json_extract(value,'$.status') IN ('preparing','ready','blocked') AND json_extract(value,'$.runId') IS NULL",params![record.id,record.error])?;
+                self.invalidate_preparation(&record, &error)?;
                 record = self.load_preparation(id)?;
             }
         }
@@ -487,6 +587,7 @@ pub async fn preparation_context(
         record.error = None;
         project.save_active_preparation(&record)?;
         let workspace = project.preparation_workspace(&record.id)?;
+        project.restore_preparation_source(&record, &workspace)?;
         let instructions = write_template(&project, &record, &workspace)?;
         Ok(PreparationContext {
             workspace_root: workspace,
@@ -582,7 +683,43 @@ fn write_template(
     let example = submission_example(&template, &runtime.assets.facts)?;
     // Refresh service-owned guidance on retry while preserving the agent's drafts.
     fs::write(workspace.join(DRAFTS).join("example.json"), &example)?;
-    Ok(format!("Prepare verification for the saved plan, without implementing production code. You work only in a disposable private source copy; the original project must stay unchanged. Read the plan and existing code, identify real requirements and architecture decisions, and ask the user in chat only when a requirement cannot be determined.\n\nUse {DRAFTS}/template.json as the submission schema and write {DRAFTS}/submission.json. Fill the setup profiles, requirements with actual native test case IDs, design citations, scoped writable paths and independently authored protected tests. Profile facts must match these measured runtime facts: {}. The immutable runtime and selected model/budgets are supplied by the service and cannot be changed by your document. Each profile is {{\"id\":\"main\",\"manifest\":\"package.json\",\"language\":\"javascript\",\"facts\":{{}},\"configurations\":[{{\"id\":\"default\",\"target\":\"linux-x86_64\",\"features\":[],\"default_features\":false,\"build_targets\":[\"protected-tests\"],\"flags\":[],\"runtime\":\"node\"}}],\"protectedTestPaths\":[\"tests/acceptance.mjs\"],\"typescriptProject\":null}}. Required profile fact names are supplied below. Requirements are {{\"id\":\"behavior\",\"statement\":\"observable behavior\",\"owner\":\"component-name\",\"casesByConfiguration\":{{\"main/default\":[\"exact executed case ID\"]}}}}. Design citations are {{\"file\":\"src/file\",\"symbol\":\"existing_symbol\",\"rationale\":\"why reuse or change\"}}. Configuration keys intentionally use snake_case; surrounding setup fields use camelCase.\n\nDiscovered build roots: {}.\n\nEvery observed manifest must be selected, or explicitly proposed in setup.excludedBuildRoots as {{\"manifest\":\"examples/demo/package.json\",\"rationale\":\"why this example is unrelated to the saved plan\"}}. Exclusions are shown for human review and freeze the entire root against edits/deletion. Never exclude the repository root or an ancestor of a selected root; dependencies and native checks still use the complete captured source.\n\nRequired profile fact names: {}. Copy only those names for each language; the measured environment contains additional facts for other languages.\n\nClosed adapter settings: JavaScript/TypeScript use module_system=esm, test_runner=node:test, dependency_policy=npm-ci-offline-no-scripts, runtime=node. Python uses test_runner=pytest, dependency_policy=hashed-wheels-offline, import_policy=isolated-pytest, runtime=cpython. These runtime profiles require target=linux-x86_64, features=[], default_features=false and build_targets=[protected-tests]. TypeScript requires flags=[--strict,--noEmitOnError] and a selected protected typescriptProject; JavaScript/Python require flags=[] and no typescriptProject. Use exact measured language runtime/compiler versions. Rust uses runtime=linux-native, std_or_no_std=std and execution_target equal to the selected target; choose edition/MSRV from the manifest. Staged Rust oracle files must be new direct-child .rs integration tests under the selected crate tests/ directory. Existing tests are selected without copying or modifying them. The original Cargo project must compile before newly staged tests are installed; missing production APIs cannot be supplied through oracle files. Existing C/C++ protected tests are supported, but new CMake oracle files require a separately reviewed build configuration.\n\nStage each proposed oracle file beneath {DRAFTS}/oracle/ and list it as {{\"path\":\"repository-relative-test-path\",\"source\":\"{DRAFTS}/oracle/file\"}} in oracleFiles. Existing tests may be selected without copying. Runtime JavaScript/TypeScript tests use node:test and run from /oracle against /build/project (TypeScript output is /build/project/dist); Python uses pytest against /build/project. Rust integration tests run in a private Cargo build copy, never in the project checkout. Discover exact executed case IDs, not filenames. The service prepares locked dependencies and executes real baseline/control trials when you submit. Do not run commands or create dependency caches. Correct your case IDs, oracle and control from its actual diagnostics and resubmit until ready.\n\nCreate a relevant, real source mutation in files beneath {DRAFTS}/control/; list each changed source as {{\"path\":\"src/file\",\"source\":\"{DRAFTS}/control/file\"}} in negativeControlFiles. It must preserve build inputs and all protected tests, compile, and fail the named behavioral negativeControlCases. A compilation failure, fake report or arbitrary failing test does not prove sensitivity. Do not edit the private original source just to make a control; submit isolated staged copies. Document any expected failures of the original source in baselineFailures. New APIs which cannot be tested against the baseline may require a real user decision; never invent passing evidence.\n\nOnly prepare_verified_plan with the submission path submits these drafts. It validates and reports errors for repair; it does not approve or run implementation. Stop once the tool reports ready. The user will review one summary before implementation starts.\n\nComplete worked submission.json example (also saved as {DRAFTS}/example.json):\n\n```json\n{example}\n```\n\nThis illustrates a JavaScript project whose classify(value) currently returns value > 0, with a plan to include zero. Replace its business fields, language profile, paths and cases with your actual project; preserve the service-owned environment, worker, budgets and duration. Its staged oracle defines node:test cases positive, zero and negative against /build/project/src/classify.mjs. Its staged control changes the predicate to value > 10 so zero still fails. Baseline failures are declared only for the unchanged zero case. These example files are not created for you; stage your real tests and mutation before submitting. Use the discovered build roots and language facts above for Rust, TypeScript, Python, C and C++ or mixed projects. An empty collection in template.json does not change its element type.\n\nRead-restricted paths: {}. Write-restricted paths: {}.",serde_json::to_string(&runtime.assets.facts).map_err(|e|Error::new(e.to_string()))?,serde_json::to_string(&inventory).map_err(|e|Error::new(e.to_string()))?,serde_json::to_string(&BTreeMap::from([("rust",rovik_harness::profile::Language::Rust.required_fields()),("c",rovik_harness::profile::Language::C.required_fields()),("cpp",rovik_harness::profile::Language::Cpp.required_fields()),("javascript",rovik_harness::profile::Language::JavaScript.required_fields()),("typescript",rovik_harness::profile::Language::TypeScript.required_fields()),("python",rovik_harness::profile::Language::Python.required_fields())])).map_err(|e|Error::new(e.to_string()))?,record.denied_read.join(", "),record.denied_write.join(", ")))
+    fs::write(
+        workspace.join(DRAFTS).join("schema.ts"),
+        typescript_preparation_contract()?,
+    )?;
+    Ok(format!(
+        include_str!("preparation-workspace-guide.txt"),
+        serde_json::to_string(&runtime.assets.facts).map_err(|e| Error::new(e.to_string()))?,
+        serde_json::to_string(&inventory).map_err(|e| Error::new(e.to_string()))?,
+        serde_json::to_string(&BTreeMap::from([
+            (
+                "rust",
+                rovik_harness::profile::Language::Rust.required_fields()
+            ),
+            ("c", rovik_harness::profile::Language::C.required_fields()),
+            (
+                "cpp",
+                rovik_harness::profile::Language::Cpp.required_fields()
+            ),
+            (
+                "javascript",
+                rovik_harness::profile::Language::JavaScript.required_fields()
+            ),
+            (
+                "typescript",
+                rovik_harness::profile::Language::TypeScript.required_fields()
+            ),
+            (
+                "python",
+                rovik_harness::profile::Language::Python.required_fields()
+            )
+        ]))
+        .map_err(|e| Error::new(e.to_string()))?,
+        record.denied_read.join(", "),
+        record.denied_write.join(", "),
+        DRAFTS = DRAFTS,
+        example = example
+    ))
 }
 
 /// Submit only staged preparation artifacts for this exact agent/project/chat binding.
@@ -1561,6 +1698,109 @@ mod tests {
     }
 
     #[test]
+    fn retry_restores_newly_readable_source_without_replacing_agent_drafts() {
+        let (_directory, project, mut record) = issued();
+        let workspace = project.preparation_workspace(&record.id).unwrap();
+        let ledger = project.ledger().unwrap();
+        let mut snapshot: Snapshot =
+            wire::decode(&ledger.read(&record.snapshot_digest).unwrap()).unwrap();
+        snapshot.files.insert(
+            ".env".into(),
+            FileEntry {
+                mode: 0o100644,
+                content: ledger
+                    .store(
+                        "source",
+                        "text/plain",
+                        b"SECRET=never-expose",
+                        runner::now_ms().unwrap(),
+                    )
+                    .unwrap(),
+            },
+        );
+        record.snapshot_digest = ledger
+            .store_json("snapshot", &snapshot, runner::now_ms().unwrap())
+            .unwrap()
+            .digest;
+        let path = "implementations/quota/lib.rs";
+        let original = fs::read(workspace.join(path)).unwrap();
+        let draft = workspace.join(DRAFTS).join("submission.json");
+        fs::write(&draft, "saved agent draft").unwrap();
+        fs::remove_file(workspace.join(path)).unwrap();
+        restrictions(
+            &mut record,
+            Denied {
+                read: vec![path.into()],
+                write: vec![],
+            },
+        )
+        .unwrap();
+        project
+            .restore_preparation_source(&record, &workspace)
+            .unwrap();
+        assert!(
+            !workspace.join(path).exists(),
+            "still-restricted source must remain hidden"
+        );
+        restrictions(&mut record, Denied::default()).unwrap();
+        project
+            .restore_preparation_source(&record, &workspace)
+            .unwrap();
+        assert_eq!(fs::read(workspace.join(path)).unwrap(), original);
+        assert!(
+            !workspace.join(".env").exists(),
+            "secret-pattern files stay hidden even after explicit restrictions are relaxed"
+        );
+        assert_eq!(fs::read_to_string(&draft).unwrap(), "saved agent draft");
+        fs::write(workspace.join(path), "existing private source").unwrap();
+        project
+            .restore_preparation_source(&record, &workspace)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace.join(path)).unwrap(),
+            "existing private source"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_restoration_rejects_a_redirected_parent_directory() {
+        let (directory, project, record) = issued();
+        let workspace = project.preparation_workspace(&record.id).unwrap();
+        fs::remove_dir_all(workspace.join("implementations")).unwrap();
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("implementations")).unwrap();
+        assert!(project
+            .restore_preparation_source(&record, &workspace)
+            .is_err());
+        assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn status_observation_does_not_hash_or_publish_source_but_submission_still_checks_it() {
+        let (_directory, project, record) = issued();
+        fs::write(
+            project.root.join("implementations/quota/lib.rs"),
+            "changed source",
+        )
+        .unwrap();
+        assert_eq!(
+            project.preparation_status(&record.id).unwrap()["status"],
+            "preparing"
+        );
+        assert!(project
+            .require_fresh_preparation(&record)
+            .unwrap_err()
+            .message
+            .contains("project changed"));
+        assert_eq!(
+            project.preparation_status(&record.id).unwrap()["status"],
+            "stale"
+        );
+    }
+
+    #[test]
     fn storage_failures_preserve_preparation_drafts_and_allow_retry_after_recovery() {
         let (directory, project, mut record) = issued();
         record.error = Some("The previous trial needs correction.".into());
@@ -1575,7 +1815,12 @@ mod tests {
         let database = Connection::open(project.state.join("ledger.sqlite3")).unwrap();
         database.execute_batch("CREATE TRIGGER fail_publication BEFORE INSERT ON artifacts BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;").unwrap();
 
-        let error = project.preparation_status(&record.id).unwrap_err();
+        // Polling must not import source or write to the artifact ledger.
+        assert_eq!(
+            project.preparation_status(&record.id).unwrap()["status"],
+            "preparing"
+        );
+        let error = project.require_fresh_preparation(&record).unwrap_err();
         assert_eq!(error.category, rovik_harness::FailureCategory::Internal);
         assert!(error.message.contains("injected storage failure"));
         assert_eq!(

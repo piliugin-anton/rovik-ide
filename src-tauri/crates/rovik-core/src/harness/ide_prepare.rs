@@ -38,6 +38,7 @@ use std::{
 /// Human-entered inputs for the first setup in a repository, not a proposed plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceSetupInput {
     /// Stable task label.
     pub name: String,
@@ -53,6 +54,7 @@ pub struct WorkspaceSetupInput {
     pub profiles: Vec<WorkspaceProfileInput>,
     /// Explicitly unverified build roots, frozen outside the implementation scope.
     #[serde(default)]
+    #[ts(as = "Option<_>", optional)]
     pub excluded_build_roots: Vec<WorkspaceBuildExclusion>,
     /// Required behavior and cases for each configuration.
     pub requirements: Vec<WorkspaceRequirement>,
@@ -66,18 +68,22 @@ pub struct WorkspaceSetupInput {
     pub negative_control_cases: Vec<String>,
     /// Explicit historical failures; all other baseline checks must pass.
     #[serde(default)]
+    #[ts(as = "Option<_>", optional)]
     pub baseline_failures: Vec<WorkspaceBaselineFailure>,
     /// Selected model and bounded provider requests.
     pub worker: WorkerLimits,
     /// Explicit model_calls, tokens, cost_microunits and checks accounts.
+    #[ts(type = "Record<string, number>")]
     pub budgets: BTreeMap<String, u64>,
     /// Maximum run lifetime; registration never creates an unlimited deadline.
+    #[ts(type = "number")]
     pub duration_ms: u64,
 }
 
 /// A proposed build-root exclusion which remains visible in the human review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceBuildExclusion {
     /// Exact manifest observed in the captured project.
     pub manifest: String,
@@ -170,6 +176,7 @@ pub(super) fn scoped_inventory(
 /// One explicitly configured build root and its independently protected tests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceProfileInput {
     /// Stable profile identity, used in requirement mapping keys.
     pub id: String,
@@ -187,12 +194,14 @@ pub struct WorkspaceProfileInput {
     pub protected_test_paths: Vec<String>,
     /// Existing protected TypeScript compiler configuration, when applicable.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub typescript_project: Option<String>,
 }
 
 /// A requirement's mapping uses readable `profileId/configurationId` keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceRequirement {
     /// Stable requirement ID.
     pub id: String,
@@ -207,6 +216,7 @@ pub struct WorkspaceRequirement {
 /// Source evidence inspected before selecting a design.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceCitation {
     /// Existing repository-relative file.
     pub file: String,
@@ -219,6 +229,7 @@ pub struct WorkspaceCitation {
 /// A direct function/module design; more elaborate mechanisms use reviewed role drafts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceDesignInput {
     /// Component responsibility descriptions.
     pub components: BTreeMap<String, String>,
@@ -243,8 +254,10 @@ pub struct WorkspaceDesignInput {
 /// Prepared execution environment; verification never installs dependencies or pulls images.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceEnvironmentInput {
     /// Locally prepared image's immutable sha256 config digest.
+    #[ts(type = "string")]
     pub image_digest: Digest,
     /// Explicit execution engine, either docker or podman.
     pub engine: String,
@@ -257,6 +270,7 @@ pub struct WorkspaceEnvironmentInput {
 /// A real failing baseline inventory, bound to the derived behavioral check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceBaselineFailure {
     /// Selected profile identity.
     pub profile_id: String,

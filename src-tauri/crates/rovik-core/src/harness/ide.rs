@@ -33,8 +33,8 @@ mod plan;
 #[path = "ide_preparation.rs"]
 mod preparation;
 pub use preparation::{
-    cancel_active_preparation, preparation_context, submit_preparation, PreparationContext,
-    PreparationSubmission,
+    cancel_active_preparation, preparation_context, submit_preparation,
+    typescript_preparation_contract, PreparationContext, PreparationSubmission,
 };
 
 #[path = "ide_application.rs"]
@@ -876,6 +876,56 @@ impl IdeProject {
         }
     }
 
+    /// Inventory filenames without capturing source bytes or loading prior runs.
+    fn untracked_inputs(&self) -> Result<BTreeSet<String>> {
+        let repository =
+            git2::Repository::open(&self.root).map_err(|e| Error::new(e.to_string()))?;
+        let mut options = git2::StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false);
+        let statuses = repository
+            .statuses(Some(&mut options))
+            .map_err(|e| Error::new(e.to_string()))?;
+        let mut untracked: BTreeSet<_> = statuses
+            .iter()
+            .filter(|entry| entry.status().contains(git2::Status::WT_NEW))
+            .map(|entry| {
+                entry.path().map(str::to_owned).map_err(|error| {
+                    Error::new(format!("Untracked path is not valid UTF-8: {error}"))
+                })
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        if let Some(tracked) = &self.tracked_paths {
+            let head = repository
+                .head()
+                .and_then(|head| head.peel_to_tree())
+                .map_err(|error| Error::new(error.to_string()))?;
+            let mut invalid = false;
+            let walked = head.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
+                let Ok(name) = entry.name() else {
+                    invalid = true;
+                    return git2::TreeWalkResult::Abort;
+                };
+                if entry.kind() == Some(git2::ObjectType::Tree) {
+                    return git2::TreeWalkResult::Ok;
+                }
+                let path = format!("{prefix}{name}");
+                if !tracked.contains(&path) {
+                    untracked.insert(path);
+                }
+                git2::TreeWalkResult::Ok
+            });
+            check(
+                !invalid,
+                "Shadow snapshot contains a path that is not valid UTF-8.",
+            )?;
+            walked.map_err(|error| Error::new(error.to_string()))?;
+        }
+        Ok(untracked)
+    }
+
     /// Inspect manifests, preparation choices, host capabilities and recent immutable runs.
     pub fn inspect(&self, selection: BTreeSet<String>) -> Result<Value> {
         let snapshot = self.capture(&selection)?;
@@ -924,51 +974,7 @@ impl IdeProject {
                 .clone();
             runs.push(target.status_observed(&id, input, observed)?);
         }
-        let repository =
-            git2::Repository::open(&self.root).map_err(|e| Error::new(e.to_string()))?;
-        let mut options = git2::StatusOptions::new();
-        options
-            .include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .include_ignored(false);
-        let statuses = repository
-            .statuses(Some(&mut options))
-            .map_err(|e| Error::new(e.to_string()))?;
-        let mut untracked: BTreeSet<_> = statuses
-            .iter()
-            .filter(|entry| entry.status().contains(git2::Status::WT_NEW))
-            .map(|entry| {
-                entry.path().map(str::to_owned).map_err(|error| {
-                    Error::new(format!("Untracked path is not valid UTF-8: {error}"))
-                })
-            })
-            .collect::<Result<BTreeSet<_>>>()?;
-        if let Some(tracked) = &self.tracked_paths {
-            let head = repository
-                .head()
-                .and_then(|head| head.peel_to_tree())
-                .map_err(|error| Error::new(error.to_string()))?;
-            let mut invalid = false;
-            let walked = head.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
-                let Ok(name) = entry.name() else {
-                    invalid = true;
-                    return git2::TreeWalkResult::Abort;
-                };
-                if entry.kind() == Some(git2::ObjectType::Tree) {
-                    return git2::TreeWalkResult::Ok;
-                }
-                let path = format!("{prefix}{name}");
-                if !tracked.contains(&path) {
-                    untracked.insert(path);
-                }
-                git2::TreeWalkResult::Ok
-            });
-            check(
-                !invalid,
-                "Shadow snapshot contains a path that is not valid UTF-8.",
-            )?;
-            walked.map_err(|error| Error::new(error.to_string()))?;
-        }
+        let untracked = self.untracked_inputs()?;
         let engines: Vec<_> = [
             (EngineKind::Docker, "/usr/bin/docker"),
             (EngineKind::Docker, "/usr/local/bin/docker"),

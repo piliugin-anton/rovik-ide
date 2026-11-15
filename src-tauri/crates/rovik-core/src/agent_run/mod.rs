@@ -91,7 +91,9 @@ pub mod tools;
 pub mod triage;
 mod unreached;
 mod verified_preparation;
-pub use verified_preparation::requires_preparation;
+pub use verified_preparation::{
+    requires_preparation, MAX_DURATION as VERIFIED_PREPARATION_TIMEOUT,
+};
 mod verify;
 pub mod worker;
 

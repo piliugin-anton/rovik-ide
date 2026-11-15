@@ -25,18 +25,23 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Explicit model and context limits, resolved by the operator before a run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "preparation", derive(ts_rs::TS))]
 pub struct WorkerLimits {
     /// Registered model identity.
     pub model_id: String,
     /// Maximum complete serialized context, including tool replies.
     pub context_bytes: usize,
     /// Maximum provider output tokens.
+    #[cfg_attr(feature = "preparation", ts(type = "number"))]
     pub output_tokens: u64,
     /// Maximum duration of one model attempt.
+    #[cfg_attr(feature = "preparation", ts(type = "number"))]
     pub timeout_ms: u64,
     /// Reservation for total input plus output tokens.
+    #[cfg_attr(feature = "preparation", ts(type = "number"))]
     pub token_reservation: u64,
     /// Maximum expected cost for one model attempt, in configured microunits.
+    #[cfg_attr(feature = "preparation", ts(type = "number"))]
     pub cost_reservation: u64,
     /// At most one schema-format repair per request sequence.
     pub format_repairs: u32,

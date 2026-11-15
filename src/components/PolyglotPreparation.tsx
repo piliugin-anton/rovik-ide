@@ -522,9 +522,11 @@ export default function PolyglotPreparation(props: {
         />
         <Index each={form().baselineFailures}>
           {(failure, index) => {
-            const change = (patch: Partial<WorkspaceSetupInput['baselineFailures'][number]>) =>
+            const change = (
+              patch: Partial<NonNullable<WorkspaceSetupInput['baselineFailures']>[number]>
+            ) =>
               update({
-                baselineFailures: form().baselineFailures.map((value, i) =>
+                baselineFailures: (form().baselineFailures ?? []).map((value, i) =>
                   i === index ? { ...value, ...patch } : value
                 ),
               });
@@ -550,7 +552,9 @@ export default function PolyglotPreparation(props: {
                   class="link-button"
                   onClick={() =>
                     update({
-                      baselineFailures: form().baselineFailures.filter((_, i) => i !== index),
+                      baselineFailures: (form().baselineFailures ?? []).filter(
+                        (_, i) => i !== index
+                      ),
                     })
                   }
                 >
@@ -566,7 +570,7 @@ export default function PolyglotPreparation(props: {
           onClick={() =>
             update({
               baselineFailures: [
-                ...form().baselineFailures,
+                ...(form().baselineFailures ?? []),
                 {
                   profileId: form().profiles[0]?.id ?? '',
                   configurationId: form().profiles[0]?.configurations[0]?.id ?? '',

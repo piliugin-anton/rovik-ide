@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 /// Registered language families; each profile declares its exact runtime policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "preparation", derive(ts_rs::TS))]
 pub enum Language {
     /// Cargo and rustc.
     Rust,
@@ -92,6 +93,7 @@ pub enum Resolution {
 /// A concrete member of the supported target/feature matrix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "preparation", derive(ts_rs::TS))]
 pub struct Configuration {
     /// Human-readable configuration ID.
     pub id: String,
