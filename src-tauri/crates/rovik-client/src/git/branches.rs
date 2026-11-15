@@ -136,8 +136,10 @@ fn switch(repo: &Repository, branch: String) -> Result<(), String> {
         let object = repo
             .revparse_single(&refname)
             .map_err(|e| format!("Checkout failed: {e}"))?;
-        repo.checkout_tree(&object, None)
-            .map_err(|e| format!("Checkout failed: {e}"))?;
+        if !super::lfs::checkout_tree(repo, &object)? {
+            repo.checkout_tree(&object, None)
+                .map_err(|e| format!("Checkout failed: {e}"))?;
+        }
         repo.set_head(&refname).err_text()
     };
 
@@ -181,8 +183,10 @@ fn switch(repo: &Repository, branch: String) -> Result<(), String> {
         .revparse_ext(&branch)
         .map_err(|e| format!("Branch '{branch}' not found: {e}"))?;
 
-    repo.checkout_tree(&object, None)
-        .map_err(|e| format!("Checkout failed: {e}"))?;
+    if !super::lfs::checkout_tree(repo, &object)? {
+        repo.checkout_tree(&object, None)
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+    }
 
     // Only a local branch is something HEAD can sit on; a tag or a
     // remote-tracking ref (`refs/remotes/origin/foo` spelled out) leaves it

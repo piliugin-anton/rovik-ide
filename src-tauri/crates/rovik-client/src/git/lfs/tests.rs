@@ -24,6 +24,10 @@ impl Fixture {
             cfg.set_str("filter.lfs.clean", "").unwrap();
             cfg.set_bool("filter.lfs.required", false).unwrap();
         }
+        // Git LFS installs its support hooks when the filter first runs. A
+        // project-local hooks directory must not become test source content.
+        fs::create_dir_all(repo.path().join("info")).unwrap();
+        fs::write(repo.path().join("info/exclude"), ".hooks/\n").unwrap();
         repo.set_head("refs/heads/main").unwrap();
         Self { dir, repo }
     }
@@ -150,6 +154,102 @@ fn native_scope_preserves_brackets_and_literal_backslashes() {
         ":(top,literal)packages/[app]"
     );
     assert_eq!(native_scope(r"a\\b\*\?"), r":(top,literal)a\b*?");
+}
+
+#[test]
+fn historical_attributes_ignore_comments_patterns_and_overridden_filter_values() {
+    for content in [
+        "# *.bin filter=lfs\n",
+        "  # filter=lfs\n",
+        "filter=lfs text\n",
+        "\"file filter=lfs name\" text\n",
+        "*.bin filter=lfs -filter\n",
+    ] {
+        assert!(!attributes_select_lfs(content.as_bytes()), "{content}");
+    }
+    assert!(attributes_select_lfs(b"*.bin filter=lfs diff=lfs\n"));
+    assert!(attributes_select_lfs(b"\"file name\" filter=lfs\n"));
+    let f = Fixture::new();
+    f.write(".gitattributes", "# *.bin filter=lfs\n");
+    f.write("ordinary.txt", "ordinary");
+    f.raw_commit();
+    assert!(!history_uses_lfs(
+        &f.repo,
+        f.repo.head().unwrap().target().unwrap(),
+        git2::Oid::ZERO_SHA1
+    )
+    .unwrap());
+    let _remote = f.remote();
+    git_push_blocking_with(f.path(), false).unwrap();
+}
+
+#[test]
+#[ignore = "requires Git and Git LFS; set ROVIK_REAL_GIT_LFS=1"]
+fn restoration_hydrates_committed_and_staged_assets_and_preserves_staging() {
+    real_lfs();
+    let f = Fixture::new();
+    f.track();
+    f.write("asset.bin", b"original\0asset");
+    f.commit();
+    f.write("asset.bin", b"modified\0asset");
+    crate::git::git_revert_file_blocking(f.path(), "asset.bin".into()).unwrap();
+    assert_eq!(
+        fs::read(f.dir.path().join("asset.bin")).unwrap(),
+        b"original\0asset"
+    );
+    f.write("asset.bin", b"staged\0asset");
+    stage_file(&f.repo, Path::new("asset.bin")).unwrap();
+    f.write("asset.bin", b"unstaged\0asset");
+    crate::git::git_revert_file_blocking(f.path(), "asset.bin".into()).unwrap();
+    assert_eq!(
+        fs::read(f.dir.path().join("asset.bin")).unwrap(),
+        b"staged\0asset"
+    );
+    // With only a staged change left, revert must restore HEAD, not mistake
+    // hydrated bytes for a new unstaged modification and retain the index.
+    crate::git::git_revert_file_blocking(f.path(), "asset.bin".into()).unwrap();
+    assert_eq!(
+        fs::read(f.dir.path().join("asset.bin")).unwrap(),
+        b"original\0asset"
+    );
+    f.write("asset.bin", b"another\0change");
+    crate::git::git_discard_all_blocking(f.path()).unwrap();
+    assert_eq!(
+        fs::read(f.dir.path().join("asset.bin")).unwrap(),
+        b"original\0asset"
+    );
+    assert!(git_status_blocking(f.path()).unwrap().files.is_empty());
+}
+
+#[test]
+#[ignore = "requires Git and Git LFS; set ROVIK_REAL_GIT_LFS=1"]
+fn switching_branches_hydrates_assets_and_runs_checkout_hooks_once() {
+    real_lfs();
+    let f = Fixture::new();
+    f.track();
+    f.write("asset.bin", b"first\0asset");
+    f.commit();
+    f.repo
+        .branch(
+            "old",
+            &f.repo.head().unwrap().peel_to_commit().unwrap(),
+            false,
+        )
+        .unwrap();
+    f.write("asset.bin", b"second\0asset");
+    f.commit();
+    f.hook("post-checkout", "echo called >> .git/checkout-calls");
+    crate::git::git_checkout_blocking(f.path(), "old".into()).unwrap();
+    assert_eq!(
+        fs::read(f.dir.path().join("asset.bin")).unwrap(),
+        b"first\0asset"
+    );
+    assert_eq!(f.repo.head().unwrap().shorthand().unwrap(), "old");
+    assert_eq!(
+        fs::read_to_string(f.repo.path().join("checkout-calls")).unwrap(),
+        "called\n"
+    );
+    assert!(git_status_blocking(f.path()).unwrap().files.is_empty());
 }
 
 #[test]

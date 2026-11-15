@@ -122,6 +122,9 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
     }
     drop(statuses);
 
+    if head_commit(&repo).is_ok() && super::lfs::uses_lfs(&repo)? {
+        return super::lfs::restore(&repo, &scope, true);
+    }
     match head_commit(&repo).ok() {
         // Tracked changes (staged or not) back to the last commit.
         Some(head) if scope.is_empty() => repo
@@ -160,6 +163,19 @@ fn is_unstaged(status: Status) -> bool {
     status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE)
 }
 
+fn has_unstaged_changes(repo: &Repository, file: &str, status: Status) -> Result<bool, String> {
+    if super::lfs::uses_lfs(repo)? {
+        // libgit2 compares hydrated bytes with the pointer and reports a false
+        // worktree change. Native status compares through the clean filter.
+        return Ok(
+            super::lfs::status_files(repo, &literal_pathspec(Path::new(file)))?
+                .iter()
+                .any(|entry| entry.path == file && entry.unstaged),
+        );
+    }
+    Ok(is_unstaged(status))
+}
+
 /// The version a revert goes back to: the staged one when the file has
 /// unstaged changes (what `git restore` restores), else the last commit's.
 /// None: the file is new (untracked, or added and never committed).
@@ -172,7 +188,7 @@ fn base_blob<'r>(repo: &'r Repository, file: &str) -> Result<Option<git2::Blob<'
         let tree = repo.head().ok()?.peel_to_tree().ok()?;
         tree.get_path(rel).ok().map(|e| e.id())
     };
-    let oid = if is_unstaged(status) {
+    let oid = if has_unstaged_changes(repo, file, status)? {
         from_index().or_else(from_head)
     } else {
         from_head()
@@ -298,6 +314,17 @@ fn revert_in(repo: &Repository, workdir: &Path, file: &str) -> Result<RevertOutc
         }
     }
 
+    if super::lfs::uses_lfs(repo)? {
+        super::lfs::restore(
+            repo,
+            &literal_pathspec(rel),
+            !has_unstaged_changes(repo, file, status)?,
+        )?;
+        return Ok(RevertOutcome {
+            backed_up,
+            removed: false,
+        });
+    }
     // This file alone: a path is a pattern to libgit2 unless told otherwise.
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.force().path(rel).disable_pathspec_match(true);

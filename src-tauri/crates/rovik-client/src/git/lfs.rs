@@ -44,6 +44,7 @@ pub(super) fn configure(cmd: &mut Command) {
     ])
     .env("GIT_TERMINAL_PROMPT", "0")
     .env("GIT_ASKPASS", "")
+    .env_remove("GIT_LFS_SKIP_SMUDGE")
     .env_remove("GIT_LFS_SKIP_PUSH");
 }
 
@@ -149,6 +150,50 @@ pub(crate) fn stage_file(repo: &Repository, path: &Path) -> Result<(), String> {
     stage(repo, &super::changes::literal_pathspec(path))
 }
 
+/// Restore an index or HEAD version through the required clean/smudge filters.
+/// HEAD restoration also resets staged changes; index restoration preserves them.
+pub(crate) fn restore(repo: &Repository, scope: &str, from_head: bool) -> Result<(), String> {
+    let spec = native_scope(scope);
+    if from_head {
+        run(
+            repo,
+            &[
+                "restore",
+                "--source=HEAD",
+                "--staged",
+                "--worktree",
+                "--",
+                &spec,
+            ],
+            None,
+        )
+    } else {
+        run(repo, &["restore", "--worktree", "--", &spec], None)
+    }
+}
+
+/// Check out a target with native filters when either side contains LFS assets.
+/// The branch adapter sets the requested HEAD and invokes its hook once afterward.
+pub(crate) fn checkout_tree(repo: &Repository, object: &git2::Object<'_>) -> Result<bool, String> {
+    let tree = object.peel_to_tree().err_text()?;
+    if !uses_lfs(repo)? && !tree_uses_lfs(repo, tree, &mut HashSet::new())? {
+        return Ok(false);
+    }
+    let hooks = tempfile::tempdir().map_err(|e| e.to_string())?;
+    run(
+        repo,
+        &[
+            "-c",
+            &format!("core.hooksPath={}", hooks.path().display()),
+            "checkout",
+            "--detach",
+            &object.id().to_string(),
+        ],
+        None,
+    )?;
+    Ok(true)
+}
+
 /// A hook may replace staged entries itself. Validate again after it runs,
 /// so libgit2-based hooks cannot reintroduce an unfiltered asset.
 pub(crate) fn check_index(repo: &Repository, index: &git2::Index) -> Result<(), String> {
@@ -220,11 +265,7 @@ fn tree_uses_lfs(
                 }
                 if entry.name_bytes() == b".gitattributes" {
                     let blob = repo.find_blob(entry.id()).err_text()?;
-                    if blob
-                        .content()
-                        .windows(b"filter=lfs".len())
-                        .any(|s| s == b"filter=lfs")
-                    {
+                    if attributes_select_lfs(blob.content()) {
                         return Ok(true);
                     }
                 }
@@ -233,6 +274,43 @@ fn tree_uses_lfs(
         }
     }
     Ok(false)
+}
+
+fn attributes_select_lfs(bytes: &[u8]) -> bool {
+    bytes.split(|b| *b == b'\n').any(|line| {
+        let line = line.trim_ascii_start();
+        if line.is_empty() || line[0] == b'#' {
+            return false;
+        }
+        // Skip the pattern, including C-quoted patterns containing whitespace.
+        let end = if line[0] == b'"' {
+            let mut escaped = false;
+            line.iter().enumerate().skip(1).find_map(|(i, byte)| {
+                if escaped {
+                    escaped = false;
+                    None
+                } else if *byte == b'\\' {
+                    escaped = true;
+                    None
+                } else if *byte == b'"' {
+                    Some(i + 1)
+                } else {
+                    None
+                }
+            })
+        } else {
+            line.iter().position(u8::is_ascii_whitespace)
+        };
+        let Some(end) = end else {
+            return false;
+        };
+        line[end..].split(u8::is_ascii_whitespace).rfind(|field| {
+            field.starts_with(b"filter=")
+                || *field == b"-filter"
+                || *field == b"!filter"
+                || *field == b"filter"
+        }) == Some(b"filter=lfs".as_slice())
+    })
 }
 
 /// Validates outgoing pointers and uploads objects before any ref is sent.
