@@ -60,6 +60,10 @@ pub struct Fake {
     pub unwanted_pages: Arc<AtomicBool>,
     /// Whether reviewed harness output prevents desktop-to-host synchronization.
     pub application_blocked: Arc<AtomicBool>,
+    /// Optional admission barrier for tests of long-running start replies.
+    pub agent_start_gate: Arc<Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
+    /// Signals that a start reached the scripted daemon before its reply is released.
+    pub agent_start_received: Arc<tokio::sync::Notify>,
 }
 
 impl Connector for Fake {
@@ -137,7 +141,21 @@ async fn serve(mut io: DuplexStream, fake: Fake) {
                     }
                     _ => answer(&req),
                 });
+                let start = matches!(
+                    &req,
+                    Request::AgentStart(_) | Request::VerifiedAutopilotStart { .. }
+                );
                 fake.requests.lock().unwrap().push(req);
+                if start {
+                    let gate = fake.agent_start_gate.lock().unwrap().clone();
+                    if let Some(gate) = gate {
+                        fake.agent_start_received.notify_one();
+                        let Ok(permit) = gate.acquire().await else {
+                            return;
+                        };
+                        permit.forget();
+                    }
+                }
                 Frame::Reply { id, res }
             }
             _ => continue,

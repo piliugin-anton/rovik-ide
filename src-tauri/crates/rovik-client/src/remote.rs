@@ -1092,7 +1092,16 @@ impl Remote {
     /// the project's settings added (K03), the host's approval policy
     /// applied (6.9), and the text left out when the host has it already
     /// (K50).
-    pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
+    pub async fn start(&self, request: StartRequest) -> Result<Response, Fail> {
+        self.start_with_timeout(request, crate::client::CALL_TIMEOUT)
+            .await
+    }
+
+    async fn start_with_timeout(
+        &self,
+        mut request: StartRequest,
+        ordinary_timeout: std::time::Duration,
+    ) -> Result<Response, Fail> {
         let starting = self.core.agents.begin_start(&request.dialog_id);
         starting.check().map_err(internal)?;
         if self.host_of(&request.dialog_id).is_none() {
@@ -1106,11 +1115,10 @@ impl Remote {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
         let client = self.client(&host)?;
-        if agent_run::requires_preparation(&self.core, &request)
+        let preparation = agent_run::requires_preparation(&self.core, &request)
             .await
-            .map_err(internal)?
-            && !self.serves(&host, features::POLYGLOT_PREPARATION)
-        {
+            .map_err(internal)?;
+        if preparation && !self.serves(&host, features::POLYGLOT_PREPARATION) {
             return Err(Fail::new(FailCode::BadRequest, "This host cannot prepare verified plans; update the host before starting or continuing preparation."));
         }
         agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
@@ -1210,7 +1218,15 @@ impl Remote {
             Request::AgentStart(Box::new(request))
         };
         starting.check().map_err(internal)?;
-        client.call(call).await
+        // First-use preparation builds its runtime before AgentStart returns.
+        // Share the service's budget and allow one ordinary transport grace;
+        // an unrelated request must retain its short communication deadline.
+        let timeout = if preparation {
+            agent_run::VERIFIED_PREPARATION_TIMEOUT + ordinary_timeout
+        } else {
+            ordinary_timeout
+        };
+        client.call_within(call, timeout).await
     }
 
     /// Tests `server` on `host`, from there (Q11): its saved secrets, on or

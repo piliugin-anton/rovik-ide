@@ -3096,6 +3096,65 @@ async fn preparation_sends_and_continuations_never_reach_older_hosts() {
 }
 
 #[tokio::test]
+async fn cloud_preparation_starts_outlive_the_ordinary_call_deadline_including_retries() {
+    let app = App::new();
+    let mut previous = message("prepare", "user", "Prepare this plan");
+    previous.meta = Some(json!({"mode":"agent", "verifiedPreparation":"prep"}));
+    app.chat("chat", None, vec![previous]).await;
+    let fake = Fake::default();
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *fake.agent_start_gate.lock().unwrap() = Some(gate.clone());
+    fake.features
+        .lock()
+        .unwrap()
+        .push(features::POLYGLOT_PREPARATION.into());
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    for kind in [
+        StartKind::Send {
+            message: UserMessage {
+                id: "prepare-new".into(),
+                content: "Prepare this plan".into(),
+                meta: Some(json!({"mode":"agent", "verifiedPreparation":"prep"})),
+                attachments: vec![],
+            },
+        },
+        StartKind::Retry,
+        StartKind::Resume,
+        StartKind::ContinueReply,
+        StartKind::ContinueRun,
+    ] {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let call = remote.start_with_timeout(start("chat", kind, None), Duration::ZERO);
+            tokio::pin!(call);
+            // Hold the actual daemon reply until the ordinary deadline has elapsed.
+            // An immediate scripted response could otherwise beat a zero-duration timer.
+            tokio::select! {
+                result = &mut call => panic!("start completed before its reply was released: {result:?}"),
+                _ = fake.agent_start_received.notified() => {},
+            }
+            assert!(tokio::time::timeout(Duration::ZERO, &mut call)
+                .await
+                .is_err());
+            gate.add_permits(1);
+            call.await.unwrap();
+        })
+        .await
+        .expect("preparation start did not complete its held-reply handshake");
+    }
+    assert_eq!(starts(&fake).len(), 5);
+    app.chat("ordinary", None, Vec::new()).await;
+    remote.place("ordinary", HOST);
+    let error = remote
+        .start_with_timeout(start("ordinary", StartKind::Resume, None), Duration::ZERO)
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("didn't answer in time"), "{error}");
+    gate.add_permits(1);
+    remote.disconnect(HOST);
+}
+
+#[tokio::test]
 async fn preparation_credentials_are_not_sent_to_hosts_without_preparation_support() {
     use rovik_protocol::harness::{ImplementationProvider, ModelRates, Operation};
     let app = App::new();
