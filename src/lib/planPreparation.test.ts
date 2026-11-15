@@ -1,7 +1,13 @@
 import '../test/dom';
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { preparationReplyMetadata, preparationToRetry } from './planPreparation';
+import {
+  closePreparationReply,
+  reopenPreparationReply,
+  restorePreparationReply,
+  preparationReplyMetadata,
+  preparationToRetry,
+} from './planPreparation';
 import { chatApi } from './chatApi';
 import { planPreparation } from '../test/polyglotPlanFixtures';
 import type { ChatMessage, ToolMeta } from '../types';
@@ -125,4 +131,123 @@ test('explicit commands and explicit session bindings remain unchanged for servi
     { ...original, verifiedPreparation: 'preparation-1', planPath: plan.path },
   ])
     assert.equal(preparationReplyMetadata(planPreparation('preparing'), plan, context, meta), meta);
+});
+
+test('restored active preparation retains its durable identity after an app restart', async () => {
+  localStorage.clear();
+  for (const state of ['preparing', 'blocked'] as const) {
+    const session = planPreparation(state);
+    const restored = await restorePreparationReply(
+      { root: '/project', dialogId: 'reopened' },
+      {},
+      () => true,
+      async () => ({ preparationId: session.preparationId, planPath: session.plan.path }),
+      async () => session
+    );
+    assert.equal(restored, session);
+  }
+});
+
+test('explicit Close, completed preparation and newer ordinary requests are not recaptured', async () => {
+  localStorage.clear();
+  const target = { root: '/project', dialogId: 'closed' };
+  const session = planPreparation('preparing');
+  const load = async () => ({ preparationId: session.preparationId, planPath: session.plan.path });
+  closePreparationReply(target.dialogId, session.preparationId);
+  assert.equal(
+    await restorePreparationReply(
+      target,
+      {},
+      () => true,
+      load,
+      async () => {
+        throw new Error('must not fetch closed session');
+      }
+    ),
+    undefined
+  );
+  reopenPreparationReply(target.dialogId, session.preparationId);
+  assert.equal(
+    await restorePreparationReply(
+      target,
+      {},
+      () => true,
+      load,
+      async () => session
+    ),
+    session
+  );
+  localStorage.clear();
+  assert.equal(
+    await restorePreparationReply(
+      target,
+      {},
+      () => true,
+      async () => undefined,
+      async () => {
+        throw new Error('must not revive older request');
+      }
+    ),
+    undefined
+  );
+  for (const state of ['ready', 'cancelled', 'stale'] as const)
+    assert.equal(
+      await restorePreparationReply(
+        target,
+        {},
+        () => true,
+        load,
+        async () => planPreparation(state)
+      ),
+      undefined
+    );
+  for (const meta of [{ command: true }, { verifiedPreparation: 'explicit' }])
+    assert.equal(
+      await restorePreparationReply(
+        target,
+        meta,
+        () => true,
+        async () => {
+          throw new Error('explicit request must bypass history');
+        }
+      ),
+      undefined
+    );
+});
+
+test('restoration rejects lost context and failed status instead of ordinary dispatch', async () => {
+  localStorage.clear();
+  const session = planPreparation('preparing');
+  const target = { root: '/project', dialogId: 'reopened' };
+  const load = async () => ({ preparationId: session.preparationId, planPath: session.plan.path });
+  await assert.rejects(
+    restorePreparationReply(target, {}, () => false, load),
+    /chat or project changed/
+  );
+  let current = true;
+  await assert.rejects(
+    restorePreparationReply(
+      target,
+      {},
+      () => current,
+      load,
+      async () => {
+        current = false;
+        return session;
+      }
+    ),
+    /chat or project changed/
+  );
+  await assert.rejects(
+    restorePreparationReply(
+      target,
+      {},
+      () => true,
+      load,
+      async () => {
+        throw new Error('Disconnected');
+      }
+    ),
+    /Disconnected/
+  );
 });

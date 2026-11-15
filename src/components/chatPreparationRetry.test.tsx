@@ -28,6 +28,7 @@ async function page(
     promoted?: boolean;
     runningImplementation?: boolean;
     deferHistory?: boolean;
+    skipRetry?: boolean;
   } = {}
 ) {
   localStorage.clear();
@@ -142,8 +143,10 @@ async function page(
   );
   assert.ok(retry, root.textContent ?? 'Retry is visible');
   assert.equal(calls.filter((call) => call.command === 'agent_start').length, 0);
-  retry.click();
-  await flush();
+  if (!options.skipRetry) {
+    retry.click();
+    await flush();
+  }
   return {
     dialog,
     messages,
@@ -261,4 +264,19 @@ test('leaving the project while Retry reads history prevents preparation and age
   await flush();
   assert.deepEqual(result.operations(), []);
   assert.deepEqual(result.starts(), []);
+});
+
+test('first ordinary follow-up after reopening restores the private preparation before dispatch', async () => {
+  const result = await page('blocked', { skipRetry: true });
+  const input = result.root.querySelector('.chat-input-contenteditable') as HTMLElement;
+  input.textContent = 'Correct the submission and continue';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await flush();
+  (result.root.querySelector('.chat-send-button') as HTMLButtonElement).click();
+  await flush();
+  assert.equal(result.starts().length, 1);
+  assert.equal(result.starts()[0].start.message.meta.verifiedPreparation, 'preparation-1');
+  assert.equal(result.starts()[0].start.message.content, 'Correct the submission and continue');
+  assert.equal(result.starts()[0].mode, 'agent');
+  assert.ok(!result.operations().some((operation) => operation.action === 'beginPlanPreparation'));
 });

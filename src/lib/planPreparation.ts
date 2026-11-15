@@ -66,6 +66,54 @@ export async function preparationToRetry(
   }
 }
 
+/** An explicit exit applies only to this preparation, across window/app restarts. */
+export function closePreparationReply(dialogId: string, preparationId: string): void {
+  localStorage.setItem(`rovik.preparation.closed.${dialogId}`, preparationId);
+}
+
+/** Explicitly resuming the same preparation reverses its previous UI exit. */
+export function reopenPreparationReply(dialogId: string, preparationId: string): void {
+  const key = `rovik.preparation.closed.${dialogId}`;
+  if (localStorage.getItem(key) === preparationId) localStorage.removeItem(key);
+}
+
+/** Recover a private continuation from durable history, never an older unrelated request. */
+export async function restorePreparationReply(
+  target: HarnessTarget & { dialogId: string },
+  meta: ToolMeta | undefined,
+  current: () => boolean,
+  load = preparationToRetry,
+  status = (id: string) =>
+    harnessRequest<PlanPreparation>(target, {
+      action: 'preparationStatus',
+      preparationId: id,
+    })
+): Promise<PlanPreparation | undefined> {
+  if (meta?.command || meta?.verifiedPreparation !== undefined) return;
+  const previous = await load(target.dialogId);
+  if (!current())
+    throw new Error(
+      'The chat or project changed while restoring preparation. Send again in the intended chat.'
+    );
+  if (
+    !previous ||
+    localStorage.getItem(`rovik.preparation.closed.${target.dialogId}`) === previous.preparationId
+  )
+    return;
+  const preparation = await status(previous.preparationId);
+  if (!current())
+    throw new Error(
+      'The chat or project changed while restoring preparation. Send again in the intended chat.'
+    );
+  if (
+    preparation.preparationId !== previous.preparationId ||
+    preparation.plan.path !== previous.planPath
+  )
+    throw new Error('The saved preparation binding changed. Reopen the plan before continuing.');
+  if (!preparation.runId && ['preparing', 'blocked'].includes(preparation.status))
+    return preparation;
+}
+
 /** Idle replies remain in the open preparation's private workspace until it finishes or closes. */
 export function preparationReplyMetadata(
   preparation: PlanPreparation | undefined,

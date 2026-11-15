@@ -104,6 +104,9 @@ import {
 import { verificationInputProblem, type HarnessProviderBinding } from '../lib/polyglotHarness';
 import {
   preparationReplyMetadata,
+  restorePreparationReply,
+  closePreparationReply,
+  reopenPreparationReply,
   preparationToRetry,
   type PlanPreparation,
 } from '../lib/planPreparation';
@@ -3407,6 +3410,54 @@ export default function ChatPanel(props: ChatProps) {
     message: { id: string; content: string; meta: ChatMessage['meta']; attachments?: string[] },
     wireContent: string | undefined
   ): Promise<boolean> {
+    const existing = preparationReplyMeta(dialogId, message.meta);
+    if (!existing?.verifiedPreparation && !message.meta?.command) {
+      const root = props.rootPath();
+      const projectId = props.projectId();
+      const owner = harnessOwner(dialogId);
+      const profile = activeProfile();
+      if (root && projectId && owner && profile && activeDialogId() === dialogId) {
+        const current = () =>
+          !retryDisposed &&
+          activeDialogId() === dialogId &&
+          props.rootPath() === root &&
+          props.projectId() === projectId &&
+          store.projectId() === projectId &&
+          harnessOwner(dialogId) === owner &&
+          activeProfile()?.id === profile.id &&
+          activeProfile()?.model === profile.model &&
+          activeProfile()?.baseUrl === profile.baseUrl;
+        try {
+          await store.flush();
+          const restored = await restorePreparationReply({ root, dialogId }, message.meta, current);
+          if (restored) {
+            const plan = {
+              root,
+              projectId,
+              owner,
+              dialogId,
+              profile,
+              path: restored.plan.path,
+              preparationId: restored.preparationId,
+            };
+            setStrictPlan(plan);
+            setOpenPreparation({ plan, session: restored });
+            message = {
+              ...message,
+              meta: {
+                ...message.meta,
+                mode: 'agent',
+                verifiedPreparation: restored.preparationId,
+                planPath: restored.plan.path,
+              },
+            };
+          }
+        } catch (cause) {
+          notify({ kind: 'error', title: 'Could not restore preparation', message: String(cause) });
+          return false;
+        }
+      }
+    }
     message = { ...message, meta: preparationReplyMeta(dialogId, message.meta) };
     if (dialogId === activeDialogId() && unresolvedStrictTask(taskStages())) {
       openStrictAutopilot();
@@ -5145,6 +5196,7 @@ export default function ChatPanel(props: ChatProps) {
                   selected.baseUrl !== plan.profile.baseUrl
                 )
                   return false;
+                reopenPreparationReply(plan.dialogId, preparationId);
                 setChatMode('agent');
                 return sendMessage(
                   plan.dialogId,
@@ -5174,6 +5226,19 @@ export default function ChatPanel(props: ChatProps) {
               }
               onActiveChange={setStrictActive}
               onClose={() => {
+                const session = openPreparation();
+                if (session?.plan === plan) {
+                  try {
+                    closePreparationReply(plan.dialogId, session.session.preparationId);
+                  } catch (cause) {
+                    notify({
+                      kind: 'error',
+                      title: 'Could not close preparation',
+                      message: String(cause),
+                    });
+                    return;
+                  }
+                }
                 setStrictPlan(undefined);
                 setStrictActive(false);
               }}
