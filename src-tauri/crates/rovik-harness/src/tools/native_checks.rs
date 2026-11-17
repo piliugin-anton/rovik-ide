@@ -157,7 +157,17 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
         ..Default::default()
     };
     let compiler = "/usr/local/cargo/bin/cargo";
-    let invoke = |command: &[String]| run(command, &cwd, &environment);
+    // Cargo may spend most of a workspace check compiling locked dependencies.
+    // The runner enforces the reviewed deadline across the whole container.
+    let registered = crate::packs::workspace_command(input.check, ["workspace".into()].into())?;
+    let cargo_timeout = std::time::Duration::from_millis(registered.limits.timeout_ms);
+    let invoke = |command: &[String]| {
+        if command.first().is_some_and(|program| program == compiler) {
+            super::run_with_timeout(command, &cwd, &environment, cargo_timeout)
+        } else {
+            run(command, &cwd, &environment)
+        }
+    };
     if !input.oracle_test_files.is_empty() {
         // A new oracle cannot supply missing production code through include!
         // or a custom Cargo target. Build the unchanged project with this exact
