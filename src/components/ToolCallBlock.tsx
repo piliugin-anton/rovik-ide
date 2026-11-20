@@ -859,7 +859,7 @@ function TaskBlock(props: ToolCallBlockProps) {
       <For each={approvals()}>{(r) => <ApprovalBar request={r} />}</For>
 
       <Show when={expanded()}>
-        <div class="tool-call-body">
+        <div class="tool-call-body" tabIndex={0}>
           <section class="tool-call-section">
             <div class="tool-call-label">Task</div>
             <pre class="tool-call-pre">{str(args().goal) ?? ''}</pre>
@@ -1106,7 +1106,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       <Show when={request()}>{(r) => <ApprovalBar request={r()} />}</Show>
 
       <Show when={expanded()}>
-        <div class="tool-call-body">
+        <div class="tool-call-body" tabIndex={0}>
           <section class="tool-call-section">
             <Show when={!isContextFile() || hasCallText()}>
               <div class="tool-call-label">Call</div>

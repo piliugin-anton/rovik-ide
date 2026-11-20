@@ -37,7 +37,11 @@ function Notification(props: { n: AppNotification }) {
           class="notification-close"
           aria-label="Dismiss"
           title="Dismiss"
-          onClick={() => dismiss(n().id)}
+          onClick={() => {
+            const note = n();
+            dismiss(note.id);
+            note.onDismiss?.();
+          }}
         >
           <svg
             width="10"

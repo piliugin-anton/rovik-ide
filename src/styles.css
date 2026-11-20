@@ -1435,7 +1435,7 @@ body.tree-dragging {
 .chat-messages-frame:has(~ .polyglot-review) {
   /* Reserve the transcript's share before flex shrinking. A zero basis lets a
      naturally sized review consume all space left above the composer. */
-  flex-basis: 40%;
+  flex-basis: 65%;
 }
 
 /* Verification reviews share the chat's finite height with the transcript
@@ -1446,7 +1446,8 @@ body.tree-dragging {
   flex: 0 1 auto;
   min-height: 0;
   min-width: 0;
-  max-height: min(60%, 560px);
+  max-height: min(28%, 13rem);
+  width: min(calc(100% - 16px), 34rem);
   margin: 0 8px 8px;
   overflow: hidden;
   background: var(--bg-sidebar);
@@ -1457,12 +1458,26 @@ body.tree-dragging {
 .polyglot-review-header,
 .polyglot-review-actions {
   flex-shrink: 0;
-  padding: 8px 12px;
+  padding: 5px 10px;
   background: var(--bg-elevated);
 }
 
 .polyglot-review-header {
   border-bottom: 1px solid var(--border);
+}
+
+.polyglot-review.compact .polyglot-review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.polyglot-review.compact .polyglot-review-body p {
+  margin: 0 0 4px;
+}
+
+.polyglot-review.compact .polyglot-review-actions:not(:has(button)) {
+  display: none;
 }
 
 .polyglot-review-header h3 {
@@ -1474,7 +1489,7 @@ body.tree-dragging {
 .polyglot-review-body {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 12px;
+  padding: 6px 10px;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -1506,8 +1521,16 @@ body.tree-dragging {
   margin-bottom: 0;
 }
 
-.polyglot-review-body > details {
-  margin: 10px 0;
+.polyglot-review-body details {
+  margin: 4px 0;
+}
+
+.polyglot-review-body summary,
+.plan-preparation-body summary {
+  padding: 2px 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .polyglot-review-actions {
@@ -1531,7 +1554,8 @@ body.tree-dragging {
   flex-direction: column;
   flex: 0 1 auto;
   min-height: 0;
-  max-height: min(42%, 360px);
+  max-height: min(28%, 13rem);
+  width: min(calc(100% - 16px), 34rem);
   margin: 0 8px 8px;
   padding: 0;
   overflow: hidden;
@@ -7207,6 +7231,20 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-top: 6px;
 }
 
+.chat-plan-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-plan-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .chat-plan-hint {
   color: var(--fg-dim);
   font-size: 12px;
@@ -10057,7 +10095,22 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   border-left: 2px solid var(--border);
 }
 
+.chat-messages .tool-group-calls,
+.chat-messages .tool-call-body,
+.chat-messages .chat-verify {
+  max-height: min(13rem, var(--chat-block-height, 30vh));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.chat-messages .tool-group-calls .tool-call-body {
+  max-height: none;
+  overflow: visible;
+}
+
 .tool-group-calls .tool-call {
+  flex: none;
   max-width: 100%;
 }
 
@@ -11396,4 +11449,31 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 .architecture-problems p {
   margin: 4px 0;
+}
+
+dialog.verified-changes-dialog {
+  margin: auto;
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  color: var(--fg);
+}
+
+.verified-changes-dialog::backdrop {
+  background: var(--overlay, rgb(0 0 0 / 50%));
+}
+
+.verified-changes-files {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px;
+}
+
+.verified-changes-files h4 {
+  margin: 12px 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.verified-changes-dialog .confirm-dialog-actions {
+  padding-top: 12px;
 }

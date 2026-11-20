@@ -5,6 +5,7 @@
 // was thinking or writing. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
@@ -105,5 +106,38 @@ test('a context file link carries its originating chat even for a read', () => {
     dispose();
     root.remove();
     setEditorOpener(null);
+  }
+});
+
+test('expanded tool calls share a bounded keyboard-scrollable area in the transcript', () => {
+  const root = container();
+  root.className = 'chat-messages';
+  const style = document.createElement('style');
+  style.textContent = readFileSync('src/styles.css', 'utf8');
+  document.head.append(style);
+  const dispose = render(
+    () => (
+      <ToolCallGroup
+        dialogId="chat"
+        name="read"
+        calls={calls}
+        result={() => undefined}
+        running={false}
+        renderCall={() => <div>File content</div>}
+      />
+    ),
+    root
+  );
+  try {
+    root.querySelector<HTMLButtonElement>('.tool-group-toggle')!.click();
+    const group = root.querySelector<HTMLElement>('.tool-group-calls')!;
+    assert.equal(group.tabIndex, 0);
+    const css = getComputedStyle(group);
+    assert.equal(css.overflowY, 'auto');
+    assert.ok(css.maxHeight && css.maxHeight !== 'none');
+  } finally {
+    dispose();
+    root.remove();
+    style.remove();
   }
 });

@@ -182,7 +182,7 @@ export default function ToolCallGroup(props: {
         </Show>
       </div>
       <Show when={open()}>
-        <div class="tool-group-calls">
+        <div class="tool-group-calls" tabIndex={0}>
           <For each={props.calls}>{(call) => props.renderCall(call, props.calls.length === 1)}</For>
         </div>
       </Show>

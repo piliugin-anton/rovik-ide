@@ -104,6 +104,7 @@ import {
 import { verificationInputProblem, type HarnessProviderBinding } from '../lib/polyglotHarness';
 import {
   preparationReplyMetadata,
+  preparationPrompt,
   restorePreparationReply,
   closePreparationReply,
   reopenPreparationReply,
@@ -217,7 +218,7 @@ import {
   transcriptHold,
   usageLabel,
 } from '../lib/subagents';
-import { chatsWaitingOnApprovals } from '../lib/approvals';
+import { chatsWaitingOnApprovals, pendingApprovalsOf } from '../lib/approvals';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
   kindNames,
@@ -320,6 +321,7 @@ export default function ChatPanel(props: ChatProps) {
     runId?: string;
     preparationId?: string;
     retryPreparation?: boolean;
+    implementRequested?: boolean;
     profile?: ModelProfile;
     projectId: string;
     owner: string;
@@ -328,6 +330,7 @@ export default function ChatPanel(props: ChatProps) {
     plan: NonNullable<ReturnType<typeof strictPlan>>;
     session: PlanPreparation;
   }>();
+  const [quietPreparation, setQuietPreparation] = createSignal<string>();
   const [strictActive, setStrictActive] = createSignal(false);
   const [strictStartReview, setStrictStartReview] = createSignal<{
     root: string;
@@ -779,6 +782,12 @@ export default function ChatPanel(props: ChatProps) {
     return id ? store.state.open[id] : undefined;
   };
   const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
+  const quietTurn = createMemo(() => {
+    const id = quietPreparation();
+    if (!id || strictPlan()?.dialogId !== activeDialogId()) return false;
+    const lastRequest = [...messages()].reverse().find(isRequestMessage);
+    return lastRequest?.meta?.verifiedPreparation === id;
+  });
   /** The chat runs on a connector, which keeps its context itself. */
   const onConnector = () => !!activeProfile() && !!connectorKindOf(activeProfile()!.baseUrl);
   /** What the connector's latest reply said of its context. */
@@ -3582,6 +3591,8 @@ export default function ChatPanel(props: ChatProps) {
         projectId,
         owner,
         preparationId: previous?.meta?.verifiedPreparation,
+        retryPreparation: !!previous,
+        implementRequested: true,
       });
       return;
     }
@@ -5085,6 +5096,12 @@ export default function ChatPanel(props: ChatProps) {
       <MessageList
         dialogId={activeDialogId()}
         chat={activeChat()}
+        quietPreparation={
+          strictPlan()?.dialogId === activeDialogId() &&
+          !pendingApprovalsOf(activeDialogId() ?? '').length
+            ? quietPreparation()
+            : undefined
+        }
         sending={sending()}
         starting={!!store.state.starting[activeDialogId() ?? '']}
         liveStageId={liveStageId()}
@@ -5167,7 +5184,10 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
       <Show when={strictPlan()} keyed>
         {(plan) => {
-          onCleanup(() => setOpenPreparation((open) => (open?.plan === plan ? undefined : open)));
+          onCleanup(() => {
+            setOpenPreparation((open) => (open?.plan === plan ? undefined : open));
+            setQuietPreparation(undefined);
+          });
           const contextProblem = createMemo(() =>
             activeDialogId() !== plan.dialogId
               ? 'Return to this plan’s chat to continue preparation or implementation.'
@@ -5189,6 +5209,8 @@ export default function ChatPanel(props: ChatProps) {
           );
           return (
             <PolyglotPlanImplementation
+              automatic={!!plan.path}
+              restoreOnly={!plan.implementRequested}
               target={{ root: plan.root, dialogId: plan.dialogId }}
               contextProblem={contextProblem()}
               planPath={plan.path}
@@ -5197,7 +5219,10 @@ export default function ChatPanel(props: ChatProps) {
               retryPreparation={plan.retryPreparation}
               profile={profile()}
               agentRunning={isRunning(plan.dialogId)}
-              onPreparationChange={(session) => setOpenPreparation({ plan, session })}
+              onPreparationChange={(session) => {
+                setOpenPreparation({ plan, session });
+                if (plan.implementRequested) setQuietPreparation(session.preparationId);
+              }}
               onRunChange={() => setOpenPreparation(undefined)}
               onPrepare={async (preparationId) => {
                 if (
@@ -5226,7 +5251,7 @@ export default function ChatPanel(props: ChatProps) {
                   plan.dialogId,
                   {
                     id: crypto.randomUUID(),
-                    content: `Prepare verification for the plan in \`${plan.path}\`.`,
+                    content: preparationPrompt(plan.path),
                     meta: {
                       mode: 'agent',
                       verifiedPreparation: preparationId,
@@ -5271,15 +5296,15 @@ export default function ChatPanel(props: ChatProps) {
         }}
       </Show>
       {/* What the project's memory gave this run, above its checklist. */}
-      <Show when={recalledMemories(activeDialogId())} keyed>
+      <Show when={!quietTurn() && recalledMemories(activeDialogId())} keyed>
         {(memories) => <PriorWorkPanel memories={memories} />}
       </Show>
       {/* The agent's checklist while it works (read-only). */}
-      <Show when={sending() && !waitingQuestion() && runChecklist()}>
+      <Show when={!quietTurn() && sending() && !waitingQuestion() && runChecklist()}>
         {(items) => <TodoPanel items={items()} plan={runPlanFile()} dialogId={activeDialogId()} />}
       </Show>
       {/* Open checklist while nothing runs: interrupted, with Continue + dismiss. */}
-      <Show when={!sending() && !waitingQuestion() && idleChecklist()}>
+      <Show when={!quietTurn() && !sending() && !waitingQuestion() && idleChecklist()}>
         {(items) => (
           <TodoPanel
             items={items()}

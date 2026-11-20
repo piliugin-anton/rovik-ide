@@ -14,7 +14,7 @@ Stage each proposed oracle file beneath {DRAFTS}/oracle/ and list it as {{"path"
 
 Create a relevant, real source mutation in files beneath {DRAFTS}/control/; list each changed source as {{"path":"src/file","source":"{DRAFTS}/control/file"}} in negativeControlFiles. It must preserve build inputs and all protected tests, compile, and fail the named behavioral negativeControlCases. A compilation failure, fake report or arbitrary failing test does not prove sensitivity. Do not edit the private original source just to make a control; submit isolated staged copies. Document any expected failures of the original source in baselineFailures. New APIs which cannot be tested against the baseline may require a real user decision; never invent passing evidence.
 
-Only prepare_verified_plan with the submission path submits these drafts. It validates and reports errors for repair; it does not approve or run implementation. Stop once the tool reports ready. The user will review one summary before implementation starts.
+Only prepare_verified_plan with the submission path submits these drafts. It validates and reports errors for repair; it does not approve or run implementation. Stop once the tool reports ready. The IDE handles implementation from that point.
 
 Complete worked submission.json example (also saved as {DRAFTS}/example.json):
 

@@ -33,6 +33,10 @@ export interface HarnessChangeReview {
     path: string;
     before?: string | null;
     after?: string | null;
+    beforeMode?: number | null;
+    afterMode?: number | null;
+    beforeOmitted?: string | null;
+    afterOmitted?: string | null;
     omitted?: string | null;
   }[];
   [key: string]: unknown;

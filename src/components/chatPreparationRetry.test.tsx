@@ -1,4 +1,5 @@
 import { container } from '../test/dom';
+import NotificationHost from './NotificationHost';
 import { flush, installTauri } from '../test/chatPanel';
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -144,13 +145,16 @@ async function page(
   cleanups.push(
     render(
       () => (
-        <ChatPanel
-          rootPath={rootPath}
-          projectId={() => `project-${dialog.id}`}
-          activeFileContext={() => null}
-          files={() => []}
-          unsavedFiles={() => []}
-        />
+        <>
+          <NotificationHost />
+          <ChatPanel
+            rootPath={rootPath}
+            projectId={() => `project-${dialog.id}`}
+            activeFileContext={() => null}
+            files={() => []}
+            unsavedFiles={() => []}
+          />
+        </>
       ),
       root
     )
@@ -199,12 +203,13 @@ for (const status of ['preparing', 'blocked', 'cancelled', 'stale', 'ready'] as 
       result.operations().map((operation) => operation.action),
       ['preparationStatus']
     );
-    assert.ok(result.root.querySelector('[aria-label="Plan preparation"]'));
+    assert.ok(result.root.querySelector('.notification'));
+    assert.equal(result.root.querySelector('[aria-label="Plan preparation"]'), null);
     assert.equal(result.root.querySelectorAll('.tool-call-spinner').length, 0);
     if (status === 'preparing') {
       assert.match(result.root.textContent!, /Preparation paused/);
       const button = [...result.root.querySelectorAll('button')].find(
-        (button) => button.textContent?.trim() === 'Continue preparation'
+        (button) => button.textContent?.trim() === 'Continue'
       );
       assert.ok(button);
       button.click();
@@ -281,7 +286,7 @@ test('chat Retry reopens an existing implementation without preparing or startin
     ['preparationStatus', 'status']
   );
   assert.deepEqual(result.starts(), []);
-  assert.match(result.root.textContent!, /Implementation blocked/);
+  assert.match(result.root.textContent!, /Implementation paused/);
 });
 
 test('ordinary chat Retry still retries the delivered request', async () => {
@@ -293,7 +298,7 @@ test('ordinary chat Retry still retries the delivered request', async () => {
 
 test('an implementation in another chat does not block an ordinary Retry', async () => {
   const result = await page('ready', { promoted: true, runningImplementation: true });
-  assert.match(result.root.textContent!, /Implementation running/);
+  assert.match(result.root.textContent!, /Implementing and verifying plan/);
   const other = { ...result.dialog, id: 'ordinary-other-chat' };
   const invoke = (window as any).__TAURI_INTERNALS__.invoke;
   (window as any).__TAURI_INTERNALS__.invoke = (command: string, args: any) => {

@@ -3,6 +3,8 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   closePreparationReply,
+  visiblePreparationMessages,
+  preparationPrompt,
   reopenPreparationReply,
   restorePreparationReply,
   preparationReplyMetadata,
@@ -250,4 +252,25 @@ test('restoration rejects lost context and failed status instead of ordinary dis
     ),
     /Disconnected/
   );
+});
+
+test('private preparation work leaves questions, failures and later conversations visible', () => {
+  const request = { ...preparationRequest, content: preparationPrompt('plan.md') };
+  const messages: ChatMessage[] = [
+    { id: 'plan', role: 'assistant', content: 'Saved plan' },
+    request,
+    { id: 'tool', role: 'tool', content: 'Internal JSON' },
+    { id: 'question', role: 'assistant', content: 'Which target should this use?' },
+  ];
+  const visible = (running: boolean) =>
+    visiblePreparationMessages(messages, 'preparation-1', running).map((m) => m.id);
+  assert.deepEqual(visible(true), ['plan']);
+  assert.deepEqual(visible(false), ['plan', 'question']);
+  messages.push(
+    { id: 'error', role: 'assistant', content: '', error: 'Disconnected' },
+    { id: 'next', role: 'user', content: 'Another task' },
+    { id: 'reply', role: 'assistant', content: 'Done' }
+  );
+  assert.deepEqual(visible(false), ['plan', 'error', 'next', 'reply']);
+  assert.equal(visiblePreparationMessages(messages, undefined, true), messages);
 });

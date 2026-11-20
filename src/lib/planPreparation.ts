@@ -1,4 +1,4 @@
-import type { ModelProfile, ToolMeta } from '../types';
+import type { ChatMessage, ModelProfile, ToolMeta } from '../types';
 import { chatApi } from './chatApi';
 import { isRequestMessage } from './requests';
 import { savedHarnessRates } from './harnessRates';
@@ -38,6 +38,41 @@ export interface PlanPreparation {
     warnings: string[];
     budgets?: Record<string, number>;
   };
+}
+
+export function preparationPrompt(planPath: string) {
+  return `Prepare verification for the plan in \`${planPath}\`.`;
+}
+
+/** Keep the conversation readable while its private tool transcript stays in durable history. */
+export function visiblePreparationMessages(
+  messages: ChatMessage[],
+  id: string | undefined,
+  running: boolean
+) {
+  if (!id) return messages;
+  let privateTurn = false;
+  return messages.filter((message, index) => {
+    if (isRequestMessage(message)) privateTurn = message.meta?.verifiedPreparation === id;
+    if (
+      !privateTurn ||
+      message.error ||
+      message.failed ||
+      message.meta?.failure ||
+      message.meta?.paused ||
+      message.meta?.interrupted
+    )
+      return true;
+    if (message.role === 'user')
+      return message.content !== preparationPrompt(message.meta?.planPath ?? '');
+    // A stopped agent can ask a plain-text question as its final reply.
+    return (
+      !running &&
+      index === messages.length - 1 &&
+      message.role === 'assistant' &&
+      !message.toolCalls?.length
+    );
+  });
 }
 
 /** Resolve the current request from durable history, including requests outside the loaded page. */

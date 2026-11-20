@@ -112,7 +112,7 @@ type. The guidance distinguishes string-valued component/fact maps and arrays of
 contract strings from object arrays such as `baselineFailures` and
 `excludedBuildRoots`. Validation errors ask the agent to repair that field or the
 staged files and submit the path again; a `ready` result
-ends preparation for human review without approving or starting implementation.
+ends the preparation agent’s work. The IDE coordinates the transition into implementation.
 
 Source imports keep slow reads and file synchronization outside the ledger's write
 transaction, so status polling and preparation retries can make progress together,
@@ -164,21 +164,21 @@ Tauri packaging or IPC check. Public API changes require protected tests in each
 configuration and a separate design review. Unsafe, FFI, resource and concurrency
 risks require dedicated evidence routes; incomplete routes block preparation.
 
-When preparation is ready, review the compact summary, requirements, checks, change
-scope and implementation limits, then choose **Implement plan**. The backend binds
-that decision to the exact saved plan, captured source, prepared inputs and provider
-prices. A changed plan, source, model or review requires fresh preparation. The
-trusted controller then owns implementation and bounded repair; a second ordinary
-agent loop does not edit the candidate alongside it. The completed preparation
-trials do not substitute for the implementation's final verification.
+Choosing **Implement this plan** with verification enabled starts preparation, then
+starts the isolated implementation when its checks are ready. The backend binds
+the run to the exact saved plan, captured source, prepared inputs and provider
+prices. Progress appears in a notification. Opening an interrupted chat restores
+its status and leaves a ready preparation awaiting an explicit start. A changed
+plan, source, model or review requires fresh preparation.
+
+After the candidate passes final verification, **Review changes** opens a file
+diff and identifies the destination checkout. **Apply changes** approves that exact
+delivery and applies it. Closing the review leaves the checkout untouched.
 
 Preparation model calls use ordinary chat accounting and are billed separately
-from the strict implementation limits shown in the review. Native trial checks use
-the preparation's durable check allowance, which carries into the promoted run;
-promotion does not reset that spending. **Stop preparation** cancels active work,
-**Continue preparation** resumes a still-current session, and **Prepare again**
-captures a new session when the earlier one is cancelled, stale or blocked. Normal
-chat retry/continuation also preserves the current preparation binding when valid.
+from the strict implementation budget. Native trials use the preparation’s durable
+check allowance, which carries into the promoted run. The notification offers
+**Stop** during preparation and **Continue** or **Retry** after an interruption.
 Failed verification trials are saved as failed tool results with their diagnostics,
 so the agent can repair the staged inputs and resubmit within the same session.
 Rust profiles preserve the manifest's `minimum_supported_rust_version` and may
@@ -195,9 +195,8 @@ resolution use the same staged config; a candidate collision with the reserved
 filename is rejected rather than overwritten.
 Opening a chat with interrupted preparation tool calls restores its status and
 controls without starting a model request or replaying a submission. A current
-idle session shows **Preparation paused** and **Continue preparation**; cancelled
-or stale sessions offer **Prepare again**, and completed preparations open for
-review. Historical unanswered calls do not inherit a later tool step's spinner.
+idle session offers **Continue**, cancelled or stale sessions offer **Retry**,
+and a ready preparation offers **Implement plan**. Historical unanswered calls do not inherit a later tool step's spinner.
 After reopening a chat, its first ordinary follow-up restores the latest durable
 active preparation before dispatch, preserving the user's message and private
 workspace routing. A recovery failure blocks dispatch rather than silently using
@@ -213,9 +212,9 @@ worker read/search tools. Restricted source remains in the immutable verificatio
 snapshot, while opaque diagnostics and graph details that might quote it are kept
 out of model feedback. Write restrictions protect source and staged targets.
 
-**Accepted — verified candidate** identifies a private candidate that passed the
-reviewed gate. **Review verified changes** opens its diff; **Export review bundle**
-saves a bundle on the execution host. These actions preserve the working tree and
+**Verified changes are ready** identifies a private candidate that passed the
+reviewed gate. **Review changes** opens its diff. If file previews are incomplete,
+**Export full review** saves a bundle on the execution host. These actions preserve the working tree and
 index. Applying a candidate requires the separate delivery review described below.
 
 ## Verified Autopilot and applying candidates

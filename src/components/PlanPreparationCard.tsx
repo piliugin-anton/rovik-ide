@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
+import { planNotice } from '../lib/planNotice';
 import type { ModelProfile } from '../types';
 import { openAppSettings } from '../lib/appSettings';
 import { savedHarnessRates } from '../lib/harnessRates';
@@ -12,6 +13,8 @@ import {
 
 /** Preparation runs in the conversation; this card holds only its status and the final decision. */
 export default function PlanPreparationCard(props: {
+  automatic?: boolean;
+  restoreOnly?: boolean;
   target: HarnessTarget;
   planPath: string;
   preparationId?: string;
@@ -29,6 +32,7 @@ export default function PlanPreparationCard(props: {
   onClose: () => void;
 }) {
   const [preparation, setPreparation] = createSignal<PlanPreparation>();
+  const [authorized, setAuthorized] = createSignal(!props.restoreOnly);
   const [busy, setBusy] = createSignal(false);
   const [launching, setLaunching] = createSignal(false);
   const [error, setError] = createSignal('');
@@ -48,6 +52,7 @@ export default function PlanPreparationCard(props: {
   const active = (scope: number) => !disposed && scope === generation && !props.contextProblem;
 
   async function launchPreparation(id: string, scope: number) {
+    setAuthorized(true);
     setLaunching(true);
     try {
       const started = await props.onPrepare(id);
@@ -97,7 +102,7 @@ export default function PlanPreparationCard(props: {
       });
       if (active(scope) && id === (preparation()?.preparationId ?? props.preparationId)) {
         accept(value);
-        setError('');
+        if (!props.automatic || !promoted) setError('');
         if (value.runId) {
           const run = await harnessRequest<HarnessRun>(props.target, {
             action: 'status',
@@ -220,6 +225,95 @@ export default function PlanPreparationCard(props: {
     generation++;
   });
 
+  let promoted: string | undefined;
+  createEffect(() => {
+    const current = preparation();
+    if (
+      !props.automatic ||
+      !authorized() ||
+      current?.status !== 'ready' ||
+      current.runId ||
+      !current.review ||
+      busy() ||
+      launching() ||
+      props.agentRunning ||
+      problem() ||
+      providerProblem() ||
+      error()
+    )
+      return;
+    const key = current.preparationId + current.review.digest;
+    if (promoted === key) return;
+    promoted = key;
+    void untrack(implement);
+  });
+
+  planNotice(() => {
+    if (!props.automatic) return;
+    const issue = problem() || providerProblem() || error();
+    const current = preparation();
+    const actions = [];
+    if (issue || ['blocked', 'stale', 'cancelled'].includes(status() ?? '')) {
+      if (props.profile && !savedHarnessRates(props.profile))
+        actions.push({
+          label: 'Set model prices',
+          run: () => openAppSettings('providers'),
+          keepOpen: true,
+        });
+      else if (!problem() && !busy() && !launching() && !props.agentRunning)
+        actions.push({
+          label: 'Retry',
+          run: () => {
+            if (current?.runId) void refresh();
+            else if (status() === 'ready' && !providerProblem()) void implement();
+            else if (status() === 'preparing' && !providerProblem()) void continuePreparation();
+            else void begin();
+          },
+          keepOpen: true,
+        });
+
+      return {
+        title: 'Plan preparation needs attention',
+        kind: 'warning',
+        onDismiss: props.onClose,
+        message:
+          issue || current?.reason || current?.error || 'Prepare the plan again to continue.',
+        actions,
+      };
+    }
+    if (status() === 'ready' && !authorized() && !busy())
+      return {
+        title: 'Ready to implement',
+        message: current?.review?.summary,
+        onDismiss: props.onClose,
+        actions: [
+          {
+            label: 'Implement plan',
+            primary: true,
+            run: () => setAuthorized(true),
+            keepOpen: true,
+          },
+        ],
+      };
+    if (status() === 'preparing' && !launching() && !props.agentRunning && !busy())
+      return {
+        title: 'Preparation paused',
+        onDismiss: props.onClose,
+        message: current?.reason || current?.error || 'Continue in the plan’s chat.',
+        actions: [{ label: 'Continue', run: () => void continuePreparation(), keepOpen: true }],
+      };
+    return {
+      title: status() === 'ready' ? 'Starting implementation' : 'Preparing plan checks',
+      message: props.planPath.split('/').pop(),
+      progress: 'busy',
+      actions:
+        current && !busy() && status() === 'preparing'
+          ? [{ label: 'Stop', run: () => void stop(), keepOpen: true }]
+          : [],
+    };
+  });
+
+  if (props.automatic) return null;
   return (
     <section
       class={`chat-verify plan-preparation ${problem() || providerProblem() || error() || ['blocked', 'stale', 'cancelled'].includes(status() ?? '') ? 'needs-approval' : status() === 'ready' ? 'clean' : 'running'}`}

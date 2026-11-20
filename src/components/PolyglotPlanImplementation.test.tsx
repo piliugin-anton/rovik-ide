@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { createSignal } from 'solid-js';
 import PolyglotPlanImplementation from './PolyglotPlanImplementation';
+import NotificationHost from './NotificationHost';
 import {
   implementationRun,
   planPreparation,
@@ -485,4 +486,86 @@ test('applying a verified candidate requires the exact delivery review and label
       acknowledged: true,
     }
   );
+});
+
+test('Implement automatically runs the prepared plan and waits for Apply on the reviewed checkout', async () => {
+  reset();
+  const verified = implementationRun('verified');
+  const delivery = {
+    approvalType: 'delivery',
+    subjectDigest: 'sha256:delivery',
+    request: { subject_digest: 'sha256:delivery' },
+  };
+  const prepared = {
+    ...verified,
+    application: {
+      subjectDigest: delivery.subjectDigest,
+      subject: { candidateDigest: verified.candidateDigest, root: '/project' },
+    },
+    pendingApprovals: [delivery],
+  };
+  respond = (request) => {
+    switch (request.action) {
+      case 'beginPlanPreparation':
+        return planPreparation();
+      case 'startPreparedImplementation':
+        return verified;
+      case 'reviewChanges':
+        return {
+          runId: verified.runId,
+          candidateDigest: verified.candidateDigest,
+          files: [{ path: 'quota.ts', before: 'return 0;', after: 'return 1;' }],
+        };
+      case 'prepareApplication':
+        return prepared;
+      case 'approve':
+        return { ...prepared, pendingApprovals: [] };
+      case 'applyApplication':
+        return {
+          ...verified,
+          status: 'applied',
+          applicationReceipt: { deliveredLocally: true, current: true, root: '/project' },
+        };
+      default:
+        throw Error(request.action);
+    }
+  };
+  const root = container();
+  cleanups.push(
+    render(
+      () => (
+        <>
+          <NotificationHost />
+          <PolyglotPlanImplementation
+            automatic
+            target={{ root: '/project', dialogId: 'chat' }}
+            planPath="quota.md"
+            profile={planProfile}
+            unsavedFiles={[]}
+            executionLabel="This computer"
+            onClose={() => {}}
+          />
+        </>
+      ),
+      root
+    )
+  );
+  await flush();
+  const actions = () => calls.map((entry) => entry.args.request.action);
+  assert.deepEqual(actions(), ['beginPlanPreparation', 'startPreparedImplementation']);
+  assert.equal(root.querySelector('details,.plan-preparation,.polyglot-review'), null);
+  button(root, 'Review changes').click();
+  await flush();
+  const dialog = () => document.querySelector<HTMLElement>('dialog')!;
+  assert.match(dialog().textContent!, /quota.ts/);
+  assert.match(dialog().textContent!, /This computer · \/project/);
+  button(dialog(), 'Close').click();
+  assert.ok(!actions().includes('approve'));
+  button(root, 'Review changes').click();
+  await flush();
+  assert.ok(!actions().includes('applyApplication'));
+  button(dialog(), 'Apply changes').click();
+  await flush();
+  assert.deepEqual(actions().slice(-2), ['approve', 'applyApplication']);
+  assert.match(root.textContent!, /Verified changes applied/);
 });

@@ -191,7 +191,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - **Verified plan implementation.** **Require verified result** is selected by
   default on **Implement this plan**. The ordinary chat agent prepares checks in
   a private source copy, reports progress and asks about missing requirements in
-  the conversation. Review one compact summary, then choose **Implement plan**.
+  the conversation. Preparation and verified implementation proceed automatically,
+  with progress in a bottom-right notification.
   Protected tests and a real failing control are staged outside your checkout;
   native preparation trials must succeed before the review becomes ready. The
   trusted backend prepares its verifier image and supported locked dependencies
@@ -206,13 +207,13 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Save that model's verification prices
   once in **Model providers → Verification pricing**. Enter ordinary prices per
   million tokens, such as `0.225`; budget errors show the saved prices, and
-  **Review model prices** opens their settings from the preparation card. Preparation uses ordinary
-  chat billing; the review shows separate implementation limits. Stop, continue
-  and retry actions remain in the conversation. **Retry** checks the saved
+  **Set model prices** opens settings when a price is missing. Preparation uses ordinary
+  chat billing and implementation uses its separate budget. The notification offers
+  stop, continue and retry actions when needed. **Retry** checks the saved
   preparation: it resumes active drafts, creates a fresh session for cancelled or
   stale inputs, and opens completed reviews or existing implementation runs.
-  Retrying never approves implementation. Review the verified candidate's
-  diff separately before applying it. See the [workflow and language limits](docs/design/polyglot-harness.md#verified-plan-implementation).
+  Choose **Review changes** when verification finishes, inspect the diff and its
+  destination, then choose **Apply changes** to write it to the checkout. See the [workflow and language limits](docs/design/polyglot-harness.md#verified-plan-implementation).
 - **Verified Autopilot delivery.** Enable **Require verified delivery** in
   Autopilot settings and review the task's prepared setup and saved model prices.
   The controller owns implementation and repairs; restart, budget and approval

@@ -121,14 +121,6 @@ export default function PlanImplementationAction(props: {
         </Show>
       </Show>
       <Show when={props.canImplement && status() !== 'implemented' && status() !== 'implementing'}>
-        <label class="settings-hint">
-          <input
-            type="checkbox"
-            checked={requireVerified()}
-            onChange={(event) => setRequireVerified(event.currentTarget.checked)}
-          />{' '}
-          Require verified result
-        </label>
         <button
           type="button"
           class="chat-action-button primary"
@@ -136,12 +128,20 @@ export default function PlanImplementationAction(props: {
           onClick={() => props.onImplement?.(requireVerified())}
           title={
             requireVerified()
-              ? 'Prepare checks automatically, then review and implement this plan'
+              ? 'Prepare checks and implement automatically. Review the changes before applying them.'
               : 'Switch to Agent mode and carry out this plan'
           }
         >
           Implement this plan
         </button>
+        <label class="chat-plan-option">
+          <input
+            type="checkbox"
+            checked={requireVerified()}
+            onChange={(event) => setRequireVerified(event.currentTarget.checked)}
+          />{' '}
+          Require verified result
+        </label>
       </Show>
     </div>
   );
