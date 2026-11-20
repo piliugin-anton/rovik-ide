@@ -99,7 +99,11 @@ fn real_workspace_checks_cover_every_rust_package_and_configured_c_and_cpp_tests
             vec![NativeCheck::ClangTidy, NativeCheck::Ctest]
         };
         for check in checks {
-            for mutant in [false, true] {
+            for (mutant, member_only) in [(false, false), (true, false), (false, true)] {
+                if member_only && !(language == Language::Rust && check == NativeCheck::CargoTests)
+                {
+                    continue;
+                }
                 if mutant && check != NativeCheck::CargoTests {
                     continue;
                 }
@@ -139,6 +143,10 @@ fn real_workspace_checks_cover_every_rust_package_and_configured_c_and_cpp_tests
                             "int main(void) { return 0; }\n",
                         ),
                     ]);
+                }
+                if member_only {
+                    profile.build_root = "one".into();
+                    profile.configurations[0].build_targets = vec!["one".into()];
                 }
                 let candidate = fixtures::snapshot(&ledger, "base", &files).unwrap();
                 let native = NativeInput {
@@ -229,7 +237,11 @@ fn real_workspace_checks_cover_every_rust_package_and_configured_c_and_cpp_tests
                 if check.behavioral() {
                     assert_eq!(
                         result.inventory.executed(),
-                        if language == Language::Rust { 2 } else { 1 }
+                        if language == Language::Rust && !member_only {
+                            2
+                        } else {
+                            1
+                        }
                     );
                 }
             }

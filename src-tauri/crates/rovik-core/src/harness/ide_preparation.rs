@@ -1011,7 +1011,7 @@ impl IdeProject {
                 .iter()
                 .map(|exclusion| {
                     format!(
-                        "Unverified and protected build root {}: {}",
+                        "Excluded build manifest {}: {}",
                         exclusion.manifest, exclusion.rationale
                     )
                 }),

@@ -94,11 +94,47 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
     let flags = config.flags.join("\u{1f}");
     // Rustdoc executes temporary test binaries; the runner permits execution only in /build.
     std::fs::create_dir_all("/build/tmp")?;
-    let environment = [
+    let mut environment = vec![
         ("TMPDIR", "/build/tmp"),
         ("CARGO_ENCODED_RUSTFLAGS", flags.as_str()),
         ("CARGO_ENCODED_RUSTDOCFLAGS", flags.as_str()),
     ];
+    if std::env::var_os("ROVIK_TRIAL_COMPILER_CACHE").is_some()
+        && Path::new("/usr/bin/sccache").is_file()
+    {
+        let cache = Path::new("/build/sccache");
+        std::fs::create_dir(cache)?;
+        let seed = Path::new("/dependencies/.rovik-trial-cache.tar");
+        if seed.is_file() {
+            let unpack = run(
+                &args(&[
+                    "/bin/tar",
+                    "--no-same-owner",
+                    "-xf",
+                    "/dependencies/.rovik-trial-cache.tar",
+                ]),
+                cache,
+                &[],
+            )?;
+            if unpack.code != Some(0) {
+                std::fs::remove_dir_all(cache)?;
+                std::fs::create_dir(cache)?;
+            }
+        }
+        // Cargo build scripts such as aws-lc-sys also compile native objects.
+        // cc-rs accepts a compiler wrapper followed by the real compiler.
+        environment.extend([
+            ("CC", "/usr/bin/sccache /usr/bin/cc"),
+            ("CXX", "/usr/bin/sccache /usr/bin/c++"),
+            ("CMAKE_C_COMPILER_LAUNCHER", "/usr/bin/sccache"),
+            ("CMAKE_CXX_COMPILER_LAUNCHER", "/usr/bin/sccache"),
+            ("RUSTC_WRAPPER", "/usr/bin/sccache"),
+            ("CARGO_INCREMENTAL", "0"),
+            ("SCCACHE_DIR", "/build/sccache"),
+            ("SCCACHE_CACHE_SIZE", "128M"),
+            ("TOKIO_WORKER_THREADS", "2"),
+        ]);
+    }
     let metadata: Value = wire::decode(
         checked(
             &args(&[
@@ -116,7 +152,33 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
     let packages = metadata["packages"]
         .as_array()
         .ok_or_else(|| Error::new("Cargo packages missing".into()))?;
+    let member_manifest = cwd.join("Cargo.toml");
+    let is_member = metadata["workspace_root"]
+        .as_str()
+        .is_some_and(|path| Path::new(path) != cwd);
+    let member = if is_member {
+        Some(
+            packages
+                .iter()
+                .find(|p| {
+                    p["manifest_path"]
+                        .as_str()
+                        .is_some_and(|path| Path::new(path) == member_manifest)
+                })
+                .and_then(|p| p["name"].as_str())
+                .ok_or_else(|| {
+                    Error::new("selected Cargo member is absent from workspace metadata".into())
+                })?,
+        )
+    } else {
+        None
+    };
+    let selection =
+        member.map_or_else(|| args(&["--workspace"]), |name| args(&["--package", name]));
     for package in packages {
+        if member.is_some() && package["name"].as_str() != member {
+            continue;
+        }
         require(
             package["edition"].as_str()
                 == input
@@ -172,7 +234,8 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
         // A new oracle cannot supply missing production code through include!
         // or a custom Cargo target. Build the unchanged project with this exact
         // configuration before making independently authored tests visible.
-        let mut command = args(&[compiler, "check", "--workspace", "--all-targets"]);
+        let mut command = args(&[compiler, "check", "--all-targets"]);
+        command.extend(selection.clone());
         command.extend(config_args(config));
         let output = invoke(&command)?;
         std::io::Write::write_all(&mut std::io::stderr(), &output.stdout)?;
@@ -197,9 +260,15 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
             },
         ]);
         if input.check == NativeCheck::CargoFmt {
-            command.extend(args(&["--all", "--", "--check"]));
+            if let Some(name) = member {
+                command.extend(args(&["--package", name]));
+            } else {
+                command.push("--all".into());
+            }
+            command.extend(args(&["--", "--check"]));
         } else {
-            command.extend(args(&["--workspace", "--all-targets"]));
+            command.extend(selection.clone());
+            command.push("--all-targets".into());
             command.extend(config_args(config));
             if input.check == NativeCheck::CargoClippy {
                 command.extend(args(&["--", "-D", "warnings"]));
@@ -218,12 +287,12 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
         let mut command = args(&[
             compiler,
             "test",
-            "--workspace",
             "--all-targets",
             "--no-run",
             "--message-format=json",
         ]);
         command.extend(config_args(config));
+        command.extend(selection);
         let output = invoke(&command)?;
         require(output.code == Some(0), "workspace test compilation failed")
             .map_err(|e| e.with_category(crate::FailureCategory::Implementation))?;
@@ -294,20 +363,6 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
             append(&mut inventory, cases, &identity);
         }
     } else {
-        let metadata: Value = wire::decode(
-            checked(
-                &args(&[
-                    compiler,
-                    "metadata",
-                    "--locked",
-                    "--offline",
-                    "--format-version=1",
-                    "--no-deps",
-                ]),
-                &cwd,
-            )?
-            .as_bytes(),
-        )?;
         let members: BTreeSet<_> = metadata["workspace_members"]
             .as_array()
             .ok_or_else(|| Error::new("Cargo workspace members missing".into()))?
@@ -318,6 +373,9 @@ fn cargo(input: &NativeCheckInput, config: &Configuration) -> Result<(Inventory,
             .as_array()
             .ok_or_else(|| Error::new("Cargo packages missing".into()))?
         {
+            if member.is_some() && package["name"].as_str() != member {
+                continue;
+            }
             if !package["id"]
                 .as_str()
                 .is_some_and(|id| members.contains(id))

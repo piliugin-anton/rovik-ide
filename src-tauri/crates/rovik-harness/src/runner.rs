@@ -27,6 +27,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod build_cache;
 mod delegation;
 mod engine;
 #[cfg(all(test, target_os = "linux"))]
@@ -378,6 +379,7 @@ impl ContainerBackend {
             spec,
             cancel,
             None,
+            None,
         )
     }
     /// Execute a durable controller operation, registering its job before process creation.
@@ -404,6 +406,7 @@ impl ContainerBackend {
             spec,
             cancel,
             Some(lease),
+            None,
         )
     }
     /// Remove a controller-created job, treating confirmed absence as idempotent cleanup.
@@ -465,7 +468,7 @@ impl ContainerBackend {
         Err(Error::new(format!("cannot remove registered job: {error}")))
     }
     #[allow(clippy::too_many_arguments)]
-    fn execute_inner(
+    pub(crate) fn execute_inner(
         &self,
         ledger: &Ledger,
         candidate: &Snapshot,
@@ -476,6 +479,7 @@ impl ContainerBackend {
         spec: &CheckSpec,
         cancel: &Cancellation,
         lease: Option<&Lease>,
+        trial_stage: Option<&str>,
     ) -> Result<Observation> {
         environment.validate(registry)?;
         self.validate_image(environment)?;
@@ -617,6 +621,15 @@ impl ContainerBackend {
             oom_killed: false,
             duration_ms: 0,
         };
+        let cache = match (lease, trial_stage) {
+            (Some(lease), Some(stage)) if spec.command_id.starts_with("native-cargo") => Some(
+                build_cache::TrialCache::new(ledger, lease, stage, &observation, &spec.command_id)?,
+            ),
+            _ => None,
+        };
+        if let Some(cache) = &cache {
+            cache.seed(&deps)?;
+        }
         let execution = (|| -> Result<Observation> {
             let created = process(create, Duration::from_secs(120), 64 * 1024, cancel, || {
                 self.remove_registered_job(&job).map(|_| ())
@@ -663,14 +676,31 @@ impl ContainerBackend {
             for (key, value) in &definition.environment {
                 command.arg(format!("{key}={value}"));
             }
+            if cache.is_some() {
+                command.arg("ROVIK_TRIAL_COMPILER_CACHE=1");
+            }
             command.args(&argv);
             let out = process(
                 command,
                 Duration::from_millis(spec.timeout_ms),
                 spec.output_limit_bytes as usize,
                 cancel,
-                || self.terminate(&job),
+                || {
+                    if !cancel.is_cancelled() {
+                        if let Some(cache) = &cache {
+                            // Freeze workload processes before collecting completed compiler entries.
+                            let _ = self.checked(&["exec", &job, "/bin/sh", "-c", "kill -STOP -1"]);
+                            cache.save(self, &job);
+                        }
+                    }
+                    self.terminate(&job)
+                },
             )?;
+            if !out.timed_out && !out.cancelled && !out.exceeded {
+                if let Some(cache) = &cache {
+                    cache.save(self, &job);
+                }
+            }
             let oom = self.checked(&["inspect", "--format", "{{.State.OOMKilled}}", &job])?;
             let report = if let Some(path) = &definition.report_file {
                 self.report(&job, path, spec.output_limit_bytes)?

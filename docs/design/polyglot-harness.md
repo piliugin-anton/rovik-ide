@@ -135,12 +135,17 @@ the resulting immutable image and offline assets with network access disabled.
 The model cannot supply the verifier executable or replace its build recipe.
 Every observed build root must be selected or explicitly proposed in
 `excludedBuildRoots` with its manifest and rationale. The review identifies each
-excluded root as unverified and protects its whole directory against edits or
-deletions, including when the proposed write scope is broad. Repository roots
-and ancestors of selected roots cannot be excluded. This permits unrelated
-checked-in examples and fixtures without silently dropping build roots; the full
-source snapshot and native dependency graphs remain intact. Dependency setup
-uses the selected manifests, and cache reuse is bound to that selection.
+excluded manifest as unverified. A disjoint excluded directory is protected in full.
+An excluded ancestor manifest can contain a selected component when every allowed
+write lies inside a separately selected nested build root. For example, a plan
+confined to `web/**` can select `web/package.json` and exclude an unrelated root
+Cargo workspace with a review rationale. Selecting a Cargo member manifest checks that package and builds its dependencies. Selecting the workspace root checks the workspace. Dependency setup uses the selected manifests.
+
+During Cargo preparation trials the verifier checkpoints up to 128 MiB of compiler
+cache entries from its temporary build filesystem. A matching retry restores them
+inside a fresh sandbox. Baseline and negative-control trials have separate slots.
+Changes to the source snapshot, protected oracle, configuration, command arguments
+or verifier environment invalidate reuse. Final verification starts cold.
 Automatic preparation currently requires a Linux x86_64 execution host with usable
 Docker or rootless Podman. Other desktops can use a connected compatible Linux
 host. Installing Docker locally is a separate prerequisite described below.

@@ -4,7 +4,7 @@ Use {DRAFTS}/template.json as the submission schema and write {DRAFTS}/submissio
 
 Discovered build roots: {}.
 
-Every observed manifest must be selected, or explicitly proposed in setup.excludedBuildRoots as {{"manifest":"examples/demo/package.json","rationale":"why this example is unrelated to the saved plan"}}. Exclusions are shown for human review and freeze the entire root against edits/deletion. Never exclude the repository root or an ancestor of a selected root; dependencies and native checks still use the complete captured source.
+Every observed manifest must be selected, or explicitly proposed in setup.excludedBuildRoots as {{"manifest":"examples/demo/package.json","rationale":"why this example is unrelated to the saved plan"}}. The review shows each exclusion and its rationale. Disjoint excluded directories are protected against edits and deletion. For a component-only plan, an ancestor manifest (including a repository-root Cargo workspace) can be excluded with a rationale when every write is inside a separately selected nested component. Select all components affected by a shared contract or integration change. A web-only change inside web/ can select web/package.json without an unrelated Cargo test; dependencies and native checks still use the complete captured source.
 
 Required profile fact names: {}. Copy those names for each language; Rust additionally accepts rust_version to select the measured verification compiler. The measured environment contains additional facts for other languages.
 

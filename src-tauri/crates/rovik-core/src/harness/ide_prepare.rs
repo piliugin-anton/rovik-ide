@@ -140,14 +140,34 @@ pub(super) fn scoped_inventory(
                     exclusion.manifest
                 ))
             })?;
+        let contains_selected = selected_roots.iter().any(|root| {
+            !root.is_empty()
+                && (unit.root.is_empty() || root.starts_with(&format!("{}/", unit.root)))
+        });
+        if contains_selected {
+            // The write allowlist is the boundary for a partially selected tree,
+            // including paths that do not exist in the captured snapshot yet.
+            let confined = input.write_paths.iter().all(|pattern| {
+                let path = pattern.strip_suffix("/**").unwrap_or(pattern);
+                selected_roots.iter().any(|root| {
+                    !root.is_empty()
+                        && (path.starts_with(&format!("{root}/"))
+                            || (pattern.ends_with("/**") && path == *root))
+                })
+            });
+            ensure(
+                confined && !input.write_paths.is_empty() && !selected_roots.contains(&unit.root.as_str()),
+                "a repository-root or ancestor exclusion requires all writes inside separately selected nested build roots",
+            )?;
+            protected.insert(unit.manifest.clone());
+            continue;
+        }
         ensure(
             !unit.root.is_empty(),
-            "the repository-root build cannot be excluded",
+            "the repository-root build needs a selected nested component",
         )?;
         ensure(
-            !selected_roots
-                .iter()
-                .any(|root| *root == unit.root || root.starts_with(&format!("{}/", unit.root))),
+            !selected_roots.contains(&unit.root.as_str()),
             "an excluded build root cannot contain a selected build root",
         )?;
         let pattern = format!("{}/**", unit.root);
@@ -1366,7 +1386,7 @@ mod tests {
     }
 
     #[test]
-    fn exclusions_cannot_hide_repository_roots_selected_ancestors_or_unknown_manifests() {
+    fn ancestor_exclusions_require_writes_confined_to_selected_components() {
         let (_directory, ledger, mut baseline, mut input) = fixture();
         let inventory = onboarding::inspect(&ledger, &baseline).unwrap();
         input
@@ -1380,6 +1400,8 @@ mod tests {
             .unwrap_err()
             .message
             .contains("repository-root"));
+        input.write_paths = vec!["backend/**".into()];
+        assert!(scoped_inventory(&inventory, &input).is_ok());
         input.excluded_build_roots[0].manifest = "unknown/Cargo.toml".into();
         assert!(scoped_inventory(&inventory, &input)
             .unwrap_err()
@@ -1412,7 +1434,7 @@ mod tests {
         assert!(scoped_inventory(&inventory, &input)
             .unwrap_err()
             .message
-            .contains("cannot contain"));
+            .contains("ancestor exclusion"));
         let (_directory, ledger, mut baseline, mut input) = fixture();
         baseline.files.insert(
             "examples/[toy]/Cargo.toml".into(),

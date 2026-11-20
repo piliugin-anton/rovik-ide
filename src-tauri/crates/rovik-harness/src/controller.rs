@@ -792,7 +792,12 @@ impl Controller {
             spec.timeout_ms.saturating_add(720_000),
             &[("checks".into(), 1)].into(),
         )?;
-        let observation = self.backend.execute_leased(
+        let trial_stage = matches!(
+            kind,
+            "preparation_baseline" | "preparation_negative_control"
+        )
+        .then_some(kind);
+        let observation = self.backend.execute_inner(
             &self.ledger,
             candidate,
             &setup.oracle,
@@ -801,7 +806,8 @@ impl Controller {
             &setup.registry,
             spec,
             cancel,
-            &lease,
+            Some(&lease),
+            trial_stage,
         )?;
         let result = runner::admit_observation(
             &mut self.ledger,
