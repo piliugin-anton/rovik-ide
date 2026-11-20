@@ -234,6 +234,11 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           />
         </Show>
         <Item
+          page="accounts"
+          label="Repository accounts"
+          about="Sign in to GitHub and GitLab across all projects."
+        />
+        <Item
           page="network"
           label="Network"
           about="How Rovik connects to model providers, the servers it downloads from and cloud hosts: how long a connection may take, and the proxy."

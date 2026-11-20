@@ -565,6 +565,30 @@ fn at_version(mut memory: NewMemory, root: Option<&str>) -> NewMemory {
     memory
 }
 
+/// Localizes an imported team claim against the current working tree, including
+/// uncommitted changes. Callers check file restrictions before reading bytes.
+pub fn team_applicability(
+    record: &MemoryRecord,
+    root: &str,
+) -> verified_code_memory::Applicability {
+    use verified_code_memory::{Applicability, Verification};
+    if !record
+        .code_version
+        .as_ref()
+        .is_some_and(|s| s.starts_with("files-sha256:"))
+    {
+        return Applicability::Unknown;
+    }
+    if record.verification == Verification::Verified
+        && record.evidence_matches_claim()
+        && fingerprint_matches(record, Some(root))
+    {
+        Applicability::Current
+    } else {
+        Applicability::NeedsRevalidation
+    }
+}
+
 fn fingerprint_matches(record: &MemoryRecord, root: Option<&str>) -> bool {
     match record.code_version.as_deref() {
         Some(version) if version.starts_with("files-sha256:") => {

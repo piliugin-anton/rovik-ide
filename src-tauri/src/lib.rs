@@ -390,6 +390,8 @@ pub fn run() {
             commands::project::save_project_settings,
             commands::project::restricted_files,
             commands::memory::memory_stats,
+            commands::memory::memory_team,
+            commands::repository_account,
             commands::memory::memory_list,
             commands::memory::memory_edit,
             commands::memory::memory_delete,

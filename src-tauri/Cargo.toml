@@ -12,6 +12,8 @@ members = [
     "crates/rovik-headless",
     "crates/eoka",
     "crates/verified-code-memory",
+    "crates/rovik-team-memory",
+    "crates/rovik-forge",
 ]
 # A dependency kept here as published, but for its fixes (its FORK.md):
 # built as one, not as a member, so its own tests and examples, and what

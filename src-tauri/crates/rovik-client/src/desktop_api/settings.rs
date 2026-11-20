@@ -11,6 +11,11 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum SettingsRequest {
+    /// Global repository provider account management.
+    RepositoryAccount {
+        provider: crate::forge_accounts::Provider,
+        action: crate::forge_accounts::AccountAction,
+    },
     /// Reads a shared UI state map.
     ReadShared { name: String },
     /// Initializes a shared UI state map only if no window has saved it.
@@ -43,6 +48,17 @@ impl SettingsRequest {
     pub(super) async fn dispatch(self, backend: &DesktopBackend) -> DesktopResult {
         let shared = backend.core.db.data_dir().join("shared");
         match self {
+            Self::RepositoryAccount { provider, action } => {
+                let runtime = tokio::runtime::Handle::current();
+                let secrets = backend.secrets.clone();
+                encode_result(
+                    blocking(move || {
+                        crate::forge_accounts::run(&secrets, provider, action, runtime)
+                    })
+                    .await,
+                )
+            }
+
             Self::ReadShared { name } => {
                 encode_result(blocking(move || crate::shared_state::read(&shared, &name)).await)
             }

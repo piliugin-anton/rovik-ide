@@ -5,6 +5,9 @@ description = "The app's half of the protocol: a connection to an agent daemon"
 edition.workspace = true
 
 [dependencies]
+rovik-forge = { path = "../rovik-forge" }
+rovik-team-memory = { path = "../rovik-team-memory" }
+verified-code-memory.workspace = true
 rusqlite.workspace = true
 rovik-protocol.workspace = true
 # The app's Core: the mirror is written into its database, and remote

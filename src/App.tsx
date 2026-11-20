@@ -1,3 +1,4 @@
+import { scheduleTeamMemory } from './lib/memory';
 import { backendProject, onBackendRestored } from './lib/backendSession';
 import { startPageRequests } from './lib/pageRequests';
 import { startBackendEvents } from './lib/backendEvents';
@@ -307,6 +308,11 @@ export default function App() {
   } | null>(null);
   const [terminalCollapsed, setTerminalCollapsed] = createSignal(true);
   const [pendingOpenPath, setPendingOpenPath] = createSignal<string | null>(null);
+
+  createEffect(() => {
+    const root = rootPath();
+    if (root) onCleanup(scheduleTeamMemory(root));
+  });
 
   const tree = createFileTreeController(rootPath);
 

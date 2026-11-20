@@ -2079,6 +2079,10 @@ every request, so the model's own output goes back with it:
   back, gets the request again without it, and isn't sent it again while
   the app runs. The other models on the same provider still are.
 
+### Team project memory
+
+GitHub and GitLab accounts are available across projects in Settings → Repository accounts. A project can opt into a team hub and publish reviewed memories from its memory manager. [Team setup and operations](docs/team-project-memory.md)
+
 ### Cloud project memory
 
 Updated cloud hosts synchronize project memories with the desktop. Separate cloud

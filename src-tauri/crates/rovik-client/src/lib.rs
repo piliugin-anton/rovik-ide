@@ -37,6 +37,8 @@ pub mod desktop_backend;
 pub mod desktop_connection;
 mod desktop_events;
 pub mod desktop_session;
+/// Global GitHub and GitLab account sessions.
+pub mod forge_accounts;
 pub mod host_settings;
 pub mod host_shell;
 mod hosts;

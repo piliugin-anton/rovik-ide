@@ -1,0 +1,14 @@
+[package]
+name = "rovik-forge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+reqwest = { workspace = true, features = ["form"] }
+uuid = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "net"] }

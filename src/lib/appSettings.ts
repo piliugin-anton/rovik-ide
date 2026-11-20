@@ -13,6 +13,7 @@ import { invoke } from '@tauri-apps/api/core';
 /** The dialog's pages: the menu, and one page per thing to set. */
 export type SettingsPage =
   | 'menu'
+  | 'accounts'
   | 'editor'
   | 'providers'
   | 'connectors'
@@ -33,6 +34,7 @@ export type SettingsPage =
 
 export const PAGE_TITLE: Record<SettingsPage, string> = {
   menu: 'Settings',
+  accounts: 'Repository accounts',
   editor: 'Editor',
   providers: 'Model providers',
   connectors: 'Connectors',

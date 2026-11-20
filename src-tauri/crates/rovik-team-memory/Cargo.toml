@@ -1,0 +1,20 @@
+[package]
+name = "rovik-team-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rovik-forge = { path = "../rovik-forge" }
+verified-code-memory.workspace = true
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+reqwest = { workspace = true, features = ["form"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+rusqlite.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

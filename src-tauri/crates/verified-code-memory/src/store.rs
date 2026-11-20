@@ -19,7 +19,7 @@ use uuid::Uuid;
 const MAX_RETRIEVAL_LIMIT: usize = 32;
 // Older writers do not advance replication epochs when clearing history.
 // They must refuse to reopen a database that now participates in sync.
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// How many distinct admissible full-text claims one query retains before
 /// reranking. Rejected rows and exact copies do not consume this allowance.
@@ -1246,8 +1246,15 @@ impl MemoryStore {
             }
             Applicability::Unknown => " — never checked in its current form",
         };
+        let origin = match self.team_authors(&memory.record.repo, memory.record.id) {
+            Ok(Some((author, editor))) => {
+                format!("\n  Team claim published by {author}, latest revision by {editor}")
+            }
+            Ok(None) => String::new(),
+            Err(_) => String::from("\n  Team attribution unavailable"),
+        };
         format!(
-            "- [{}]{} {} — {}\n  id: {}\n  Evidence: {}\n  Files: {}\n  Match: {}\n",
+            "- [{}]{} {} — {}\n  id: {}{origin}\n  Evidence: {}\n  Files: {}\n  Match: {}\n",
             memory.record.verification,
             standing,
             memory.record.title,

@@ -80,3 +80,15 @@ pub async fn memory_clear(
         .desktop_raw(DesktopRequest::from(MemoryRequest::Clear { root }))
         .await
 }
+
+/// Reads or changes the team memory link for the open project.
+#[tauri::command]
+pub async fn memory_team(
+    backend: State<'_, DesktopConnection>,
+    root: String,
+    action: rovik_client::desktop_api::memory::team::Action,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(MemoryRequest::Team { root, action }))
+        .await
+}

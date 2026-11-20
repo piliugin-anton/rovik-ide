@@ -40,6 +40,7 @@ import SubagentSettings from './SubagentSettings';
 import AutopilotSettings from './AutopilotSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
 import RestrictedFilesSettings from './RestrictedFilesSettings';
+import RepositoryAccounts from './RepositoryAccounts';
 import MemorySettings from './MemorySettings';
 import HeavyCommandsSettings from './HeavyCommandsSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
@@ -281,6 +282,9 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             </Match>
             <Match when={page() === 'vfs'}>
               <VirtualFilesSettings />
+            </Match>
+            <Match when={page() === 'accounts'}>
+              <RepositoryAccounts />
             </Match>
             <Match when={page() === 'network'}>
               <NetworkSettings />

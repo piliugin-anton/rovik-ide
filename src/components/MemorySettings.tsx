@@ -9,6 +9,7 @@
 import { createEffect, createResource, createSignal, on, Show } from 'solid-js';
 import { memoryStats, memorySummary } from '../lib/memory';
 import { loadProjectSettings, updateProjectSettings } from '../lib/projectProfile';
+import TeamMemorySettings from './TeamMemorySettings';
 import MemoryManager from './MemoryManager';
 import { SettingRow, SettingStatus } from './SettingsControls';
 
@@ -100,6 +101,9 @@ export default function MemorySettings(props: { root: string }) {
           <SettingStatus warning>{error()}</SettingStatus>
         </Show>
       </section>
+      <Show when={props.root} keyed>
+        {(root) => <TeamMemorySettings root={root} />}
+      </Show>
       <Show when={managing()}>
         <MemoryManager
           root={props.root}

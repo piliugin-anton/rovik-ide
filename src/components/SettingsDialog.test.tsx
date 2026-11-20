@@ -219,6 +219,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
       state: 'FUSE isn’t installed: isolated chats cannot start until mounting works',
       warning: true,
     },
+    { label: 'Repository accounts', state: null, warning: false },
     { label: 'Network', state: 'No proxy: connections go directly', warning: false },
     { label: 'Cloud hosts', state: '2 hosts, 1 connected, 2 chats there', warning: false },
     // Its version once the window's updater has asked (App starts it).

@@ -52,3 +52,5 @@ pub use store::{MemoryStore, SharedMemoryStore};
 pub mod semantic;
 /// Incremental replication of scoped records, edits and deletion markers.
 pub mod sync;
+/// Team replica imports, scoped separately from personal-host replication.
+pub mod team;
