@@ -6,6 +6,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  For,
   Index,
   on,
   onCleanup,
@@ -312,9 +313,24 @@ interface ChatProps {
   projectId: Accessor<string | null | undefined>;
 }
 
+/** Window-local state owned by independent chats. Removing one entry preserves ongoing work in the others. */
+function chatValues<T>() {
+  const [values, setValues] = createSignal(new Map<string, T>());
+  function set(id: string, value: T | undefined) {
+    setValues((previous) => {
+      if (previous.get(id) === value) return previous;
+      const next = new Map(previous);
+      if (value === undefined) next.delete(id);
+      else next.set(id, value);
+      return next;
+    });
+  }
+  return [values, set] as const;
+}
+
 export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
-  const [strictPlan, setStrictPlan] = createSignal<{
+  type StrictPlan = {
     root: string;
     dialogId: string;
     path?: string;
@@ -325,14 +341,16 @@ export default function ChatPanel(props: ChatProps) {
     profile?: ModelProfile;
     projectId: string;
     owner: string;
-  }>();
-  const [openPreparation, setOpenPreparation] = createSignal<{
-    plan: NonNullable<ReturnType<typeof strictPlan>>;
-    session: PlanPreparation;
-  }>();
-  const [quietPreparation, setQuietPreparation] = createSignal<string>();
-  const [strictActive, setStrictActive] = createSignal(false);
-  const [strictStartReview, setStrictStartReview] = createSignal<{
+  };
+  const [plans, setPlan] = chatValues<StrictPlan>();
+  const strictPlan = (id = activeDialogId()) => plans().get(id ?? '');
+  const setStrictPlan = (plan: StrictPlan) => setPlan(plan.dialogId, plan);
+  const [preparations, setPreparation] = chatValues<PlanPreparation>();
+  const [quietPreparations, setQuietPreparation] = chatValues<string>();
+  const quietPreparation = () => quietPreparations().get(activeDialogId() ?? '');
+  const [activePlans, setStrictActive] = chatValues<boolean>();
+  const strictActive = (id = activeDialogId()) => activePlans().get(id ?? '');
+  const [reviews, setReview] = chatValues<{
     root: string;
     dialogId: string;
     projectId: string;
@@ -341,7 +359,10 @@ export default function ChatPanel(props: ChatProps) {
     request: string;
     finish: (settings: VerifiedDeliverySettings | null) => void;
   }>();
-  onCleanup(() => strictStartReview()?.finish(null));
+  const strictStartReview = (id = activeDialogId()) => reviews().get(id ?? '');
+  onCleanup(() => {
+    for (const review of reviews().values()) review.finish(null);
+  });
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
   const [subagentSettings, setSubagentSettings] =
@@ -3264,7 +3285,7 @@ export default function ChatPanel(props: ChatProps) {
           harnessOwner(dialogId) !== startingOwner ||
           (strictTask && strictTask.projectId !== props.projectId())));
     if (contextChanged()) return false;
-    if (strictActive() && strictPlan()?.dialogId === dialogId) return false;
+    if (strictActive(dialogId)) return false;
     const readOnly = readOnlyReason(store.summaryOf(dialogId)?.place, cloud.hosts);
     if (readOnly) {
       notify({ title: 'This chat can’t change now', message: readOnly, timeout: 6000 });
@@ -3361,7 +3382,7 @@ export default function ChatPanel(props: ChatProps) {
   const readOnly = () =>
     strictStartReview()
       ? 'Review or cancel the pending verified task setup before sending another request.'
-      : strictActive() && strictPlan()?.dialogId === activeDialogId()
+      : strictActive()
         ? 'A verified implementation is running. Cancel it before starting an ordinary agent run.'
         : readOnlyReason(activeDialog()?.place, cloud.hosts);
 
@@ -3398,10 +3419,10 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   function preparationReplyMeta(dialogId: string, meta: ChatMessage['meta']) {
-    const plan = strictPlan();
-    const open = openPreparation();
+    const plan = strictPlan(dialogId);
+    const open = preparations().get(dialogId);
     return preparationReplyMetadata(
-      open?.plan === plan ? open?.session : undefined,
+      open,
       plan,
       {
         root: props.rootPath(),
@@ -3451,7 +3472,7 @@ export default function ChatPanel(props: ChatProps) {
               preparationId: restored.preparationId,
             };
             setStrictPlan(plan);
-            setOpenPreparation({ plan, session: restored });
+            setPreparation(dialogId, restored);
             message = {
               ...message,
               meta: {
@@ -3499,7 +3520,7 @@ export default function ChatPanel(props: ChatProps) {
       const profile = activeProfile();
       if (!root || !projectId || !owner || !profile || strictStartReview()) return false;
       const settings = await new Promise<VerifiedDeliverySettings | null>((resolve) => {
-        setStrictStartReview({
+        setReview(dialogId, {
           root,
           projectId,
           dialogId,
@@ -3507,7 +3528,7 @@ export default function ChatPanel(props: ChatProps) {
           profile: { ...profile },
           request: message.content,
           finish: (value) => {
-            setStrictStartReview(undefined);
+            setReview(dialogId, undefined);
             resolve(value);
           },
         });
@@ -3920,7 +3941,7 @@ export default function ChatPanel(props: ChatProps) {
     return undefined;
   }
 
-  let retryingLastTurn = false;
+  const retryingLastTurn = new Set<string>();
   let retryDisposed = false;
   onCleanup(() => {
     retryDisposed = true;
@@ -3933,7 +3954,7 @@ export default function ChatPanel(props: ChatProps) {
   /** Startup restores preparation for inspection; only an explicit Retry launches it. */
   async function recoverLastTurn(kind: 'retry' | 'resume', retryPreparation: boolean) {
     const dialogId = activeDialogId();
-    if (!dialogId || sending() || retryingLastTurn) return;
+    if (!dialogId || sending() || retryingLastTurn.has(dialogId)) return;
     const root = props.rootPath();
     const projectId = props.projectId();
     const owner = harnessOwner(dialogId);
@@ -3948,7 +3969,7 @@ export default function ChatPanel(props: ChatProps) {
       activeProfile()?.model === profile?.model &&
       activeProfile()?.baseUrl === profile?.baseUrl &&
       !sending();
-    retryingLastTurn = true;
+    retryingLastTurn.add(dialogId);
     try {
       await store.flush();
       const preparation = await preparationToRetry(dialogId);
@@ -3988,7 +4009,7 @@ export default function ChatPanel(props: ChatProps) {
           message: String(cause),
         });
     } finally {
-      retryingLastTurn = false;
+      retryingLastTurn.delete(dialogId);
     }
   }
 
@@ -5182,21 +5203,20 @@ export default function ChatPanel(props: ChatProps) {
           );
         }}
       </Show>
-      <Show when={strictPlan()} keyed>
+      <For each={Array.from(plans().values())}>
         {(plan) => {
           onCleanup(() => {
-            setOpenPreparation((open) => (open?.plan === plan ? undefined : open));
-            setQuietPreparation(undefined);
+            setPreparation(plan.dialogId, undefined);
+            setQuietPreparation(plan.dialogId, undefined);
+            setStrictActive(plan.dialogId, undefined);
           });
           const contextProblem = createMemo(() =>
-            activeDialogId() !== plan.dialogId
-              ? 'Return to this plan’s chat to continue preparation or implementation.'
-              : verifiedPlanContextProblem(plan, {
-                  root: props.rootPath(),
-                  projectId: props.projectId(),
-                  chatProjectId: store.projectId(),
-                  owner: harnessOwner(plan.dialogId),
-                })
+            verifiedPlanContextProblem(plan, {
+              root: props.rootPath(),
+              projectId: props.projectId(),
+              chatProjectId: store.projectId(),
+              owner: harnessOwner(plan.dialogId),
+            })
           );
           const profile = createMemo(() =>
             plan.profile
@@ -5209,6 +5229,7 @@ export default function ChatPanel(props: ChatProps) {
           );
           return (
             <PolyglotPlanImplementation
+              background={activeDialogId() !== plan.dialogId}
               automatic={!!plan.path}
               restoreOnly={!plan.implementRequested}
               target={{ root: plan.root, dialogId: plan.dialogId }}
@@ -5220,10 +5241,11 @@ export default function ChatPanel(props: ChatProps) {
               profile={profile()}
               agentRunning={isRunning(plan.dialogId)}
               onPreparationChange={(session) => {
-                setOpenPreparation({ plan, session });
-                if (plan.implementRequested) setQuietPreparation(session.preparationId);
+                setPreparation(plan.dialogId, session);
+                if (plan.implementRequested)
+                  setQuietPreparation(plan.dialogId, session.preparationId);
               }}
-              onRunChange={() => setOpenPreparation(undefined)}
+              onRunChange={() => setPreparation(plan.dialogId, undefined)}
               onPrepare={async (preparationId) => {
                 if (
                   !plan.path ||
@@ -5233,7 +5255,7 @@ export default function ChatPanel(props: ChatProps) {
                   store.projectId() !== plan.projectId ||
                   harnessOwner(plan.dialogId) !== plan.owner ||
                   isRunning(plan.dialogId) ||
-                  strictActive()
+                  strictActive(plan.dialogId)
                 )
                   return false;
                 const selected = activeProfile();
@@ -5273,12 +5295,12 @@ export default function ChatPanel(props: ChatProps) {
                     )?.name ?? 'Selected chat’s host')
                   : 'This computer (selected chat)'
               }
-              onActiveChange={setStrictActive}
+              onActiveChange={(active) => setStrictActive(plan.dialogId, active)}
               onClose={() => {
-                const session = openPreparation();
-                if (session?.plan === plan) {
+                const session = preparations().get(plan.dialogId);
+                if (session) {
                   try {
-                    closePreparationReply(plan.dialogId, session.session.preparationId);
+                    closePreparationReply(plan.dialogId, session.preparationId);
                   } catch (cause) {
                     notify({
                       kind: 'error',
@@ -5288,13 +5310,12 @@ export default function ChatPanel(props: ChatProps) {
                     return;
                   }
                 }
-                setStrictPlan(undefined);
-                setStrictActive(false);
+                setPlan(plan.dialogId, undefined);
               }}
             />
           );
         }}
-      </Show>
+      </For>
       {/* What the project's memory gave this run, above its checklist. */}
       <Show when={!quietTurn() && recalledMemories(activeDialogId())} keyed>
         {(memories) => <PriorWorkPanel memories={memories} />}

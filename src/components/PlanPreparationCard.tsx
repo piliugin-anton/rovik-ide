@@ -13,6 +13,7 @@ import {
 
 /** Preparation runs in the conversation; this card holds only its status and the final decision. */
 export default function PlanPreparationCard(props: {
+  background?: boolean;
   automatic?: boolean;
   restoreOnly?: boolean;
   target: HarnessTarget;
@@ -51,7 +52,29 @@ export default function PlanPreparationCard(props: {
   };
   const active = (scope: number) => !disposed && scope === generation && !props.contextProblem;
 
+  const [deferredLaunch, setDeferredLaunch] = createSignal<{ id: string; scope: number }>();
+  createEffect(() => {
+    const pending = deferredLaunch();
+    if (props.background || !pending) return;
+    setDeferredLaunch(undefined);
+    const session = preparation();
+    if (
+      active(pending.scope) &&
+      session?.preparationId === pending.id &&
+      !session.runId &&
+      ['preparing', 'blocked'].includes(session.status) &&
+      !props.agentRunning &&
+      !problem() &&
+      !providerProblem()
+    )
+      void untrack(() => launchPreparation(pending.id, pending.scope));
+  });
+
   async function launchPreparation(id: string, scope: number) {
+    if (props.background) {
+      setDeferredLaunch({ id, scope });
+      return;
+    }
     setAuthorized(true);
     setLaunching(true);
     try {
@@ -249,7 +272,7 @@ export default function PlanPreparationCard(props: {
   });
 
   planNotice(() => {
-    if (!props.automatic) return;
+    if (props.background || !props.automatic) return;
     const issue = problem() || providerProblem() || error();
     const current = preparation();
     const actions = [];

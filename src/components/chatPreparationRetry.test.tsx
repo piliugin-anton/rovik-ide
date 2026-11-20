@@ -355,3 +355,79 @@ test('first ordinary follow-up after reopening restores the private preparation 
   assert.equal(result.starts()[0].mode, 'agent');
   assert.ok(!result.operations().some((operation) => operation.action === 'beginPlanPreparation'));
 });
+
+test('two chats can prepare independently while the first status request is still in flight', async () => {
+  const first = await page('preparing', { skipRetry: true });
+  const ordinary = { ...first.dialog, id: 'ordinary-during-preparation' };
+  const other = { ...first.dialog, id: 'second-preparation-chat' };
+  const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+  let finishFirst!: () => void;
+  (window as any).__TAURI_INTERNALS__.invoke = (cmd: string, args: any) => {
+    if (cmd === 'polyglot_harness' && args.request.action === 'preparationStatus') {
+      if (args.dialogId === first.dialog.id)
+        return new Promise((resolve) => {
+          finishFirst = () => resolve(planPreparation('preparing'));
+        });
+      return Promise.resolve({ ...planPreparation('preparing'), preparationId: 'prep-other' });
+    }
+    if (cmd === 'chat_get_messages' && args.dialogId === ordinary.id)
+      return Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+    if (cmd === 'chat_get_messages' && args.dialogId === other.id)
+      return Promise.resolve({
+        messages: first.messages.map((m) => ({
+          ...m,
+          dialogId: other.id,
+          id: 'other-' + m.id,
+          meta: m.role === 'user' ? { ...m.meta, verifiedPreparation: 'prep-other' } : m.meta,
+        })),
+        hasOlder: false,
+        hasNewer: false,
+      });
+    return invoke(cmd, args);
+  };
+  const retry = () => {
+    const button = [...first.root.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Retry'
+    );
+    assert.ok(button && !button.disabled);
+    button.click();
+  };
+  retry();
+  await flush();
+  assert.equal(typeof finishFirst, 'function');
+  await chatStore.openChat(ordinary);
+  await flush();
+  const input = first.root.querySelector<HTMLElement>('.chat-input-contenteditable')!;
+  const inputMessage = 'Send while the first chat is preparing';
+  input.textContent = inputMessage;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await flush();
+  first.root.querySelector<HTMLButtonElement>('.chat-send-button')!.click();
+  await flush();
+  assert.deepEqual(
+    first
+      .starts()
+      .map((r) => [r.dialogId, r.start.message.content, r.start.message.meta.verifiedPreparation]),
+    [[ordinary.id, inputMessage, undefined]]
+  );
+
+  await chatStore.openChat(other);
+  await flush();
+  retry();
+  await flush();
+  const started = () =>
+    first
+      .starts()
+      .filter((r) => r.dialogId !== ordinary.id)
+      .map((r) => [r.dialogId, r.start.message.meta.verifiedPreparation]);
+  assert.deepEqual(started(), [[other.id, 'prep-other']]);
+  finishFirst();
+  await flush();
+  assert.deepEqual(started(), [[other.id, 'prep-other']]);
+  await chatStore.openChat(first.dialog);
+  await flush();
+  assert.deepEqual(started(), [
+    [other.id, 'prep-other'],
+    [first.dialog.id, 'preparation-1'],
+  ]);
+});

@@ -27,6 +27,7 @@ import type { PlanPreparation } from '../lib/planPreparation';
 
 /** Reviewed saved-plan implementation, independent of the ordinary agent's repair loop. */
 export default function PolyglotPlanImplementation(props: {
+  background?: boolean;
   automatic?: boolean;
   restoreOnly?: boolean;
   target: HarnessTarget;
@@ -298,7 +299,7 @@ export default function PolyglotPlanImplementation(props: {
 
   planNotice(() => {
     const current = run();
-    if (!props.automatic || !current || details() || review()) return;
+    if (props.background || !props.automatic || !current || details() || review()) return;
     const problem = inputProblem() || error();
     if (problem)
       return {
@@ -412,6 +413,7 @@ export default function PolyglotPlanImplementation(props: {
       when={run() || props.runId}
       fallback={
         <PlanPreparationCard
+          background={props.background}
           automatic={props.automatic}
           restoreOnly={props.restoreOnly}
           target={props.target}
@@ -436,9 +438,9 @@ export default function PolyglotPlanImplementation(props: {
       }
     >
       <Show
-        when={!props.automatic || details()}
+        when={!props.background && (!props.automatic || details())}
         fallback={
-          <Show when={review()}>
+          <Show when={!props.background && review()}>
             {(changes) => (
               <VerifiedChangesDialog
                 review={changes()}

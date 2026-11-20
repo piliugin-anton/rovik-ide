@@ -169,7 +169,10 @@ starts the isolated implementation when its checks are ready. The backend binds
 the run to the exact saved plan, captured source, prepared inputs and provider
 prices. Progress appears in a notification. Opening an interrupted chat restores
 its status and leaves a ready preparation awaiting an explicit start. A changed
-plan, source, model or review requires fresh preparation.
+plan, source, model or review requires fresh preparation. Each chat owns its
+preparation, retry and review state. Switching chats keeps ongoing work attached
+to its original chat. If the preparation agent still needs to start, it starts
+when that chat is selected again.
 
 After the candidate passes final verification, **Review changes** opens a file
 diff and identifies the destination checkout. **Apply changes** approves that exact
