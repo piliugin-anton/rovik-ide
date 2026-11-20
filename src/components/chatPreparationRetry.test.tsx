@@ -203,7 +203,8 @@ for (const status of ['preparing', 'blocked', 'cancelled', 'stale', 'ready'] as 
       result.operations().map((operation) => operation.action),
       ['preparationStatus']
     );
-    assert.ok(result.root.querySelector('.notification'));
+    assert.equal(result.root.querySelectorAll('[aria-label="Verified plan status"]').length, 1);
+    assert.equal(result.root.querySelector('.notification'), null);
     assert.equal(result.root.querySelector('[aria-label="Plan preparation"]'), null);
     assert.equal(result.root.querySelectorAll('.tool-call-spinner').length, 0);
     if (status === 'preparing') {
@@ -298,7 +299,7 @@ test('ordinary chat Retry still retries the delivered request', async () => {
 
 test('an implementation in another chat does not block an ordinary Retry', async () => {
   const result = await page('ready', { promoted: true, runningImplementation: true });
-  assert.match(result.root.textContent!, /Implementing and verifying plan/);
+  assert.match(result.root.textContent!, /Implementing/);
   const other = { ...result.dialog, id: 'ordinary-other-chat' };
   const invoke = (window as any).__TAURI_INTERNALS__.invoke;
   (window as any).__TAURI_INTERNALS__.invoke = (command: string, args: any) => {

@@ -192,7 +192,7 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   default on **Implement this plan**. The ordinary chat agent prepares checks in
   a private source copy, reports progress and asks about missing requirements in
   the conversation. Preparation and verified implementation proceed automatically,
-  with progress in a bottom-right notification.
+  with one compact status row in the owning chat. Questions appear in the conversation.
   Protected tests and a real failing control are staged outside your checkout;
   native preparation trials must succeed before the review becomes ready. The
   trusted backend prepares its verifier image and supported locked dependencies
@@ -208,7 +208,7 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   once in **Model providers → Verification pricing**. Enter ordinary prices per
   million tokens, such as `0.225`; budget errors show the saved prices, and
   **Set model prices** opens settings when a price is missing. Preparation uses ordinary
-  chat billing and implementation uses its separate budget. The notification offers
+  chat billing and implementation uses its separate budget. The status row offers
   stop, continue and retry actions when needed. **Retry** checks the saved
   preparation: it resumes active drafts, creates a fresh session for cancelled or
   stale inputs, and opens completed reviews or existing implementation runs.

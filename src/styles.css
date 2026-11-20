@@ -11477,3 +11477,32 @@ dialog.verified-changes-dialog {
 .verified-changes-dialog .confirm-dialog-actions {
   padding-top: 12px;
 }
+
+.verified-plan-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: none;
+  gap: 4px 10px;
+  margin: 0 8px 6px;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.verified-plan-label,
+.verified-plan-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.verified-plan-message {
+  flex: 1 1 8rem;
+  min-width: 0;
+  max-height: 2.8em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+}
+.verified-plan-actions {
+  margin-left: auto;
+}

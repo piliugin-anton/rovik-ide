@@ -167,7 +167,7 @@ risks require dedicated evidence routes; incomplete routes block preparation.
 Choosing **Implement this plan** with verification enabled starts preparation, then
 starts the isolated implementation when its checks are ready. The backend binds
 the run to the exact saved plan, captured source, prepared inputs and provider
-prices. Progress appears in a notification. Opening an interrupted chat restores
+prices. Progress and the **Review changes** action appear in one compact row in the owning chat. Opening an interrupted chat restores
 its status and leaves a ready preparation awaiting an explicit start. A changed
 plan, source, model or review requires fresh preparation. Each chat owns its
 preparation, retry and review state. Switching chats keeps ongoing work attached
@@ -180,7 +180,7 @@ delivery and applies it. Closing the review leaves the checkout untouched.
 
 Preparation model calls use ordinary chat accounting and are billed separately
 from the strict implementation budget. Native trials use the preparation’s durable
-check allowance, which carries into the promoted run. The notification offers
+check allowance, which carries into the promoted run. The status row offers
 **Stop** during preparation and **Continue** or **Retry** after an interruption.
 Failed verification trials are saved as failed tool results with their diagnostics,
 so the agent can repair the staged inputs and resubmit within the same session.

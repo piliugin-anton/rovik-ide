@@ -52,8 +52,12 @@ export function visiblePreparationMessages(
 ) {
   if (!id) return messages;
   let privateTurn = false;
-  return messages.filter((message, index) => {
-    if (isRequestMessage(message)) privateTurn = message.meta?.verifiedPreparation === id;
+  const questions = new Set<string>();
+  return messages.flatMap((message, index) => {
+    if (isRequestMessage(message)) {
+      privateTurn = message.meta?.verifiedPreparation === id;
+      questions.clear();
+    }
     if (
       !privateTurn ||
       message.error ||
@@ -62,16 +66,25 @@ export function visiblePreparationMessages(
       message.meta?.paused ||
       message.meta?.interrupted
     )
-      return true;
+      return [message];
     if (message.role === 'user')
-      return message.content !== preparationPrompt(message.meta?.planPath ?? '');
+      return message.content === preparationPrompt(message.meta?.planPath ?? '') ? [] : [message];
+    if (message.role === 'tool')
+      return questions.has(message.tool_call_id ?? '') || message.meta?.questions ? [message] : [];
+    const asks = message.toolCalls?.filter((call) => call.name === 'ask_user');
+    if (asks?.length) {
+      for (const call of asks) questions.add(call.id);
+      return asks.length === message.toolCalls?.length
+        ? [message]
+        : [{ ...message, toolCalls: asks }];
+    }
     // A stopped agent can ask a plain-text question as its final reply.
-    return (
-      !running &&
-      index === messages.length - 1 &&
+    return ((!running && index === messages.length - 1) ||
+      (messages[index + 1] && isRequestMessage(messages[index + 1]))) &&
       message.role === 'assistant' &&
       !message.toolCalls?.length
-    );
+      ? [message]
+      : [];
   });
 }
 

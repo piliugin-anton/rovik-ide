@@ -554,7 +554,9 @@ test('Implement automatically runs the prepared plan and waits for Apply on the 
   const actions = () => calls.map((entry) => entry.args.request.action);
   assert.deepEqual(actions(), ['beginPlanPreparation', 'startPreparedImplementation']);
   assert.equal(root.querySelector('details,.plan-preparation,.polyglot-review'), null);
-  button(root, 'Review changes').click();
+  assert.equal(root.querySelector('.notification'), null);
+  const statusRow = root.querySelector<HTMLElement>('[aria-label="Verified plan status"]')!;
+  button(statusRow, 'Review changes').click();
   await flush();
   const dialog = () => document.querySelector<HTMLElement>('dialog')!;
   assert.match(dialog().textContent!, /quota.ts/);

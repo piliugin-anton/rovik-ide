@@ -274,3 +274,15 @@ test('private preparation work leaves questions, failures and later conversation
   assert.deepEqual(visible(false), ['plan', 'error', 'next', 'reply']);
   assert.equal(visiblePreparationMessages(messages, undefined, true), messages);
 });
+
+test('structured preparation questions and their answers stay in chat alongside ordinary replies', () => {
+  const question = { id: 'q', name: 'ask_user', arguments: '{}' };
+  const exchange: ChatMessage[] = [
+    { ...preparationRequest, content: preparationPrompt('plan.md') },
+    { id: 'ask', role: 'assistant', content: '', toolCalls: [question] },
+    { id: 'answer', role: 'tool', content: 'Use Node', tool_call_id: 'q' },
+    { id: 'clarify', role: 'assistant', content: 'Which version?' },
+    { ...preparationRequest, id: 'user-answer', content: 'Use 22' },
+  ];
+  assert.deepEqual(visiblePreparationMessages(exchange, 'preparation-1', true), exchange.slice(1));
+});

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
+import { createMemo, createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
 import type { ModelProfile } from '../types';
 import {
   displayedHarnessStatus,
@@ -19,7 +19,7 @@ import {
 } from '../lib/polyglotPlan';
 import PolyglotApproval, { SubjectFields } from './PolyglotApproval';
 import VerifiedChangesDialog from './VerifiedChangesDialog';
-import { planNotice } from '../lib/planNotice';
+import VerifiedPlanStatusRow, { type PlanStatus } from './VerifiedPlanStatusRow';
 import PolyglotReviewFrame from './PolyglotReviewFrame';
 import PlanPreparationCard from './PlanPreparationCard';
 import { savedHarnessRates } from '../lib/harnessRates';
@@ -297,7 +297,7 @@ export default function PolyglotPlanImplementation(props: {
     }
   }
 
-  planNotice(() => {
+  const row = createMemo<PlanStatus | undefined>(() => {
     const current = run();
     if (props.background || !props.automatic || !current || details() || review()) return;
     const problem = inputProblem() || error();
@@ -305,7 +305,7 @@ export default function PolyglotPlanImplementation(props: {
       return {
         title: 'Implementation needs attention',
         message: problem,
-        kind: 'warning',
+
         onDismiss: props.onClose,
         actions:
           !props.contextProblem && !busy()
@@ -313,7 +313,6 @@ export default function PolyglotPlanImplementation(props: {
                 {
                   label: 'Refresh',
                   run: () => void runAction({ action: 'status', runId: current.runId }),
-                  keepOpen: true,
                 },
               ]
             : [],
@@ -321,8 +320,7 @@ export default function PolyglotPlanImplementation(props: {
     if (shownStatus() === 'verified')
       return {
         title: 'Verified changes are ready',
-        message: props.planPath?.split('/').pop(),
-        kind: 'success',
+
         onDismiss: props.onClose,
         actions: busy()
           ? []
@@ -331,22 +329,20 @@ export default function PolyglotPlanImplementation(props: {
                 label: 'Review changes',
                 primary: true,
                 run: () => void openChanges(),
-                keepOpen: true,
               },
             ],
       };
     if (shownStatus() === 'running')
       return {
-        title: 'Implementing and verifying plan',
-        message: props.planPath?.split('/').pop(),
-        progress: 'busy',
+        title: 'Implementing',
+
+        busy: true,
         actions:
           current.canCancel && !busy()
             ? [
                 {
                   label: 'Stop',
                   run: () => void runAction({ action: 'cancel', runId: current.runId }),
-                  keepOpen: true,
                 },
               ]
             : [],
@@ -368,7 +364,7 @@ export default function PolyglotPlanImplementation(props: {
               {
                 label: 'Resume',
                 primary: true,
-                keepOpen: true,
+
                 run: () =>
                   void runAction({
                     action: 'resumeImplementation',
@@ -382,13 +378,13 @@ export default function PolyglotPlanImplementation(props: {
       return {
         title: 'Verified changes applied',
         message: current.applicationReceipt.root,
-        kind: 'success',
+
         onDismiss: props.onClose,
       };
     if (shownStatus() === 'cancelled')
       return {
         title: 'Implementation stopped',
-        message: props.planPath?.split('/').pop(),
+
         onDismiss: props.onClose,
       };
     return {
@@ -440,7 +436,10 @@ export default function PolyglotPlanImplementation(props: {
       <Show
         when={!props.background && (!props.automatic || details())}
         fallback={
-          <Show when={!props.background && review()}>
+          <Show
+            when={!props.background && review()}
+            fallback={<VerifiedPlanStatusRow status={row()} />}
+          >
             {(changes) => (
               <VerifiedChangesDialog
                 review={changes()}

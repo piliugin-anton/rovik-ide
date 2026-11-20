@@ -1,5 +1,5 @@
-import { createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
-import { planNotice } from '../lib/planNotice';
+import { createMemo, createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
+import VerifiedPlanStatusRow, { type PlanStatus } from './VerifiedPlanStatusRow';
 import type { ModelProfile } from '../types';
 import { openAppSettings } from '../lib/appSettings';
 import { savedHarnessRates } from '../lib/harnessRates';
@@ -271,7 +271,7 @@ export default function PlanPreparationCard(props: {
     void untrack(implement);
   });
 
-  planNotice(() => {
+  const row = createMemo<PlanStatus | undefined>(() => {
     if (props.background || !props.automatic) return;
     const issue = problem() || providerProblem() || error();
     const current = preparation();
@@ -281,7 +281,6 @@ export default function PlanPreparationCard(props: {
         actions.push({
           label: 'Set model prices',
           run: () => openAppSettings('providers'),
-          keepOpen: true,
         });
       else if (!problem() && !busy() && !launching() && !props.agentRunning)
         actions.push({
@@ -292,12 +291,11 @@ export default function PlanPreparationCard(props: {
             else if (status() === 'preparing' && !providerProblem()) void continuePreparation();
             else void begin();
           },
-          keepOpen: true,
         });
 
       return {
         title: 'Plan preparation needs attention',
-        kind: 'warning',
+
         onDismiss: props.onClose,
         message:
           issue || current?.reason || current?.error || 'Prepare the plan again to continue.',
@@ -314,7 +312,6 @@ export default function PlanPreparationCard(props: {
             label: 'Implement plan',
             primary: true,
             run: () => setAuthorized(true),
-            keepOpen: true,
           },
         ],
       };
@@ -323,20 +320,20 @@ export default function PlanPreparationCard(props: {
         title: 'Preparation paused',
         onDismiss: props.onClose,
         message: current?.reason || current?.error || 'Continue in the plan’s chat.',
-        actions: [{ label: 'Continue', run: () => void continuePreparation(), keepOpen: true }],
+        actions: [{ label: 'Continue', run: () => void continuePreparation() }],
       };
     return {
-      title: status() === 'ready' ? 'Starting implementation' : 'Preparing plan checks',
-      message: props.planPath.split('/').pop(),
-      progress: 'busy',
+      title: status() === 'ready' ? 'Starting implementation' : 'Preparing checks',
+
+      busy: true,
       actions:
         current && !busy() && status() === 'preparing'
-          ? [{ label: 'Stop', run: () => void stop(), keepOpen: true }]
+          ? [{ label: 'Stop', run: () => void stop() }]
           : [],
     };
   });
 
-  if (props.automatic) return null;
+  if (props.automatic) return <VerifiedPlanStatusRow status={row()} />;
   return (
     <section
       class={`chat-verify plan-preparation ${problem() || providerProblem() || error() || ['blocked', 'stale', 'cancelled'].includes(status() ?? '') ? 'needs-approval' : status() === 'ready' ? 'clean' : 'running'}`}
