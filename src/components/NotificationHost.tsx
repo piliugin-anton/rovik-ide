@@ -54,7 +54,9 @@ function Notification(props: { n: AppNotification }) {
         </button>
       </div>
       <Show when={n().message}>
-        <div class="notification-message">{n().message}</div>
+        <div class="notification-message" tabIndex={0}>
+          {n().message}
+        </div>
       </Show>
       <Show when={n().progress !== undefined}>
         <div

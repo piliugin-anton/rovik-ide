@@ -2,6 +2,7 @@
 // download's progress), so its buttons stay clickable. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import NotificationHost from './NotificationHost';
@@ -34,4 +35,31 @@ test('an updated notification keeps its close and action buttons', () => {
   (close as HTMLButtonElement).click();
   assert.equal(root.querySelectorAll('.notification').length, 0);
   dispose();
+});
+
+test('long notification messages have a bounded keyboard-scrollable area outside the controls', () => {
+  const style = document.createElement('style');
+  style.textContent = readFileSync('src/styles.css', 'utf8');
+  document.head.append(style);
+  const root = container();
+  const dispose = render(() => <NotificationHost />, root);
+  const handle = notify({
+    title: 'The plan could not be prepared',
+    message: 'Docker could not resolve registry.example.com\n'.repeat(100),
+    actions: [{ label: 'Retry', run: () => {} }],
+  });
+  try {
+    const message = root.querySelector<HTMLElement>('.notification-message')!;
+    const css = getComputedStyle(message);
+    assert.ok(css.maxHeight && css.maxHeight !== 'none');
+    assert.equal(css.overflowY, 'auto');
+    assert.equal(css.overflowWrap, 'anywhere');
+    assert.equal(message.tabIndex, 0);
+    assert.equal(message.querySelector('button'), null);
+  } finally {
+    handle.close();
+    dispose();
+    root.remove();
+    style.remove();
+  }
 });
