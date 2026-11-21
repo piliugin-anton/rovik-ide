@@ -40,8 +40,15 @@ pub(super) async fn stream(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let result = (|| -> Result<(), io::Error> {
-            let db = MemoryStore::open(hub.directory.join(format!("{project}.db")))
-                .map_err(io::Error::other)?;
+            let db = {
+                // Opening a store initializes its SQLite schema. Serialize that write
+                // with exchanges, then release the lock before streaming any frames.
+                let _writer = hub
+                    .project_lock(project)
+                    .map_err(|_| io::Error::other("project lock poisoned"))?;
+                MemoryStore::open(hub.directory.join(format!("{project}.db")))
+                    .map_err(io::Error::other)?
+            };
             let repo = project.to_string();
             let mut page = db
                 .sync_export(&repo, request.after)

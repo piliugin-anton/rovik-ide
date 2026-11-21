@@ -33,6 +33,13 @@ struct Hub {
     snapshots: Arc<tokio::sync::Semaphore>,
 }
 
+impl Hub {
+    fn project_lock(&self, project: Uuid) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
+        let shard = usize::from(project.as_bytes()[0]) % self.writers.len();
+        self.writers[shard].lock()
+    }
+}
+
 async fn exchange(
     State(hub): State<Arc<Hub>>,
     Path(project): Path<Uuid>,
@@ -62,9 +69,7 @@ async fn exchange(
         {
             return Err(StatusCode::BAD_REQUEST);
         }
-        let shard = usize::from(project.as_bytes()[0]) % hub.writers.len();
-        let _writer = hub.writers[shard]
-            .lock()
+        let _writer = hub.project_lock(project)
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         let repo = project.to_string();
         let store = MemoryStore::open(hub.directory.join(format!("{project}.db")))
@@ -195,9 +200,8 @@ async fn purge(
     let request: Purge = serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let state = hub.clone();
     tokio::task::spawn_blocking(move || {
-        let shard = usize::from(project.as_bytes()[0]) % state.writers.len();
-        let _writer = state.writers[shard]
-            .lock()
+        let _writer = state
+            .project_lock(project)
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         let store = MemoryStore::open(state.directory.join(format!("{project}.db")))
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
