@@ -251,6 +251,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       ROVIK_GITHUB_CLIENT_ID: ${{ vars.ROVIK_GITHUB_CLIENT_ID }}
+      ROVIK_GITLAB_CLIENT_ID: ${{ vars.ROVIK_GITLAB_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
