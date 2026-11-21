@@ -32,6 +32,10 @@ const FILE_VERSION: u32 = 1;
 /// provider by its id in the AI settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SecretName {
+    /// A global GitHub or GitLab account and its OAuth tokens.
+    ForgeAccount { provider: String },
+    /// The bearer grant for one explicitly linked team project.
+    TeamMemory { link: String },
     /// A host's SSH password.
     Password { host: String },
     /// The passphrase of a host's SSH key file.
@@ -58,6 +62,8 @@ impl SecretName {
     /// Its account in the keychain, and its key in the encrypted file.
     fn account(&self) -> String {
         match self {
+            SecretName::ForgeAccount { provider } => format!("forge/{provider}/account"),
+            SecretName::TeamMemory { link } => format!("team-memory/{link}"),
             SecretName::Password { host } => format!("host/{host}/password"),
             SecretName::KeyPassphrase { host } => format!("host/{host}/passphrase"),
             SecretName::Token { host } => format!("host/{host}/token"),
@@ -85,6 +91,12 @@ pub enum SecretError {
 impl fmt::Display for SecretError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SecretError::Missing(SecretName::ForgeAccount { provider }) => {
+                write!(f, "Sign in to {provider} in Repository accounts.")
+            }
+            SecretError::Missing(SecretName::TeamMemory { .. }) => {
+                f.write_str("Save a device token for this team project.")
+            }
             SecretError::Missing(SecretName::Password { .. }) => {
                 f.write_str("No SSH password is saved for this host: enter it again.")
             }
@@ -202,6 +214,12 @@ impl SecretStore {
             })),
             fallback: path,
         }
+    }
+
+    /// Serializes account refresh, sign-in and sign-out across desktop processes.
+    pub(crate) fn forge_lock(&self, provider: &str) -> Result<rovik_core::os_lock::Held, String> {
+        rovik_core::os_lock::hold(&self.fallback.with_extension(format!("{provider}.lock")))
+            .map_err(|e| e.to_string())
     }
 
     /// Where the secrets are. An encrypted file once in use stays in use:

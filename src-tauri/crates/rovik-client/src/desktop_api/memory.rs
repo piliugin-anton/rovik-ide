@@ -6,10 +6,15 @@ use rovik_core::memory::{self, MemoryEntry, MemoryStats, SharedMemoryStore};
 use rovik_core::Core;
 use serde::{Deserialize, Serialize};
 
+/// Project team memory link and sync operations.
+pub mod team;
+
 /// Desktop memory operations.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum MemoryRequest {
+    /// Team sharing for an explicitly linked project.
+    Team { root: String, action: team::Action },
     /// memory_stats on the backend.
     Stats { root: String },
     /// memory_list on the backend.
@@ -34,6 +39,9 @@ pub enum MemoryRequest {
 impl MemoryRequest {
     pub(super) async fn dispatch(self, backend: &DesktopBackend) -> super::DesktopResult {
         match self {
+            Self::Team { root, action } => {
+                super::encode_result(team::run(backend, root, action).await)
+            }
             Self::Stats { root } => super::encode_result(memory_stats(backend, root).await),
             Self::List {
                 root,
@@ -101,7 +109,16 @@ async fn memory_list(
         let store = open_store(&core, &root)?;
         store
             .list_page(&root, &query, before.as_deref())
-            .map(|rows| rows.iter().map(MemoryEntry::from).collect())
+            .and_then(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        let mut entry = MemoryEntry::from(r);
+                        entry.team_can_withdraw = store.team_can_withdraw(&root, r.id)?;
+                        entry.team_authors = store.team_authors(&root, r.id)?;
+                        Ok(entry)
+                    })
+                    .collect()
+            })
             .map_err(|e| e.to_string())
     })
     .await

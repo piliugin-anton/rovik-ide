@@ -5108,6 +5108,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -5227,7 +5228,9 @@ dependencies = [
  "regex",
  "reqwest",
  "rovik-core",
+ "rovik-forge",
  "rovik-protocol",
+ "rovik-team-memory",
  "rusqlite",
  "russh",
  "semver",
@@ -5239,6 +5242,7 @@ dependencies = [
  "tokio-tungstenite",
  "trash",
  "uuid",
+ "verified-code-memory",
  "windows",
  "zeroize",
  "zip",
@@ -5353,6 +5357,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rovik-forge"
+version = "0.2.17"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "rovik-headless"
 version = "0.2.17"
 dependencies = [
@@ -5398,6 +5414,24 @@ dependencies = [
  "serde",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "rovik-team-memory"
+version = "0.2.17"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "rovik-forge",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "verified-code-memory",
 ]
 
 [[package]]
@@ -5976,6 +6010,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -8427,6 +8473,7 @@ name = "verified-code-memory"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

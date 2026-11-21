@@ -11,6 +11,7 @@ readme = "README.md"
 chrono = { version = "0.4", features = ["serde"] }
 # The workspace's SQLite, so the app links one libsqlite3-sys with the core.
 rusqlite.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "1"

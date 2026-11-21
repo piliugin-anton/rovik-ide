@@ -862,3 +862,40 @@ test('the manager returns focus to the search field after clearing a search', as
     view.dispose();
   }
 });
+
+test('sharing previews the projected content and queues only after approval', async () => {
+  calls = [];
+  const preview = {
+    title: 'Run tests',
+    content: 'Run the fast suite.',
+    source_kind: 'user_assertion',
+    verification: 'provisional',
+    files: ['package.json'],
+    tags: [],
+  };
+  backend = {
+    memory_list: () => [memory({ title: 'Run tests' })],
+    memory_team: ({ action }) =>
+      action.kind === 'status' ? { conflicts: [] } : action.kind === 'preview' ? preview : null,
+  };
+  const view = await mount();
+  try {
+    assert.equal(buttonIn(rows()[0], 'Withdraw from team…'), undefined);
+    buttonIn(rows()[0], 'Review for sharing…')!.click();
+    await flush();
+    assert.match(confirmation()!.textContent!, /Run the fast suite/);
+    assert.match(confirmation()!.textContent!, /package.json/);
+    assert.equal(
+      calls.some((c) => c.args?.action?.kind === 'publish'),
+      false
+    );
+    answerWith('Queue for sharing');
+    await flush();
+    assert.deepEqual(
+      calls.find((c) => c.args?.action?.kind === 'publish')!.args.action.preview,
+      preview
+    );
+  } finally {
+    view.dispose();
+  }
+});

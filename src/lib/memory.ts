@@ -84,6 +84,8 @@ export interface MemoryEntry {
   applicability: Applicability;
   /** What kind of source asserted it: `user assertion`, `test result`, … */
   sourceKind: string;
+  teamCanWithdraw?: boolean;
+  teamAuthors?: [string, string];
   /** What promoted or invalidated it; absent: nothing did. */
   evidence?: string;
   /** When evidence last confirmed the claim, in milliseconds; absent: never. */
@@ -122,13 +124,14 @@ export function memoryList(root: string, query: string, before?: string): Promis
  * is marked to be checked again and stops being one a run may rely on; its
  * tags, its files and its kind stay as they are.
  */
-export function memoryEdit(
+export async function memoryEdit(
   root: string,
   id: string,
   title: string,
   content: string
 ): Promise<void> {
-  return invoke<void>('memory_edit', { root, id, title, content });
+  await invoke<void>('memory_edit', { root, id, title, content });
+  wakeTeamMemory(root);
 }
 
 /** Removes one memory of the project in `root` for good. */
@@ -139,4 +142,66 @@ export function memoryDelete(root: string, id: string): Promise<void> {
 /** Removes every memory of the project in `root`, and resolves how many went. */
 export function memoryClear(root: string): Promise<number> {
   return invoke<number>('memory_clear', { root });
+}
+
+/** Team sharing uses an explicit project link, separate from personal cloud hosts. */
+export interface TeamMemoryLink {
+  provider: 'github' | 'gitlab';
+  hub: string;
+  project: string;
+  replica: string;
+  paused: boolean;
+  lastSync: number | null;
+  lastError: string | null;
+  conflicts: string[];
+  blocked: [string, string][];
+}
+
+function wakeTeamMemory(root: string) {
+  window.dispatchEvent(new window.CustomEvent('rovik-team-memory-changed', { detail: root }));
+}
+
+export async function teamMemory<T>(
+  root: string,
+  action: { kind: string; [key: string]: unknown }
+) {
+  const value = await invoke<T>('memory_team', { root, action });
+  if (
+    ['link', 'publish', 'withdraw', 'retryBlocked'].includes(action.kind) ||
+    (action.kind === 'pause' && !action.paused)
+  )
+    wakeTeamMemory(root);
+  return value;
+}
+
+/** Wakes the backend for open projects. It checks opt-in, pause, backoff and the cross-window lock. */
+export function scheduleTeamMemory(root: string) {
+  let running = false;
+  const refresh = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await teamMemory(root, { kind: 'tick' });
+    } catch {
+      // The backend persists the exchange error for Settings and schedules a retry.
+    } finally {
+      running = false;
+    }
+  };
+  let pending: number | undefined;
+  const changed = (event: Event) => {
+    if ((event as CustomEvent<string>).detail !== root) return;
+    window.clearTimeout(pending);
+    pending = window.setTimeout(refresh, 250);
+  };
+  window.addEventListener('rovik-team-memory-changed', changed);
+  void refresh();
+  const timer = window.setInterval(refresh, 30000);
+  window.addEventListener('online', refresh);
+  return () => {
+    window.removeEventListener('rovik-team-memory-changed', changed);
+    window.clearTimeout(pending);
+    window.clearInterval(timer);
+    window.removeEventListener('online', refresh);
+  };
 }

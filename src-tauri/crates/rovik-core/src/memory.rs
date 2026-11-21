@@ -218,6 +218,12 @@ pub struct MemoryEntry {
     /// What kind of source asserted it: the user, an observation, a test, a
     /// deduction, or unknown.
     pub source_kind: String,
+    /// A mapped record can be withdrawn while retaining its personal copy.
+    #[serde(default)]
+    pub team_can_withdraw: bool,
+    /// Authenticated team claim publisher and latest revision submitter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_authors: Option<(String, String)>,
     /// What promoted or invalidated it; absent: nothing did.
     pub evidence: Option<String>,
     /// When the claim was last confirmed by evidence, in milliseconds since
@@ -241,6 +247,8 @@ impl From<&MemoryRecord> for MemoryEntry {
             verification: record.verification.to_string(),
             applicability: record.applicability.to_string(),
             source_kind: record.source_kind.to_string(),
+            team_authors: None,
+            team_can_withdraw: false,
             evidence: record.evidence.clone(),
             last_validated_at: record.last_validated_at.map(|at| at.timestamp_millis()),
             updated_at: record.content_updated_at.timestamp_millis(),

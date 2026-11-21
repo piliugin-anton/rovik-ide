@@ -50,6 +50,12 @@ Start by exercising the existing merge. Add the smallest format-compatible APIs 
 
 **Integration.** Use the existing project settings and memory manager for link preview, pause, sync now, last successful exchange, blocked records, conflicts and provenance. Distinguish the authenticated author of a claim from a later editor or verifier. Serialize exchanges per link, use blocking workers for SQLite, and keep network waits off the retrieval path. Add wakeups for local changes and reconnect plus periodic catch-up. The project memory enable/capture settings already have separate meanings. Introduce team opt-in independently.
 
+## Provider and account decisions
+
+GitHub.com and GitLab.com are the initial identity providers. Repository accounts belong in application settings so a developer can sign in before opening a project. Keep one credential per provider in the desktop secret store. The initial device flow requests identity scopes. Future pull-request or merge-request actions can reuse the backend account API and request additional permission when needed.
+
+For team sync, the hub issues a separate, expiring session. The operator registers the numeric repository ID for each project and opts into onward replication to personal hosts. The hub checks membership for the signed-in provider account and binds the device to that account. See the [deployment and recovery guide](../team-project-memory.md).
+
 ## Delivery sequence and acceptance
 
 | Phase                         | Deliverable                                                                                                                                 | Exit test                                                                                                                                                                                                                             |

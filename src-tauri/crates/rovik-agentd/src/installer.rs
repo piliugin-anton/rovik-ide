@@ -1371,7 +1371,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.0.join("rovik.slice"), slice(&file)).unwrap();
+        // Supply systemd's implicit boot targets so verify can check the units
+        // and their drop-in without loading services installed on the test host.
+        for target in ["basic.target", "sysinit.target"] {
+            std::fs::write(dir.0.join(target), "[Unit]\nDefaultDependencies=no\n").unwrap();
+        }
         let out = Command::new("systemd-analyze")
+            .env("SYSTEMD_UNIT_PATH", &dir.0)
             .arg("verify")
             .arg(dir.0.join("rovik.slice"))
             .arg(dir.0.join("rovik-agentd@ann.service"))

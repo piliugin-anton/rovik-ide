@@ -55,6 +55,26 @@ pub struct Page {
     pub changes: Vec<Change>,
 }
 
+/// A rejected local revision. Persist its disposition before advancing the cursor.
+#[derive(Debug)]
+pub struct RejectedRevision {
+    /// ID of the record that requires attention.
+    pub id: Uuid,
+    /// Sender-local change sequence of this specific revision.
+    pub sequence: i64,
+    /// Validation failure, without record content.
+    pub reason: &'static str,
+}
+
+/// A bounded scan of the local change queue for a team link.
+#[derive(Debug)]
+pub struct ExportScan {
+    /// Valid revisions and the cursor through all inspected revisions.
+    pub page: Page,
+    /// Invalid revisions included in the scanned range.
+    pub rejected: Vec<RejectedRevision>,
+}
+
 /// Durable progress for one project and peer endpoint.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Progress {
@@ -157,6 +177,7 @@ pub(crate) fn initialize(c: &Connection) -> Result<()> {
     }
     // Publish the replication schema and its version atomically. Old binaries
     // must not reopen this store and clear it without advancing its epoch.
+    crate::team::initialize(c)?;
     c.pragma_update(None, "user_version", crate::store::SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(())
@@ -172,7 +193,7 @@ impl MemoryStore {
         )?)
     }
 
-    fn sync_epoch(&self, repo: &str) -> Result<Stamp> {
+    pub(crate) fn sync_epoch(&self, repo: &str) -> Result<Stamp> {
         Ok(self
             .connection
             .query_row(
@@ -203,6 +224,16 @@ impl MemoryStore {
     /// Exports a bounded page after a local sequence. Host-specific repository
     /// paths are removed; the receiver supplies its authorized local scope.
     pub fn sync_export(&self, repo: &str, after: i64) -> Result<Page> {
+        Ok(self.export_range(repo, after, false)?.page)
+    }
+
+    /// Scans at most one page of changes and reports individual invalid revisions.
+    /// Commit the rejection list before acknowledging the returned cursor.
+    pub fn sync_scan(&self, repo: &str, after: i64) -> Result<ExportScan> {
+        self.export_range(repo, after, true)
+    }
+
+    fn export_range(&self, repo: &str, after: i64, report_invalid: bool) -> Result<ExportScan> {
         if !(0..=MAX_COUNTER).contains(&after) {
             return Err(VcmError::InvalidSync("sequence is out of range"));
         }
@@ -220,8 +251,14 @@ impl MemoryStore {
         let rows = self.connection.prepare("SELECT id,sequence,counter,replica,deleted,claim_counter,claim_replica FROM memory_sync_changes WHERE repo=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?
             .query_map(params![repo,after,(MAX_PAGE_RECORDS+1) as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,Stamp{counter:r.get(2)?,replica:r.get(3)?},r.get::<_,bool>(4)?,Stamp{counter:r.get(5)?,replica:r.get(6)?})))?
             .collect::<std::result::Result<Vec<_>,_>>()?;
-        let mut bytes = serde_json::to_vec(&page)?.len() + 128;
+        let overhead = serde_json::to_vec(&page)?.len() + 128;
+        let mut bytes = overhead;
+        let mut rejected = Vec::new();
         for (id, sequence, version, deleted, claim) in rows {
+            if page.changes.len() + rejected.len() == MAX_PAGE_RECORDS {
+                page.more = true;
+                break;
+            }
             let id =
                 Uuid::parse_str(&id).map_err(|_| VcmError::InvalidSync("stored ID is invalid"))?;
             let record = if deleted {
@@ -239,7 +276,26 @@ impl MemoryStore {
                 record,
             };
             let size = serde_json::to_vec(&change)?.len() + 1;
-            if bytes + size > MAX_PAGE_BYTES || page.changes.len() == MAX_PAGE_RECORDS {
+            if report_invalid {
+                let validation = if overhead + size > MAX_PAGE_BYTES {
+                    Err(VcmError::InvalidSync(
+                        "one memory exceeds the page size limit",
+                    ))
+                } else {
+                    change.validate()
+                };
+                if let Err(VcmError::InvalidSync(reason)) = validation {
+                    rejected.push(RejectedRevision {
+                        id,
+                        sequence,
+                        reason,
+                    });
+                    page.through = sequence;
+                    continue;
+                }
+                validation?;
+            }
+            if bytes + size > MAX_PAGE_BYTES {
                 if page.changes.is_empty() {
                     return Err(VcmError::InvalidSync(
                         "one memory exceeds the page size limit",
@@ -260,7 +316,7 @@ impl MemoryStore {
             )?;
         }
         transaction.commit()?;
-        Ok(page)
+        Ok(ExportScan { page, rejected })
     }
 
     /// Merges a page atomically. Deletes dominate edits, and newer clear epochs
@@ -272,6 +328,12 @@ impl MemoryStore {
             return Err(VcmError::EmptyField { field: "repo" });
         }
         let transaction = self.connection.unchecked_transaction()?;
+        self.merge_page(repo, page)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn merge_page(&self, repo: &str, page: &Page) -> Result<()> {
         let local_epoch = self.sync_epoch(repo)?;
         let greatest = page
             .changes
@@ -289,7 +351,6 @@ impl MemoryStore {
                 "UPDATE memory_sync_clock SET applying=0 WHERE singleton=1",
                 [],
             )?;
-            transaction.commit()?;
             return Ok(());
         }
         let mut invalidated = false;
@@ -355,7 +416,6 @@ impl MemoryStore {
             "UPDATE memory_sync_clock SET applying=0 WHERE singleton=1",
             [],
         )?;
-        transaction.commit()?;
         Ok(())
     }
 
@@ -411,7 +471,7 @@ fn valid_stamp(stamp: &Stamp, initial: bool) -> bool {
         }
 }
 
-fn validate(page: &Page) -> Result<()> {
+pub(crate) fn validate(page: &Page) -> Result<()> {
     if page.format != 1
         || Uuid::parse_str(&page.replica).is_err()
         || !valid_stamp(&page.epoch, true)
@@ -423,18 +483,28 @@ fn validate(page: &Page) -> Result<()> {
     }
     let mut ids = std::collections::HashSet::new();
     for change in &page.changes {
-        if !ids.insert(change.id)
-            || !valid_stamp(&change.version, false)
-            || !valid_stamp(&change.claim, false)
-            || change.claim.counter == 0
-            || change.claim.counter > change.version.counter
-            || change.version.counter == 0
-            || change.deleted == change.record.is_some()
+        if !ids.insert(change.id) {
+            return Err(VcmError::InvalidSync("duplicate record revision"));
+        }
+        change.validate()?;
+    }
+    Ok(())
+}
+
+impl Change {
+    /// Checks the revision, claim binding, record scope and relative file paths.
+    pub fn validate(&self) -> Result<()> {
+        if !valid_stamp(&self.version, false)
+            || !valid_stamp(&self.claim, false)
+            || self.claim.counter == 0
+            || self.claim.counter > self.version.counter
+            || self.version.counter == 0
+            || self.deleted == self.record.is_some()
         {
             return Err(VcmError::InvalidSync("invalid record revision"));
         }
-        if let Some(record) = &change.record {
-            if record.id != change.id
+        if let Some(record) = &self.record {
+            if record.id != self.id
                 || !record.repo.is_empty()
                 || record.title.trim().is_empty()
                 || record.content.trim().is_empty()
@@ -456,8 +526,8 @@ fn validate(page: &Page) -> Result<()> {
                 ));
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 impl SharedMemoryStore {
@@ -472,6 +542,10 @@ impl SharedMemoryStore {
     /// See [`MemoryStore::sync_export`].
     pub fn sync_export(&self, repo: &str, after: i64) -> Result<Page> {
         self.lock()?.sync_export(repo, after)
+    }
+    /// See [`MemoryStore::sync_scan`].
+    pub fn sync_scan(&self, repo: &str, after: i64) -> Result<ExportScan> {
+        self.lock()?.sync_scan(repo, after)
     }
     /// See [`MemoryStore::sync_apply`].
     pub fn sync_apply(&self, repo: &str, page: &Page) -> Result<()> {

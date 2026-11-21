@@ -26,6 +26,8 @@ import {
   memoryDelete,
   memoryEdit,
   memoryList,
+  teamMemory,
+  type TeamMemoryLink,
   memoryStateLabel,
   type MemoryEntry,
 } from '../lib/memory';
@@ -229,6 +231,81 @@ export default function MemoryManager(props: { root: string; onClose: () => void
     }
   }
 
+  const [team, teamActions] = createResource(
+    () => props.root,
+    (root) => teamMemory<TeamMemoryLink | null>(root, { kind: 'status' }).catch(() => null)
+  );
+
+  async function changeTeamRecord(entry: MemoryEntry, kind: 'withdraw' | 'resolve') {
+    const root = props.root;
+    const title =
+      kind === 'withdraw'
+        ? 'Withdraw this memory from the team?'
+        : 'Keep this recovered edit in personal memory?';
+    if (
+      !(await ask({
+        title,
+        message: entry.title,
+        confirmLabel: kind === 'withdraw' ? 'Withdraw' : 'Keep personal edit',
+      }))
+    )
+      return;
+    try {
+      await teamMemory(root, { kind, id: entry.id });
+      await Promise.all([teamActions.refetch(), refetch()]);
+      setNotice(
+        kind === 'withdraw' ? 'Withdrawal queued for team sync.' : 'Saved as personal memory.'
+      );
+    } catch (error) {
+      setFailure(String(error));
+    }
+  }
+
+  async function publish(entry: MemoryEntry) {
+    const root = props.root;
+    setFailure(null);
+    try {
+      const preview = await teamMemory<{
+        title: string;
+        content: string;
+        evidence?: string;
+        files: string[];
+        tags: string[];
+        code_version?: string;
+        source_kind: string;
+        verification: string;
+      }>(root, {
+        kind: 'preview',
+        id: entry.id,
+      });
+      if (
+        props.root !== root ||
+        !(await ask({
+          title: 'Share this memory with the team?',
+          message: [
+            preview.title,
+            preview.content,
+            `Source: ${preview.source_kind} · ${preview.verification}`,
+            preview.evidence && `Evidence: ${preview.evidence}`,
+            preview.files.length > 0 && `Files: ${preview.files.join(', ')}`,
+            preview.tags.length > 0 && `Tags: ${preview.tags.join(', ')}`,
+            preview.code_version && `Revision: ${preview.code_version}`,
+            'Approving also shares future eligible edits made on this desktop.',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+          confirmLabel: 'Queue for sharing',
+        }))
+      )
+        return;
+      await teamMemory(root, { kind: 'publish', preview });
+      await refetch();
+      setNotice('Publication queued for team sync.');
+    } catch (error) {
+      setFailure(String(error));
+    }
+  }
+
   async function remove(entry: MemoryEntry) {
     setFailure(null);
     setNotice(null);
@@ -373,6 +450,13 @@ export default function MemoryManager(props: { root: string; onClose: () => void
                             </Show>
                             <span class="prior-work-kind">{entry.kind}</span>
                             <span class="memory-entry-title">{entry.title}</span>
+                            <Show when={entry.teamAuthors}>
+                              {(people) => (
+                                <small>
+                                  Published by {people()[0]} · Latest revision by {people()[1]}
+                                </small>
+                              )}
+                            </Show>
                             <span class="memory-entry-date">
                               {new Date(entry.updatedAt).toLocaleDateString()}
                             </span>
@@ -382,6 +466,27 @@ export default function MemoryManager(props: { root: string; onClose: () => void
                             <div class="memory-entry-files">{entry.files.join(', ')}</div>
                           </Show>
                           <div class="memory-entry-actions">
+                            <Show when={team()}>
+                              <button class="link-button" onClick={() => void publish(entry)}>
+                                Review for sharing…
+                              </button>
+                              <Show when={entry.teamCanWithdraw}>
+                                <button
+                                  class="link-button"
+                                  onClick={() => void changeTeamRecord(entry, 'withdraw')}
+                                >
+                                  Withdraw from team…
+                                </button>
+                              </Show>
+                              <Show when={team()?.conflicts?.includes(entry.id)}>
+                                <button
+                                  class="link-button"
+                                  onClick={() => void changeTeamRecord(entry, 'resolve')}
+                                >
+                                  Review recovered edit…
+                                </button>
+                              </Show>
+                            </Show>
                             <button class="link-button" onClick={() => startEdit(entry)}>
                               Edit
                             </button>

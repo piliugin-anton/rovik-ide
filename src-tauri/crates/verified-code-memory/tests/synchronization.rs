@@ -364,11 +364,329 @@ fn upgrading_a_schema_three_store_preserves_history_and_blocks_old_writers_on_re
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         assert!(
             version > 3,
             "the previous binary's schema guard must reject reopening it"
         );
     }
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn a_team_scan_reports_invalid_revisions_without_blocking_later_records() {
+    use verified_code_memory::sync::MAX_PAGE_BYTES;
+    let app = store();
+    let invalid = app
+        .remember(
+            NewMemory::project_fact("app", "Invalid", "out of scope").with_files(["../private"]),
+        )
+        .unwrap();
+    let large = app
+        .remember(NewMemory::project_fact(
+            "app",
+            "Too large",
+            "x".repeat(MAX_PAGE_BYTES),
+        ))
+        .unwrap();
+    let valid = app
+        .remember(NewMemory::project_fact("app", "Eligible", "within scope"))
+        .unwrap();
+    let scanned = app.sync_scan("app", 0).unwrap();
+    assert_eq!(
+        scanned.rejected.iter().map(|r| r.id).collect::<Vec<_>>(),
+        [invalid.id, large.id]
+    );
+    assert_eq!(scanned.page.changes[0].id, valid.id);
+    assert!(!scanned.page.more);
+    assert!(app
+        .sync_scan("app", scanned.page.through)
+        .unwrap()
+        .page
+        .changes
+        .is_empty());
+}
+
+#[test]
+fn team_clear_preserves_private_notes_and_offline_edits_on_personal_hosts() {
+    let (team, alice, bob, daemon) = (store(), store(), store(), store());
+    let link = uuid::Uuid::new_v4();
+    team.remember(NewMemory::project_fact("team", "Agreed", "Shared claim"))
+        .unwrap();
+    let first = team.sync_export("team", 0).unwrap();
+    for app in [&alice, &bob] {
+        app.team_import("desktop", link, 0, &first).unwrap();
+    }
+    let id = alice.list("desktop", "").unwrap()[0].id;
+    alice.edit(id, "Agreed", "Offline correction").unwrap();
+    let private = alice
+        .remember(NewMemory::project_fact("desktop", "Private", "Local note"))
+        .unwrap();
+    exchange(&alice, &daemon);
+    team.clear("team").unwrap();
+    let cleared = team.sync_export("team", first.through).unwrap();
+    for app in [&alice, &bob] {
+        app.team_import("desktop", link, first.through, &cleared)
+            .unwrap();
+    }
+    exchange(&alice, &daemon);
+    assert_eq!(daemon.get(id).unwrap().content, "Offline correction");
+    assert!(alice.get(private.id).is_ok());
+    assert!(bob.list("desktop", "").unwrap().is_empty());
+    assert_eq!(
+        alice.team_import_cursor("desktop", link).unwrap(),
+        cleared.through
+    );
+}
+
+#[test]
+fn a_reviewed_publication_can_be_edited_and_withdrawn_without_deleting_the_personal_note() {
+    use verified_code_memory::{team::project_record, SourceKind};
+    let (app, team, hub, teammate) = (store(), store(), store(), store());
+    let link = uuid::Uuid::new_v4();
+    let scope = link.to_string();
+    let record = app
+        .remember(
+            NewMemory::project_fact("mine", "Rule", "Run checks")
+                .with_tags(["chat:private-session", "build"])
+                .with_source_kind(SourceKind::UserAssertion),
+        )
+        .unwrap();
+    let preview = project_record(&record, |_| true).unwrap();
+    assert_eq!(preview.tags, ["build"]);
+    let team_id = app
+        .team_queue_publication("mine", link, &preview, |_| true)
+        .unwrap();
+    assert!(app
+        .team_flush_publication("mine", link, &team, |_| true)
+        .unwrap());
+    let first = team.sync_export(&scope, 0).unwrap();
+    let device = team.sync_replica().unwrap();
+    let server = hub.sync_replica().unwrap();
+    for _ in 0..2 {
+        hub.team_accept("project", "alice", &device, &server, &first, |_| true)
+            .unwrap();
+    }
+    teammate
+        .team_import("other", link, 0, &hub.sync_export("project", 0).unwrap())
+        .unwrap();
+    assert_eq!(teammate.list("other", "").unwrap()[0].content, "Run checks");
+    let edit = app.edit(record.id, "Rule", "Run full checks").unwrap();
+    let preview = project_record(&edit, |_| true).unwrap();
+    assert_eq!(
+        app.team_queue_publication("mine", link, &preview, |_| true)
+            .unwrap(),
+        team_id
+    );
+    app.team_flush_publication("mine", link, &team, |_| true)
+        .unwrap();
+    let second = team.sync_export(&scope, first.through).unwrap();
+    hub.team_accept("project", "alice", &device, &server, &second, |_| true)
+        .unwrap();
+    assert_eq!(hub.get(team_id).unwrap().content, "Run full checks");
+    app.team_withdraw("mine", link, record.id).unwrap();
+    app.team_flush_publication("mine", link, &team, |_| true)
+        .unwrap();
+    let deleted = team.sync_export(&scope, second.through).unwrap();
+    hub.team_accept("project", "alice", &device, &server, &deleted, |_| true)
+        .unwrap();
+    assert!(hub.get(team_id).is_err());
+    assert_eq!(app.get(record.id).unwrap(), edit);
+    assert!(app
+        .team_queue_publication("mine", link, &preview, |_| true)
+        .is_err());
+}
+
+#[test]
+fn publication_refuses_private_or_restricted_records_and_changed_previews() {
+    use verified_code_memory::{team::project_record, SourceKind};
+    let app = store();
+    let record = app
+        .remember(
+            NewMemory::procedure("mine", "Rule", "Run checks")
+                .with_source_kind(SourceKind::CodeObservation)
+                .with_files(["private/file"]),
+        )
+        .unwrap();
+    assert!(project_record(&record, |_| false).is_err());
+    let preview = project_record(&record, |_| true).unwrap();
+    let edit = app
+        .edit(record.id, "Rule", "api_key=abcdefgh1234567890")
+        .unwrap();
+    assert!(project_record(&edit, |_| true).is_err());
+    assert!(app
+        .team_queue_publication("mine", uuid::Uuid::new_v4(), &preview, |_| true)
+        .is_err());
+    let mut private = record;
+    private.tags.push("private".into());
+    assert!(project_record(&private, |_| true).is_err());
+}
+
+#[test]
+fn restoring_a_team_snapshot_preserves_notes_missing_from_the_restored_hub() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hub.db");
+    let backup = dir.path().join("backup.db");
+    let app = store();
+    let old = MemoryStore::open(&path).unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("VACUUM INTO ?1", [backup.to_str().unwrap()])
+        .unwrap();
+    let link = uuid::Uuid::new_v4();
+    let key = link.to_string();
+    old.remember(NewMemory::project_fact(
+        &key,
+        "Incident note",
+        "After the backup",
+    ))
+    .unwrap();
+    app.team_import("mine", link, 0, &old.sync_export(&key, 0).unwrap())
+        .unwrap();
+    let local = app.list("mine", "").unwrap()[0].id;
+    let old_identity = old.sync_replica().unwrap();
+    drop(old);
+    let restored = MemoryStore::open(backup).unwrap();
+    assert_eq!(restored.sync_replica().unwrap(), old_identity);
+    assert_ne!(restored.team_rotate_restored_hub().unwrap(), old_identity);
+    app.team_rebind("mine", link, &restored).unwrap();
+    app.team_import("mine", link, 0, &restored.sync_export(&key, 0).unwrap())
+        .unwrap();
+    assert_eq!(app.get(local).unwrap().content, "After the backup");
+    assert_eq!(
+        app.team_conflicts("mine", link).unwrap(),
+        [local.to_string()]
+    );
+    app.team_resolve("mine", link, local).unwrap();
+    assert!(app.team_conflicts("mine", link).unwrap().is_empty());
+    assert!(app.get(local).is_ok());
+}
+
+#[test]
+fn policy_tightening_before_flush_flags_one_item_and_allows_the_next_to_publish() {
+    use verified_code_memory::{team::project_record, SourceKind};
+    let (app, replica) = (store(), store());
+    let link = uuid::Uuid::new_v4();
+    for f in ["first.txt", "second.txt"] {
+        let record = app
+            .remember(
+                NewMemory::project_fact("mine", f, "Run checks")
+                    .with_files([f])
+                    .with_source_kind(SourceKind::UserAssertion),
+            )
+            .unwrap();
+        app.team_queue_publication(
+            "mine",
+            link,
+            &project_record(&record, |_| true).unwrap(),
+            |_| true,
+        )
+        .unwrap();
+    }
+    while app
+        .team_flush_publication("mine", link, &replica, |f| f != "first.txt")
+        .unwrap()
+    {}
+    assert_eq!(
+        replica.list(&link.to_string(), "").unwrap()[0].title,
+        "second.txt"
+    );
+    assert_eq!(app.team_blocked("mine", link).unwrap().len(), 1);
+}
+
+#[test]
+fn migrating_a_v4_desktop_preserves_its_personal_host_cursor_and_enables_a_separate_team_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("desktop.db");
+    let host = store().sync_replica().unwrap();
+    let progress = verified_code_memory::sync::Progress {
+        replica: host,
+        sent: 5,
+        received: 7,
+    };
+    let id = {
+        let app = MemoryStore::open(&path).unwrap();
+        let id = app
+            .remember(NewMemory::project_fact(
+                "root",
+                "Fact",
+                "Stored before linking",
+            ))
+            .unwrap()
+            .id;
+        app.sync_ack("root", "personal", &progress).unwrap();
+        id
+    };
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let tables = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'team_*'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for table in tables {
+        db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
+    }
+    db.pragma_update(None, "user_version", 4).unwrap();
+    drop(db);
+    let app = MemoryStore::open(&path).unwrap();
+    assert_eq!(app.get(id).unwrap().content, "Stored before linking");
+    assert_eq!(app.sync_progress("root", "personal").unwrap(), progress);
+    assert_eq!(
+        app.team_import_cursor("root", uuid::Uuid::new_v4())
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn one_hundred_writers_converge_after_duplicate_pushes_and_offline_catch_up() {
+    use verified_code_memory::{team::project_record, SourceKind};
+    let hub = store();
+    let identity = hub.sync_replica().unwrap();
+    let link = uuid::Uuid::new_v4();
+    let key = link.to_string();
+    for writer in 0..100 {
+        let (app, team) = (store(), store());
+        let r = app
+            .remember(
+                NewMemory::project_fact("local", format!("Build step {writer}"), "Run checks")
+                    .with_source_kind(SourceKind::CodeObservation),
+            )
+            .unwrap();
+        app.team_queue_publication(
+            "local",
+            link,
+            &project_record(&r, |_| true).unwrap(),
+            |_| true,
+        )
+        .unwrap();
+        app.team_flush_publication("local", link, &team, |_| true)
+            .unwrap();
+        let page = team.sync_export(&key, 0).unwrap();
+        for _ in 0..2 {
+            hub.team_accept(
+                "project",
+                &format!("user-{writer}"),
+                &page.replica,
+                &identity,
+                &page,
+                |_| true,
+            )
+            .unwrap();
+        }
+    }
+    let joining = store();
+    let mut cursor = 0;
+    loop {
+        let page = hub.sync_export("project", cursor).unwrap();
+        joining.sync_apply("project", &page).unwrap();
+        cursor = page.through;
+        if !page.more {
+            break;
+        }
+    }
+    assert_eq!(joining.stats("project").unwrap().total, 100);
+    assert_eq!(hub.stats("project").unwrap().total, 100);
 }
