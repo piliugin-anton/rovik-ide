@@ -24,6 +24,7 @@ pub mod distro;
 pub mod ecosystems;
 mod edit_file;
 pub mod file_guard;
+pub mod harness;
 #[cfg(target_os = "linux")]
 pub mod listening;
 pub mod mcp;

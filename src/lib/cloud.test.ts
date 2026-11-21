@@ -41,13 +41,16 @@ let calls: { cmd: string; args: any }[] = [];
     invoke: async (cmd: string, args: any) => {
       if (cmd === 'plugin:event|listen') {
         if (args.event === 'cloud-event') listener = args.handler;
-        return 1;
+        return args.handler;
       }
       calls.push({ cmd, args });
       const answer = backend[cmd];
       if (!answer) return null;
       return answer(args);
     },
+  },
+  __TAURI_EVENT_PLUGIN_INTERNALS__: {
+    unregisterListener: (_event: string, id: number) => callbacks.delete(id),
   },
 };
 
@@ -324,6 +327,8 @@ test('a host has caught up once it says so, and has to again after it was away (
 
 test('journal cloud events reach component subscribers once and stop after disposal', async () => {
   const { onCloudEvent, handleBackendCloud } = await import('./cloud');
+  const registered = callbacks.size;
+  const unlistened = sent('plugin:event|unlisten').length;
   let seen = 0;
   const stop = onCloudEvent((event) => {
     if (event.type === 'changed' && event.dialogId === 'journal') seen++;
@@ -333,4 +338,7 @@ test('journal cloud events reach component subscribers once and stop after dispo
   stop();
   handleBackendCloud({ type: 'changed', dialogId: 'journal' });
   assert.equal(seen, 1);
+  await flush();
+  assert.equal(callbacks.size, registered, 'the native callback is released');
+  assert.equal(sent('plugin:event|unlisten').length, unlistened + 1);
 });

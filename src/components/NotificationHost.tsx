@@ -37,7 +37,11 @@ function Notification(props: { n: AppNotification }) {
           class="notification-close"
           aria-label="Dismiss"
           title="Dismiss"
-          onClick={() => dismiss(n().id)}
+          onClick={() => {
+            const note = n();
+            dismiss(note.id);
+            note.onDismiss?.();
+          }}
         >
           <svg
             width="10"
@@ -54,7 +58,9 @@ function Notification(props: { n: AppNotification }) {
         </button>
       </div>
       <Show when={n().message}>
-        <div class="notification-message">{n().message}</div>
+        <div class="notification-message" tabIndex={0}>
+          {n().message}
+        </div>
       </Show>
       <Show when={n().progress !== undefined}>
         <div

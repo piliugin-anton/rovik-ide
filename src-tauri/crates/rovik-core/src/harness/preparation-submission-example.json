@@ -1,0 +1,116 @@
+{
+  "setup": {
+    "name": "Include zero in classification",
+    "intent": "Make classify(value) include zero while preserving positive and negative behavior.",
+    "boundedContext": "Classification",
+    "writePaths": [
+      "src/classify.mjs"
+    ],
+    "protectedPaths": [
+      "plan.md"
+    ],
+    "profiles": [
+      {
+        "id": "main",
+        "manifest": "package.json",
+        "language": "javascript",
+        "facts": {
+          "node_version": "COPY_MEASURED_NODE_VERSION",
+          "npm_version": "COPY_MEASURED_NPM_VERSION",
+          "module_system": "esm",
+          "test_runner": "node:test",
+          "dependency_policy": "npm-ci-offline-no-scripts"
+        },
+        "configurations": [
+          {
+            "id": "tests",
+            "target": "linux-x86_64",
+            "features": [],
+            "default_features": false,
+            "build_targets": [
+              "protected-tests"
+            ],
+            "flags": [],
+            "runtime": "node"
+          }
+        ],
+        "protectedTestPaths": [
+          "tests/acceptance.mjs"
+        ],
+        "typescriptProject": null
+      }
+    ],
+    "excludedBuildRoots": [],
+    "requirements": [
+      {
+        "id": "BOUNDARY",
+        "statement": "Include zero and preserve positive and negative classification",
+        "owner": "classification",
+        "casesByConfiguration": {
+          "main/tests": [
+            "positive",
+            "zero",
+            "negative"
+          ]
+        }
+      }
+    ],
+    "design": {
+      "components": {
+        "classification": "Own numeric inclusion"
+      },
+      "existingCode": [
+        {
+          "file": "src/classify.mjs",
+          "symbol": "classify",
+          "rationale": "The existing predicate owns inclusion; repair its comparison."
+        }
+      ],
+      "publicApiChanges": [
+        "Preserve the classify(value) boolean API."
+      ],
+      "resourceContracts": [
+        "No retained state or external resources."
+      ],
+      "errorContracts": [
+        "No new errors or failure modes."
+      ],
+      "concurrencyContract": "Pure predicate; calls share no mutable state.",
+      "mechanismPressure": "One comparison expresses the rule.",
+      "mechanismAlternatives": [
+        "A strategy adds dispatch without a second behavior."
+      ],
+      "mechanismCost": "No additional state, dispatch or lifecycle."
+    },
+    "environment": {},
+    "negativeControlRevision": "",
+    "negativeControlCases": [
+      "zero"
+    ],
+    "baselineFailures": [
+      {
+        "profileId": "main",
+        "configurationId": "tests",
+        "caseIds": [
+          "zero"
+        ],
+        "rationale": "The unchanged classify implementation excludes zero; the plan requests its repair."
+      }
+    ],
+    "worker": {},
+    "budgets": {},
+    "durationMs": 0
+  },
+  "oracleFiles": [
+    {
+      "path": "tests/acceptance.mjs",
+      "source": ".rovik-preparation/oracle/acceptance.mjs"
+    }
+  ],
+  "negativeControlFiles": [
+    {
+      "path": "src/classify.mjs",
+      "source": ".rovik-preparation/control/classify.mjs"
+    }
+  ]
+}

@@ -128,14 +128,15 @@ async fn cloud_chats_share_project_memory_and_findings_return_to_the_desktop() {
             .then_some(())
     })
     .await;
-    let requests = seen.lock().unwrap();
-    assert!(requests[0]
-        .to_string()
-        .contains("The zanzibar boundary must remain serialized."));
-    assert!(requests[1]
-        .to_string()
-        .contains("The cloud worker keeps a yggdrasil lock."));
-    drop(requests);
+    {
+        let requests = seen.lock().unwrap();
+        assert!(requests[0]
+            .to_string()
+            .contains("The zanzibar boundary must remain serialized."));
+        assert!(requests[1]
+            .to_string()
+            .contains("The cloud worker keeps a yggdrasil lock."));
+    }
     memory
         .edit(
             seed.id,

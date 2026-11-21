@@ -29,9 +29,14 @@ import {
   type WorkspaceMember,
 } from '../lib/projectProfile';
 import { checkCommand, entriesToAllow, type AgentPermissions } from '../lib/permissions';
+import PolyglotHarnessSettings from './PolyglotHarnessSettings';
+import type { HarnessChatContext } from '../lib/polyglotHarness';
 
 export default function ProjectChecksSettings(props: {
   root: string;
+  /** Unsaved editor paths; missing means snapshot completeness is unknown. */
+  unsavedFiles?: readonly string[];
+  harnessChat?: HarnessChatContext;
   permissions: AgentPermissions;
   /** "Allow it" adds what the allowed commands lack for a check to run. */
   onPermissionsChange: (next: AgentPermissions) => void;
@@ -43,6 +48,7 @@ export default function ProjectChecksSettings(props: {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   const [loadError, setLoadError] = createSignal<string | null>(null);
+  const [harnessOpen, setHarnessOpen] = createSignal(false);
 
   const folder = () => props.root.split(/[\\/]/).filter(Boolean).pop() ?? props.root;
   const p = () => props.permissions;
@@ -161,6 +167,24 @@ export default function ProjectChecksSettings(props: {
 
   return (
     <div class="permissions-settings project-checks">
+      <section class="settings-section">
+        <div class="settings-section-title">Verified changes</div>
+        <button
+          type="button"
+          class="link-button"
+          aria-expanded={harnessOpen()}
+          onClick={() => setHarnessOpen(!harnessOpen())}
+        >
+          {harnessOpen() ? 'Close verification setup' : 'Set up and verify changes…'}
+        </button>
+        <Show when={harnessOpen()}>
+          <PolyglotHarnessSettings
+            root={props.root}
+            unsavedFiles={props.unsavedFiles}
+            chat={props.harnessChat}
+          />
+        </Show>
+      </section>
       <section class="settings-section">
         <div class="settings-section-title">When they run</div>
         <SettingStatus warning={!p().verifyChanges || noneRuns()}>

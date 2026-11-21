@@ -253,7 +253,7 @@ impl Client {
         // A call over HTTP carries a big message, or brings a big reply, on
         // a link that may be slow: it gets `POST_TIMEOUT`, not the frame's.
         let posted = |call: String| async {
-            tokio::time::timeout(POST_TIMEOUT, self.post_call(call))
+            tokio::time::timeout(POST_TIMEOUT.max(timeout), self.post_call(call))
                 .await
                 .unwrap_or_else(|_| Err(late()))
         };

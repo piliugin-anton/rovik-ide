@@ -113,6 +113,13 @@ jobs:
         run: |
           git config --global user.name "Rovik CI"
           git config --global user.email "ci@rovik.invalid"
+      # The unoptimized macOS app exceeds compact unwind's 16 MiB frame-table
+      # limit. Keep unwinding and debug assertions while reducing generated code.
+      - name: Keep macOS unwind tables within their format limit
+        if: runner.os == 'macOS'
+        run: |
+          echo "CARGO_PROFILE_DEV_OPT_LEVEL=1" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_TEST_OPT_LEVEL=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
@@ -149,6 +156,18 @@ jobs:
           cargo nextest run --workspace --profile ci
           --test-threads ${{ matrix.threads }} ${{ matrix.args }}
           -E "${{ matrix.filter || 'all()' }}"
+      - name: Report macOS unwind metadata
+        if: runner.os == 'macOS'
+        run: xcrun size -m src-tauri/target/debug/rovik-ide
+      - name: Git LFS staging and push acceptance
+        if: ${{ !matrix.confine }}
+        working-directory: src-tauri
+        env:
+          ROVIK_REAL_GIT_LFS: '1'
+        run: >-
+          cargo nextest run --workspace --profile ci
+          --test-threads 2 ${{ matrix.args }} --run-ignored only
+          -E 'package(rovik-client) & test(git::lfs::tests::)'
       - name: Parse the strict WSL acceptance script
         if: runner.os == 'Windows'
         shell: pwsh

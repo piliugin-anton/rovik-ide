@@ -29,6 +29,10 @@ const WAIT: Duration = Duration::from_secs(300);
 pub struct Pushing(pub Arc<Results>);
 
 impl Deliverer for Pushing {
+    fn keeps_on_host(&self, dialog_id: &str) -> bool {
+        self.0.keeps_on_host(dialog_id)
+    }
+
     fn push(&self, ask: DeliverAsk) -> Delivering<Option<Pushed>> {
         let results = self.0.clone();
         Box::pin(async move { results.deliver(ask).await })

@@ -9,9 +9,11 @@ pub mod agent;
 pub mod browser;
 pub mod chat;
 pub mod clm;
+pub mod docker;
 pub mod filesystem;
 pub mod formatter;
 pub mod git;
+pub mod harness;
 pub mod hosts;
 pub mod lsp;
 pub mod mcp;
@@ -32,6 +34,8 @@ pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Trusted polyglot setup and verification on the selected execution host.
+    Harness(Box<harness::HarnessRequest>),
     /// Shared workload queue and client-owned priority.
     Workload(Box<workload::WorkloadRequest>),
     /// Editor formatter discovery and execution.
@@ -40,6 +44,8 @@ pub enum DesktopRequest {
     Pages(Box<pages::PagesRequest>),
     /// Headless browser tools and shared Chrome installation.
     Browser(Box<browser::BrowserRequest>),
+    /// Local container engine installation and readiness.
+    Docker(Box<docker::DockerRequest>),
     /// Client-owned language servers and their installation.
     Lsp(Box<lsp::LspRequest>),
     /// Backend-owned Git operations.
@@ -96,10 +102,12 @@ impl DesktopRequest {
         // on the heap so adding commands cannot exhaust a UI or RPC task's stack.
         Box::pin(async move {
             match self {
+                Self::Harness(request) => request.dispatch(backend, session).await,
                 Self::Workload(request) => request.dispatch(backend, session).await,
                 Self::Formatter(request) => request.dispatch(backend, session),
                 Self::Pages(request) => request.dispatch(backend, session),
                 Self::Browser(request) => request.dispatch(backend, session).await,
+                Self::Docker(request) => request.dispatch(backend, session).await,
                 Self::Lsp(request) => request.dispatch(backend, session).await,
                 Self::Git(request) => request.dispatch(session).await,
                 Self::EventStatus { scope } => {

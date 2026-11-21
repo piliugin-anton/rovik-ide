@@ -64,6 +64,8 @@ mod gc;
 #[cfg(unix)]
 mod generated;
 #[cfg(unix)]
+mod harness;
+#[cfg(unix)]
 mod home;
 #[cfg(unix)]
 mod host;

@@ -53,6 +53,29 @@ const user: ChatMessage = { id: 'u1', role: 'user', content: 'Add a test', final
 const working = (root: HTMLElement) =>
   [...root.querySelectorAll('[role="status"]')].map((e) => e.textContent);
 
+test('only the current tool step spins, including when interrupted calls are folded together', () => {
+  const call = (id: string): ChatMessage => ({
+    id,
+    role: 'assistant',
+    content: '',
+    finalized: true,
+    toolCalls: [{ id, name: 'prepare_verified_plan', arguments: '{}' }],
+  });
+  const model = list([user, call('old'), call('current')]);
+  try {
+    const group = model.root.querySelector('.tool-group');
+    assert.ok(group);
+    assert.match(group.textContent!, /1 not run/);
+    model.setStarting(true);
+    assert.equal(model.root.querySelectorAll('.message-tools .tool-call-spinner').length, 0);
+    model.setStarting(false);
+    model.setHasNewer(true);
+    assert.equal(model.root.querySelectorAll('.message-tools .tool-call-spinner').length, 0);
+  } finally {
+    model.dispose();
+  }
+});
+
 test('an API chat shows progress during preparation and hands over to the reply', () => {
   const model = list([user], undefined, true);
   try {

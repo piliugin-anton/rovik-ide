@@ -494,6 +494,12 @@ async fn an_upgrade_refuses_live_clients_then_retires_under_the_ownership_lock()
     desktop_upgrade::check(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd"))).await;
 }
 
+#[tokio::test]
+async fn an_explicit_update_replaces_only_the_approved_backend_and_keeps_saved_chats() {
+    desktop_upgrade::check_restart(std::path::Path::new(env!("CARGO_BIN_EXE_rovik-desktopd")))
+        .await;
+}
+
 #[cfg(target_os = "linux")]
 #[path = "support/desktop_standalone.rs"]
 mod desktop_standalone;

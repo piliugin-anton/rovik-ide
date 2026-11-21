@@ -132,6 +132,7 @@ body {
 }
 
 .sidebar .modal-body,
+.sidebar .polyglot-review-body,
 .sidebar .chat-history-error,
 .sidebar .git-inline-error,
 .sidebar .git-panel-error,
@@ -1428,6 +1429,190 @@ body.tree-dragging {
   /* Squeezed to nothing (the chat list and the isolation bar open in a
      short window), the list's padding mustn't spill over the bar. */
   overflow: hidden;
+}
+
+.chat-messages-frame:has(~ .plan-preparation),
+.chat-messages-frame:has(~ .polyglot-review) {
+  /* Reserve the transcript's share before flex shrinking. A zero basis lets a
+     naturally sized review consume all space left above the composer. */
+  flex-basis: 65%;
+}
+
+/* Verification reviews share the chat's finite height with the transcript
+   and composer. Only the evidence body scrolls; actions remain reachable. */
+.polyglot-review {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  min-width: 0;
+  max-height: min(28%, 13rem);
+  width: min(calc(100% - 16px), 34rem);
+  margin: 0 8px 8px;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.polyglot-review-header,
+.polyglot-review-actions {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  background: var(--bg-elevated);
+}
+
+.polyglot-review-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.polyglot-review.compact {
+  flex-shrink: 0;
+}
+
+.polyglot-review.compact .polyglot-review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.polyglot-review.compact .polyglot-review-body p {
+  margin: 0 0 4px;
+}
+
+.polyglot-review.compact .polyglot-review-actions:not(:has(button)) {
+  display: none;
+}
+
+.polyglot-review-header h3 {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.polyglot-review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fg-dim) transparent;
+  overflow-wrap: anywhere;
+}
+
+.polyglot-review-body::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.polyglot-review-body::-webkit-scrollbar-thumb {
+  background: var(--fg-dim);
+  border-radius: 4px;
+}
+
+.polyglot-review-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.polyglot-review-body > :first-child {
+  margin-top: 0;
+}
+
+.polyglot-review-body > :last-child {
+  margin-bottom: 0;
+}
+
+.polyglot-review-body details {
+  margin: 4px 0;
+}
+
+.polyglot-review-body summary,
+.plan-preparation-body summary {
+  padding: 2px 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.polyglot-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.polyglot-review-actions > button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* Preparation belongs beside the chat's existing check records. Only expanded
+   review details scroll; the conversation and the primary action stay visible. */
+.chat-verify.plan-preparation {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(28%, 13rem);
+  width: min(calc(100% - 16px), 34rem);
+  margin: 0 8px 8px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.plan-preparation-heading,
+.plan-preparation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 8px 10px;
+}
+
+.plan-preparation-heading {
+  justify-content: space-between;
+}
+
+.plan-preparation-body {
+  min-height: 0;
+  padding: 0 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  overflow-wrap: anywhere;
+}
+
+.plan-preparation-body p {
+  margin: 0 0 8px;
+}
+
+.plan-preparation-body details {
+  margin: 6px 0;
+}
+
+.plan-preparation-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.plan-preparation-requirements {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+
+.plan-preparation-warning {
+  color: var(--warning);
+}
+
+.plan-preparation-actions > button {
+  max-width: 100%;
+  white-space: normal;
 }
 
 /* Always bottom center of the visible list. It used to be sticky inside
@@ -6823,17 +7008,22 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .notifications {
   position: fixed;
-  right: 14px;
-  bottom: 14px;
+  right: 0;
+  bottom: 0;
   z-index: 9000;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(340px, calc(100vw - 28px));
+  box-sizing: border-box;
+  width: min(374px, 100vw);
+  max-height: 100dvh;
+  padding: 14px 14px 14px 20px;
+  overflow-y: auto;
   pointer-events: none;
 }
 
 .notification {
+  flex: none;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
@@ -6868,6 +7058,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .notification-title {
   flex: 1;
+  overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.35;
 }
@@ -6893,6 +7084,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .notification-message {
+  max-height: min(16rem, 40dvh);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   color: var(--fg-muted);
   line-height: 1.45;
   white-space: pre-line;
@@ -7039,6 +7233,20 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   align-items: center;
   gap: 10px;
   margin-top: 6px;
+}
+
+.chat-plan-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-plan-option input {
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .chat-plan-hint {
@@ -9891,7 +10099,22 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   border-left: 2px solid var(--border);
 }
 
+.chat-messages .tool-group-calls,
+.chat-messages .tool-call-body,
+.chat-messages .chat-verify {
+  max-height: min(13rem, var(--chat-block-height, 30vh));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.chat-messages .tool-group-calls .tool-call-body {
+  max-height: none;
+  overflow: visible;
+}
+
 .tool-group-calls .tool-call {
+  flex: none;
   max-width: 100%;
 }
 
@@ -11212,4 +11435,93 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-dim);
+}
+
+/* Architecture evidence is advisory and scoped to the selected saved source. */
+.architecture-problems {
+  flex: 0 0 auto;
+  max-height: min(32vh, 300px);
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.architecture-problems ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.architecture-problems p {
+  margin: 4px 0;
+}
+
+dialog.verified-changes-dialog {
+  margin: auto;
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  color: var(--fg);
+}
+
+.verified-changes-dialog::backdrop {
+  background: var(--overlay, rgb(0 0 0 / 50%));
+}
+
+.verified-changes-files {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px;
+}
+
+.verified-file-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.verified-file-choice select {
+  flex: 1;
+  min-width: 0;
+}
+
+.verified-changes-files h4 {
+  margin: 12px 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.verified-changes-dialog .confirm-dialog-actions {
+  padding-top: 12px;
+}
+
+.verified-plan-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: none;
+  gap: 4px 10px;
+  margin: 0 8px 6px;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.verified-plan-status.needs-attention .verified-plan-label {
+  color: var(--warning);
+}
+.verified-plan-label,
+.verified-plan-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.verified-plan-message {
+  flex: 1 1 8rem;
+  min-width: 0;
+  max-height: 2.8em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+}
+.verified-plan-actions {
+  margin-left: auto;
 }

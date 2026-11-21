@@ -4,6 +4,7 @@ pub mod agent;
 pub mod browser;
 pub mod chat;
 pub mod clm;
+pub mod harness;
 pub mod hosts;
 pub mod mcp;
 pub mod memory;

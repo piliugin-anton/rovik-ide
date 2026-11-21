@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
 import { QuietRunner } from './quietRunner';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 function recorder() {
   const applied: Map<string, string | null | undefined>[] = [];
   let reloads = 0;
@@ -18,13 +16,17 @@ function recorder() {
 const timing = { quietMs: 10, maxWaitMs: 60, burstLimit: 2, reloadQuietMs: 20 };
 
 describe('SourceChangeQueue', () => {
-  it('applies changes together once they settle', async () => {
+  it('applies changes together once they settle', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
     const r = recorder();
     const q = new SourceChangeQueue(r.sink, timing);
+    t.after(() => q.dispose());
     q.queue('/p/a.ts', 'A');
     q.queue('/p/b.ts');
     q.queue('/p/a.ts', null);
-    await sleep(30);
+    t.mock.timers.tick(timing.quietMs - 1);
+    assert.equal(r.applied.length, 0);
+    t.mock.timers.tick(1);
     assert.equal(r.applied.length, 1);
     assert.deepEqual(
       [...r.applied[0]],
@@ -34,73 +36,87 @@ describe('SourceChangeQueue', () => {
       ]
     );
     assert.equal(r.reloads(), 0);
-    q.dispose();
   });
 
-  it('flushes by maxWaitMs while changes keep coming', async () => {
+  it('flushes by maxWaitMs while changes keep coming', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
     const r = recorder();
     const q = new SourceChangeQueue(r.sink, timing);
-    const start = Date.now();
-    while (Date.now() - start < 100 && r.applied.length === 0) {
-      q.queue('/p/a.ts', String(Date.now()));
-      await sleep(4);
+    t.after(() => q.dispose());
+    for (let elapsed = 0; elapsed < timing.maxWaitMs; elapsed += 4) {
+      assert.equal(r.applied.length, 0, `no flush before the maximum wait at ${elapsed} ms`);
+      q.queue('/p/a.ts', String(elapsed));
+      t.mock.timers.tick(4);
     }
     assert.equal(r.applied.length, 1);
-    q.dispose();
+    assert.equal(r.applied[0].get('/p/a.ts'), '56');
   });
 
-  it('a burst reloads everything instead, once quiet', async () => {
+  it('a burst reloads everything instead, once quiet', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
     const r = recorder();
     const q = new SourceChangeQueue(r.sink, timing);
+    t.after(() => q.dispose());
     for (const f of ['a', 'b', 'c']) q.queue(`/p/${f}.ts`);
-    await sleep(15);
+    t.mock.timers.tick(timing.quietMs);
     assert.equal(r.applied.length, 0);
-    q.queue('/p/d.ts'); // while stale: only pushes the reload back
-    await sleep(15);
+    t.mock.timers.tick(timing.reloadQuietMs - 1);
     assert.equal(r.reloads(), 0);
-    await sleep(15);
+    q.queue('/p/d.ts'); // while stale: only pushes the reload back
+    t.mock.timers.tick(timing.reloadQuietMs - 1);
+    assert.equal(r.reloads(), 0);
+    t.mock.timers.tick(1);
     assert.equal(r.reloads(), 1);
     assert.equal(r.applied.length, 0);
     q.queue('/p/e.ts', 'E'); // no longer stale: applied as usual
-    await sleep(20);
+    t.mock.timers.tick(timing.quietMs);
     assert.equal(r.applied.length, 1);
-    q.dispose();
   });
 
-  it('reloadAll: what was queued waits for the reload, which comes once quiet', async () => {
+  it('reloadAll: what was queued waits for the reload, which comes once quiet', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
     const r = recorder();
     const q = new SourceChangeQueue(r.sink, timing);
+    t.after(() => q.dispose());
     q.queue('/p/a.ts');
     q.reloadAll();
-    await sleep(15);
-    q.queue('/p/b.ts'); // pushes the reload back
-    await sleep(15);
+    t.mock.timers.tick(timing.reloadQuietMs - 1);
     assert.equal(r.reloads(), 0);
-    await sleep(15);
+    q.queue('/p/b.ts'); // pushes the reload back
+    t.mock.timers.tick(timing.reloadQuietMs - 1);
+    assert.equal(r.reloads(), 0);
+    t.mock.timers.tick(1);
     assert.equal(r.reloads(), 1);
     assert.equal(r.applied.length, 0, 'the reload has them');
-    q.dispose();
   });
 });
 
 describe('QuietRunner', () => {
-  it('runs once after the last trigger, and again if triggered while running', async () => {
+  it('runs once after the last trigger, and again if triggered while running', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     let runs = 0;
     let release!: () => void;
-    const runner = new QuietRunner(async () => {
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    const runner = new QuietRunner(() => {
       runs++;
-      if (runs === 1) await new Promise<void>((r) => (release = r));
+      return runs === 1 ? blocked : Promise.resolve();
     }, 5);
+    t.after(() => runner.dispose());
     runner.trigger();
     runner.trigger();
-    await sleep(10);
+    t.mock.timers.tick(4);
+    assert.equal(runs, 0);
+    t.mock.timers.tick(1);
     assert.equal(runs, 1);
     runner.trigger(); // during the first run
-    await sleep(10);
+    t.mock.timers.tick(5);
     assert.equal(runs, 1);
     release();
-    await sleep(15);
+    // The runner subscribed first: its finally schedules the retry before this continuation.
+    await blocked;
+    t.mock.timers.tick(4);
+    assert.equal(runs, 1);
+    t.mock.timers.tick(1);
     assert.equal(runs, 2);
-    runner.dispose();
   });
 });

@@ -27,6 +27,8 @@ export interface NotificationOptions {
   id?: string;
   kind?: 'info' | 'success' | 'warning' | 'error';
   title: string;
+  /** Optional cleanup when the user closes this notification. */
+  onDismiss?: () => void;
   message?: string;
   actions?: NotificationAction[];
   /** 0..1, or 'busy' for an indeterminate bar. */

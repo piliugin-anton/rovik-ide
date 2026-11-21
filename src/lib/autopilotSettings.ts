@@ -10,6 +10,15 @@
 import type { AutopilotEffort } from './autopilot';
 import type { SubagentKindId } from './subagentSettings';
 import { plural } from './textUtils';
+import type { HarnessRates } from './polyglotPlan';
+
+/** Exact non-secret setup and prices reviewed for a single strict task. */
+export interface VerifiedDeliverySettings {
+  setupId: string;
+  configurationDigest: string;
+  untracked: string[];
+  rates: HarnessRates;
+}
 
 /** Where a task stops on its own (U04): null, no limit. */
 export interface AutopilotBudget {
@@ -70,6 +79,8 @@ export function planFixOf(settings: AutopilotSettings): AutopilotPlanFix {
 
 export interface AutopilotSettings {
   effort: AutopilotEffort;
+  /** Opt in to the strict controller and separately reviewed verified delivery. */
+  requireVerifiedDelivery?: true;
   /** The commands its runs never run (U01); unset: the defaults. */
   deniedCommands?: string[];
   /** Where a task stops on its own (U04); unset: its effort's defaults. */
@@ -229,6 +240,7 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
     : null;
   return {
     effort: effort ?? DEFAULT_AUTOPILOT_SETTINGS.effort,
+    ...(r.requireVerifiedDelivery === true ? { requireVerifiedDelivery: true as const } : {}),
     ...(denied ? { deniedCommands: denied } : {}),
     ...(budget ? { budget } : {}),
     ...(r.prepare === false ? { prepare: false as const } : {}),
@@ -242,6 +254,9 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
  */
 export interface AutopilotConfig {
   effort: AutopilotEffort;
+  requireVerifiedDelivery?: boolean;
+  /** Per-task only; never included by persisted settings normalization. */
+  verifiedDelivery?: VerifiedDeliverySettings;
   deniedCommands?: string[];
   budget: AutopilotBudget;
   prepare: boolean;
@@ -251,11 +266,28 @@ export interface AutopilotConfig {
 export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
   return {
     effort: settings.effort,
+    requireVerifiedDelivery: settings.requireVerifiedDelivery === true,
     ...(settings.deniedCommands ? { deniedCommands: settings.deniedCommands } : {}),
     budget: budgetOf(settings),
     prepare: settings.prepare !== false,
     planFix: planFixOf(settings),
   };
+}
+
+/** Preparation uses its private agent workflow; ordinary tasks honor autonomous host mode. */
+export function requiresVerifiedTaskReview(
+  settings: AutopilotSettings,
+  mode: string,
+  worksOnOwn: boolean,
+  command = false,
+  preparation = false
+): boolean {
+  return (
+    settings.requireVerifiedDelivery === true &&
+    !command &&
+    !preparation &&
+    (mode === 'autopilot' || worksOnOwn)
+  );
 }
 
 /** A token limit as the pages show it: in millions, "2.5M". */
@@ -275,5 +307,5 @@ export function autopilotSummary(settings: AutopilotSettings): string {
   const stop = stops.length ? `a task stops ${stops.join(' or ')}` : 'no limit on a task';
   const fix = planFixOf(settings);
   const plan = `plan: up to ${plural(fix.maxRounds, 'review')}, ${fix.maxMinutes} min`;
-  return `${effort} · ${stop} · ${plan} · ${plural(denylistOf(settings).length, 'command')} never run`;
+  return `${effort} · ${stop} · ${plan} · ${plural(denylistOf(settings).length, 'command')} never run${settings.requireVerifiedDelivery ? ' · verified delivery required' : ''}`;
 }

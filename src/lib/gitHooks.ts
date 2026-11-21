@@ -23,7 +23,7 @@ export const SKIP_HINTS = {
   commit: 'Commits once more without the pre-commit and commit-msg hooks (git commit --no-verify)',
   merge:
     'Commits the merge without the pre-merge-commit, pre-commit and commit-msg hooks (--no-verify)',
-  push: 'Pushes once more without the pre-push hook (git push --no-verify)',
+  push: 'Pushes once more without the pre-push hook; Git LFS validation and uploads still run',
 } as const;
 
 /** The repository's hooks, for the Git hooks view (git_hooks in

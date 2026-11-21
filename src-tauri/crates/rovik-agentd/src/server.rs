@@ -102,7 +102,7 @@ async fn call(
     }
     let body = match whole_body(request.into_body(), MAX_CALL, too_large).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Ok(Frame::Call { id, req }) = serde_json::from_slice::<Frame>(&body) else {
         return refusal(
@@ -273,7 +273,7 @@ async fn put_blob(
     }
     let body = match whole_body(request.into_body(), MAX_BLOB, too_large).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if attachments::id_of(&body) != id {
         return refusal(
@@ -621,17 +621,17 @@ async fn whole_body(
     body: axum::body::Body,
     limit: usize,
     too_large: impl Fn() -> Response,
-) -> Result<Bytes, Response> {
+) -> Result<Bytes, Box<Response>> {
     match tokio::time::timeout(BODY_WAIT, axum::body::to_bytes(body, limit)).await {
         Ok(Ok(body)) => Ok(body),
-        Ok(Err(_)) => Err(too_large()),
-        Err(_) => Err(refusal(
+        Ok(Err(_)) => Err(Box::new(too_large())),
+        Err(_) => Err(Box::new(refusal(
             StatusCode::REQUEST_TIMEOUT,
             Fail::new(
                 FailCode::Busy,
                 "The request's body didn't arrive in time: send it again.",
             ),
-        )),
+        ))),
     }
 }
 

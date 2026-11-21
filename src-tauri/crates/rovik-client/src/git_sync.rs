@@ -495,6 +495,7 @@ fn commit_merge(
             return Err("Resolve the remaining conflicts first.".to_string());
         }
     }
+    crate::git::lfs::check_index(repo, &index)?;
     let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
     let sig = signature(repo)?;
     let mut parents = vec![head_commit(repo)?];
@@ -986,7 +987,12 @@ pub fn git_conflict_resolve_blocking(
                 std::fs::create_dir_all(dir).map_err(|e| format!("{file}: {e}"))?;
             }
             std::fs::write(&abs, bytes).map_err(|e| format!("{file}: couldn't write it: {e}"))?;
-            index.add_path(rel).err_text()?;
+            if crate::git::lfs::is_lfs_path(&repo, rel, git2::AttrCheckFlags::FILE_THEN_INDEX)? {
+                crate::git::lfs::stage_file(&repo, rel)?;
+                index.read(true).err_text()?;
+            } else {
+                index.add_path(rel).err_text()?;
+            }
         }
         None => {
             if abs.exists() {

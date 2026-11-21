@@ -38,6 +38,7 @@ pub enum BuiltinTool {
     AskUser,
     Todo,
     SubmitPlan,
+    PrepareVerifiedPlan,
     RestoreContext,
     Task,
     ExtendScope,
@@ -209,7 +210,7 @@ const READ_PATH: Restricted = Restricted {
 };
 
 impl BuiltinTool {
-    pub const ALL: [BuiltinTool; 25] = [
+    pub const ALL: [BuiltinTool; 26] = [
         BuiltinTool::Read,
         BuiltinTool::Write,
         BuiltinTool::ListDir,
@@ -229,6 +230,7 @@ impl BuiltinTool {
         BuiltinTool::AskUser,
         BuiltinTool::Todo,
         BuiltinTool::SubmitPlan,
+        BuiltinTool::PrepareVerifiedPlan,
         BuiltinTool::RestoreContext,
         BuiltinTool::Task,
         BuiltinTool::ExtendScope,
@@ -408,6 +410,12 @@ impl BuiltinTool {
             SubmitPlan => ToolSpec {
                 name: "submit_plan",
                 modes: Modes::PlanOnly,
+                ..BASE
+            },
+            PrepareVerifiedPlan => ToolSpec {
+                name: super::verified_preparation::TOOL,
+                modes: Modes::AgentOnly,
+                needs_project: true,
                 ..BASE
             },
             RestoreContext => ToolSpec {

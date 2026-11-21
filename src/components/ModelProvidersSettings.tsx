@@ -10,6 +10,7 @@ import { fetchModels, guessProviderName, mergeRemoteModels } from '../lib/aiSett
 import { isConnector } from '../lib/connectors';
 import { confirmDialog } from './ConfirmDialog';
 import ProviderModelsTable, { PROVIDER_COLUMNS } from './ProviderModelsTable';
+import ProviderModelRates from './ProviderModelRates';
 
 /** Lets the settings modal show the open form's name and close it with Back. */
 export interface ProvidersSettingsController {
@@ -308,6 +309,8 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
             onChange={(models) => patch({ models })}
             columns={PROVIDER_COLUMNS}
           />
+
+          <ProviderModelRates models={d().models} onChange={(models) => patch({ models })} />
 
           <Show when={formError()}>
             <div class="provider-test-status error">{formError()}</div>

@@ -92,7 +92,7 @@ pub fn check(model: &Model, names: &[String], root: &Path) -> Result<Plan, Strin
             return Err(refused(why));
         }
         for (path, what) in files_of(service) {
-            let mut source = inside(path, what, root).map_err(&refused)?;
+            let mut source = inside(path, what, root).map_err(refused)?;
             source.service = Some(name.clone());
             plan.sources.push(source);
         }

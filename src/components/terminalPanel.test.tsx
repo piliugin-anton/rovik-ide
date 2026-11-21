@@ -62,18 +62,26 @@ const flush = async () => {
   for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-/** Wait for xterm to draw the expected text, including when animation frames are delayed. */
+/** Wait for xterm's asynchronous write and render, even when the test host is busy. */
 async function screen(root: HTMLElement, index: number, expected: RegExp): Promise<string> {
-  const deadline = performance.now() + 5_000;
-  let shown: string;
-  do {
-    const terminal = root.querySelectorAll('.terminal-instance')[index];
-    shown = terminal?.querySelector('.xterm-rows')?.textContent ?? '';
-    if (expected.test(shown)) return shown;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  } while (performance.now() < deadline);
-  assert.match(shown, expected);
-  return shown;
+  const terminal = root.querySelectorAll('.terminal-instance')[index];
+  assert.ok(terminal, 'the terminal exists');
+  const read = () => terminal.querySelector('.xterm-rows')?.textContent ?? '';
+  if (expected.test(read())) return read();
+  return new Promise((resolve, reject) => {
+    const observer = new MutationObserver(() => {
+      const text = read();
+      if (!expected.test(text)) return;
+      clearTimeout(deadline);
+      observer.disconnect();
+      resolve(text);
+    });
+    const deadline = setTimeout(() => {
+      observer.disconnect();
+      reject(new Error(`Terminal did not render ${expected}: ${JSON.stringify(read())}`));
+    }, 5_000);
+    observer.observe(terminal, { childList: true, characterData: true, subtree: true });
+  });
 }
 const sent = (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args);
 

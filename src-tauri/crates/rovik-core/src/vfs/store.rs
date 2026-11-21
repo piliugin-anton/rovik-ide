@@ -1030,6 +1030,18 @@ impl VirtualFs {
         })
     }
 
+    /// Records modified content before a close returns. A later `release`
+    /// still owns the handle count and close event; repeated flushes and
+    /// that release are deduplicated by history.
+    pub fn flush(&self, ino: Ino) -> VfsResult<()> {
+        let mut tree = self.tree_mut();
+        let node = tree.node(ino)?;
+        if node.kind == Kind::File && node.dirty {
+            tree.record_revision(ino, Source::Process);
+        }
+        Ok(())
+    }
+
     pub fn release(&self, ino: Ino) {
         self.with_events(Source::Process, |ev| {
             let mut tree = self.tree_mut();
@@ -2055,6 +2067,63 @@ mod tests {
             .collect();
         assert_eq!(sources, [Source::Process, Source::Process, Source::App]);
         assert_eq!(fs.read_revision("notes.md", 9), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn flush_preserves_a_revision_before_a_later_append_and_delayed_release() {
+        let fs = fs();
+        let f = file(&fs, ROOT, "notes.md");
+        let backend: &dyn crate::vfs::backend::Backend = fs.as_ref();
+        backend.open(f.ino, true).unwrap();
+        backend.write(f.ino, 0, b"a\n").unwrap();
+        backend.flush(f.ino).unwrap();
+        assert_eq!(contents(&fs, "notes.md"), [(1, "a\n".into())]);
+
+        // A second writer can append before the first release arrives.
+        backend.open(f.ino, true).unwrap();
+        backend.write(f.ino, 2, b"b\n").unwrap();
+        backend.release(f.ino);
+        assert_eq!(
+            contents(&fs, "notes.md"),
+            [(1, "a\n".into()), (2, "a\nb\n".into())],
+            "release still records writes that did not receive a flush"
+        );
+        backend.flush(f.ino).unwrap();
+        backend.release(f.ino);
+        assert_eq!(
+            contents(&fs, "notes.md"),
+            [(1, "a\n".into()), (2, "a\nb\n".into())]
+        );
+    }
+
+    #[test]
+    fn flush_keeps_unlinked_handles_and_modified_close_events_until_release() {
+        let fs = fs();
+        let f = file(&fs, ROOT, "notes.md");
+        fs.open(f.ino, true).unwrap();
+        fs.open(f.ino, false).unwrap();
+        fs.write(f.ino, 0, b"a\n").unwrap();
+        fs.unlink(ROOT, "notes.md").unwrap();
+        let seen = record(&fs, EventMask::CLOSED);
+
+        fs.flush(f.ino).unwrap();
+        fs.flush(f.ino).unwrap();
+        assert_eq!(fs.read(f.ino, 0, 2).unwrap(), b"a\n");
+        assert!(ops(&seen).is_empty(), "flush must not report a close");
+
+        fs.release(f.ino);
+        assert_eq!(fs.read(f.ino, 0, 2).unwrap(), b"a\n");
+        assert_eq!(
+            ops(&seen),
+            [("notes.md".into(), Op::Closed { modified: true })]
+        );
+        fs.release(f.ino);
+        assert_eq!(fs.getattr(f.ino), Err(VfsError::NotFound));
+        assert_eq!(contents(&fs, "notes.md"), [(1, "a\n".into())]);
+        assert_eq!(
+            ops(&seen),
+            [("notes.md".into(), Op::Closed { modified: false })]
+        );
     }
 
     #[test]

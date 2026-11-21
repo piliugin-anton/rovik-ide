@@ -36,6 +36,9 @@ pub struct PlanImplementation {
     pub status: String,
     /// Distinguishes this attempt from an unrelated later run in the same chat.
     pub run_id: Option<String>,
+    /// Verified attempts resolve their current status on the chat’s execution host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preparation_id: Option<String>,
 }
 
 /// Reads matching evidence from all of a project's chats, including remote
@@ -47,15 +50,16 @@ pub fn plan_implementation(
     content: &str,
 ) -> Result<Option<PlanImplementation>, String> {
     conn.query_row(
-        "SELECT m.dialog_id, m.id, json_extract(m.meta, '$.planImplementation.status'),
-                json_extract(m.meta, '$.planImplementation.runId')
+        "SELECT m.dialog_id, m.id, COALESCE(json_extract(m.meta, '$.planImplementation.status'), 'interrupted'),
+                json_extract(m.meta, '$.planImplementation.runId'), json_extract(m.meta, '$.verifiedPreparation')
          FROM messages m JOIN dialogs d ON d.id = m.dialog_id
          WHERE d.project_id IS ?1 AND d.parent_id IS NULL
-           AND json_extract(m.meta, '$.implementsPlan') = 1
+           AND m.role = 'user'
+           AND ((json_extract(m.meta, '$.implementsPlan') = 1 AND json_extract(m.meta, '$.planImplementation.status') IS NOT NULL)
+                OR json_type(m.meta, '$.verifiedPreparation') = 'text')
            AND json_extract(m.meta, '$.planKey') = ?2
            AND json_extract(m.meta, '$.planFingerprint') = ?3
-           AND json_extract(m.meta, '$.planImplementation.status') IS NOT NULL
-         ORDER BY json_extract(m.meta, '$.planImplementation.updatedAt') DESC,
+         ORDER BY COALESCE(json_extract(m.meta, '$.planImplementation.updatedAt'), m.created_at) DESC,
                   m.created_at DESC, m.seq DESC LIMIT 1",
         params![project, plan_key(path), plan_fingerprint(content)],
         |row| {
@@ -64,6 +68,7 @@ pub fn plan_implementation(
                 message_id: row.get(1)?,
                 status: row.get(2)?,
                 run_id: row.get(3)?,
+                preparation_id: row.get(4)?,
             })
         },
     )

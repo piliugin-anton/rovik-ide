@@ -989,3 +989,54 @@ remained usable, preserved the saved draft, refused retirement while connected,
 and recovered the draft after clean retirement and replacement. The WSL
 acceptance harness is compiled and its PowerShell syntax is checked in CI; its
 real WSL2 execution and mount checks remain unrun without a compatible host.
+
+## Local IPC protocol 22
+
+Automatic plan preparation extends the desktop requests added for Docker
+installation and polyglot IDE actions. Local protocol 22 prevents a rebuilt app
+from reusing an older backend that cannot decode those requests, even when both
+binaries have the same application version. An idle older backend retires through the existing guarded
+upgrade flow; a busy backend keeps its work and reports that the upgrade must wait.
+Reconnecting cannot silently attach the new app to that incompatible owner.
+The polyglot harness artifact schemas remain protocol v1; their version is
+independent of this local IPC boundary.
+
+Connected hosts advertise `polyglot-preparation` separately. The desktop checks
+that capability before forwarding preparation requests, model credentials or a
+continued preparation chat to the host. Update an older host before using this
+workflow; ordinary chat support does not imply support for private preparation.
+
+## Local IPC protocol 23: concurrent requests and explicit backend updates
+
+Each command connection multiplexes request IDs over independent readers and
+writers. The server admits requests in wire order and dispatches pending work
+concurrently; existing service ownership guards still apply. Replies may arrive
+out of order. Both sides bound ordinary work to 32 requests and reserve four
+additional slots for Stop/cancel operations. Execution owns its deadlines;
+transport deadlines cover incomplete frames, not long-running preparation.
+Cancelling a caller retains its accepted ID until the reply arrives, preserving
+the bound and other callers' results. Disconnect fails pending callers without
+replaying mutations; accepted backend-owned work finishes independently.
+
+An accepted agent start has a per-chat stop signal before routing, database reads,
+or preparation can yield. Registered controls inherit that signal. Stop during
+startup therefore prevents a late run, while Autopilot's durable operations retain
+their existing settlement and ownership rules.
+
+The frontend inspects the independent control endpoint at launch and on focus.
+An outdated shared host produces a bottom-right **Restart backend** notification
+using the existing notification component. The action warns that agents,
+preparation, commands, and terminals in every window will stop. It binds the
+observed boot, release, protocol, and executable hash; stale identities and
+downgrades are refused. The launcher prepares the replacement before stopping
+the old host and retains its launch lock through ownership release and readiness.
+Modern hosts stop themselves with a native ten-second shutdown deadline. Legacy
+Linux and Windows hosts use retained process identities; a busy macOS host that
+predates this management operation must finish its work before replacement.
+
+An incompatible old host no longer prevents the window from mounting. Explicit
+replacement can start without a project, recover the saved folder, then restore
+project registration, history, and declarative subscriptions. Editor buffers and
+chat drafts remain open; uncertain commands are never replayed. Installed-image
+snapshots include an AppImage's outer launcher, and an old UI must relaunch after
+installation before it can replace a backend using the new app's protocol.

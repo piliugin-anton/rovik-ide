@@ -118,6 +118,27 @@ WantedBy=multi-user.target
     )
 }
 
+fn unit_for_systemd(version: Option<u32>) -> String {
+    let base = unit();
+    if version.is_some_and(|version| version >= 254) {
+        // A stable, empty parent can hold bounded verification jobs beside the
+        // daemon; they remain under its aggregate memory/CPU/task limits.
+        base.replace(
+            "PrivateTmp=yes\n",
+            "PrivateTmp=yes\nDelegate=cpu memory pids\nDelegateSubgroup=rovik-controller\n",
+        )
+    } else {
+        base
+    }
+}
+
+fn systemd_version(text: &str) -> Option<u32> {
+    let mut words = text.lines().next()?.split_whitespace();
+    (words.next()? == "systemd")
+        .then(|| words.next()?.parse().ok())
+        .flatten()
+}
+
 /// Each daemon's caps, from `agentd.toml`.
 pub fn drop_in(file: &AdminFile) -> String {
     let mut text = String::from(
@@ -211,6 +232,15 @@ impl System {
     /// Whether systemd runs the system.
     fn systemd(&self) -> bool {
         self.path("/run/systemd/system").is_dir()
+    }
+
+    fn service_unit(&self) -> Result<String, String> {
+        let version = if self.live() && self.systemd() {
+            systemd_version(&self.run("systemctl", &["--version"])?)
+        } else {
+            None
+        };
+        Ok(unit_for_systemd(version))
     }
 
     /// Runs a command that changes the system; under another root, says it.
@@ -848,7 +878,7 @@ fn write_settings(sys: &System, file: &AdminFile) -> Result<(), String> {
     file.check()?;
     sys.write(ADMIN_FILE, file.to_toml().as_bytes(), 0o644)?;
     toolchains::group(sys)?;
-    sys.write(UNIT, unit().as_bytes(), 0o644)?;
+    sys.write(UNIT, sys.service_unit()?.as_bytes(), 0o644)?;
     sys.write(DROP_IN, drop_in(file).as_bytes(), 0o644)?;
     sys.write(SLICE, slice(file).as_bytes(), 0o644)
 }
@@ -1350,19 +1380,19 @@ mod tests {
         assert!(out.status.success(), "{said}");
     }
 
-    /// The units as systemd reads them, where `systemd-analyze` is there:
-    /// no warning about any line.
-    #[test]
-    fn systemd_takes_the_units() {
-        if !on_path("systemd-analyze") {
-            return;
-        }
+    /// Our unit files and the minimal boot targets their default dependencies need.
+    fn systemd_fixture() -> rovik_core::testing::TempDir {
         let dir = rovik_core::testing::temp_dir();
         let mut file = AdminFile::sized_for("ann", 16 << 30);
         file.cpu_quota = Some("200%".into());
         file.total_cpu_quota = Some("800%".into());
         // verify wants ExecStart's program to be there.
-        let unit_text = unit().replace(INSTALLED, "/bin/true");
+        let version = Command::new("systemd-analyze")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|output| systemd_version(&String::from_utf8_lossy(&output.stdout)));
+        let unit_text = unit_for_systemd(version).replace(INSTALLED, "/bin/true");
         std::fs::write(dir.0.join("rovik-agentd@ann.service"), unit_text).unwrap();
         std::fs::create_dir(dir.0.join("rovik-agentd@ann.service.d")).unwrap();
         std::fs::write(
@@ -1371,14 +1401,98 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.0.join("rovik.slice"), slice(&file)).unwrap();
-        let out = Command::new("systemd-analyze")
-            .arg("verify")
+        for target in [
+            "sysinit.target",
+            "basic.target",
+            "shutdown.target",
+            "multi-user.target",
+        ] {
+            std::fs::write(
+                dir.0.join(target),
+                "[Unit]\nDescription=Fixture boot target\nDefaultDependencies=no\n",
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// Replace the child process's ambient unit search path without changing
+    /// process-wide environment or suppressing diagnostics from our own files.
+    fn verify_systemd_units(dir: &Path, mut command: Command) -> std::process::Output {
+        command
+            // No trailing colon: it would append the host's default unit paths.
+            .env("SYSTEMD_UNIT_PATH", dir)
+            .args(["--generators=no", "verify"])
+            .arg(dir.join("rovik.slice"))
+            .arg(dir.join("rovik-agentd@ann.service"))
+            .output()
+            .unwrap()
+    }
+
+    /// The units as systemd reads them, where `systemd-analyze` is there:
+    /// no warning about any line.
+    #[test]
+    fn systemd_takes_the_units() {
+        if !on_path("systemd-analyze") {
+            return;
+        }
+        let dir = systemd_fixture();
+        let out = verify_systemd_units(&dir.0, Command::new("systemd-analyze"));
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.trim().is_empty(), "{said}");
+    }
+
+    #[test]
+    fn systemd_verification_excludes_host_units_but_reports_our_own_warnings() {
+        if !on_path("systemd-analyze") {
+            return;
+        }
+        let dir = systemd_fixture();
+        let ambient = rovik_core::testing::temp_dir();
+        std::fs::write(
+            ambient.0.join("host-only.service"),
+            "[Service]\nExecStart=/bin/true\nRovikInvalidAmbientOption=yes\n",
+        )
+        .unwrap();
+        // An optional dependency exposes a host unit when ambient paths leak in.
+        std::fs::write(
+            dir.0.join("rovik-agentd@ann.service.d/ambient.conf"),
+            "[Unit]\nWants=host-only.service\n",
+        )
+        .unwrap();
+        let inherited = || {
+            let mut command = Command::new("systemd-analyze");
+            command.env(
+                "SYSTEMD_UNIT_PATH",
+                std::env::join_paths([&dir.0, &ambient.0]).unwrap(),
+            );
+            command
+        };
+        let control = inherited()
+            .args(["--generators=no", "verify"])
             .arg(dir.0.join("rovik.slice"))
             .arg(dir.0.join("rovik-agentd@ann.service"))
             .output()
             .unwrap();
-        let said = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success() && said.trim().is_empty(), "{said}");
+        let warning = String::from_utf8_lossy(&control.stderr);
+        assert!(warning.contains("RovikInvalidAmbientOption"), "{warning}");
+
+        let isolated = verify_systemd_units(&dir.0, inherited());
+        let said = String::from_utf8_lossy(&isolated.stderr);
+        assert!(
+            isolated.status.success() && said.trim().is_empty(),
+            "{said}"
+        );
+
+        std::fs::write(
+            dir.0.join("rovik-agentd@ann.service.d/warning.conf"),
+            "[Service]\nRovikInvalidOwnOption=yes\n",
+        )
+        .unwrap();
+        let invalid = verify_systemd_units(&dir.0, inherited());
+        let said = String::from_utf8_lossy(&invalid.stderr);
+        assert!(said.contains("RovikInvalidOwnOption"), "{said}");
+        assert!(!said.contains("RovikInvalidAmbientOption"), "{said}");
     }
 
     /// An upgrade needs --allow-downgrade for an older build, and for one
@@ -1429,5 +1543,26 @@ mod tests {
         assert!(unit().contains("KillMode=mixed\nTimeoutStopSec=90\n"));
         assert!(crate::serve::DRAIN_WAIT < std::time::Duration::from_secs(90));
         assert_eq!(instance("ann"), "rovik-agentd@ann.service");
+    }
+
+    #[test]
+    fn delegation_uses_a_supervisor_subgroup_only_on_systemd_versions_that_support_it() {
+        for (report, version) in [
+            ("systemd 252 (252.38)\n+PAM", Some(252)),
+            ("systemd 254\n", Some(254)),
+            ("systemd 261 (261.1-1ubuntu1)", Some(261)),
+            ("unknown", None),
+        ] {
+            assert_eq!(systemd_version(report), version);
+        }
+        for version in [None, Some(249), Some(253)] {
+            let text = unit_for_systemd(version);
+            assert!(!text.contains("DelegateSubgroup="));
+            assert_eq!(text, unit());
+        }
+        let text = unit_for_systemd(Some(254));
+        assert!(text.contains("Delegate=cpu memory pids\nDelegateSubgroup=rovik-controller\n"));
+        assert!(text.contains("Slice=rovik.slice\n"));
+        assert!(text.contains("KillMode=mixed\n"));
     }
 }

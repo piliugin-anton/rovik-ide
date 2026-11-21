@@ -62,6 +62,7 @@ import { isRequestMessage } from '../lib/requests';
 import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 import ThinkingBlock from './ThinkingBlock';
+import { visiblePreparationMessages } from '../lib/planPreparation';
 import PlanImplementationAction from './PlanImplementationAction';
 
 const BOTTOM_TOLERANCE_PX = 8;
@@ -117,6 +118,7 @@ export interface MessageListController {
 export default function MessageList(props: {
   dialogId: string | null;
   chat: OpenChat | undefined;
+  quietPreparation?: string;
   sending: boolean;
   /** The backend is preparing the run, before its first reply exists. */
   starting?: boolean;
@@ -152,7 +154,7 @@ export default function MessageList(props: {
   onOpenProjectChecks: () => void;
   /** The finished Plan-mode reply that gets "Implement this plan". */
   planMessageId?: string | null;
-  onImplementPlan?: () => void;
+  onImplementPlan?: (requireVerified?: boolean) => void;
   /** The chat can't change now (it's moving): no Retry, Continue or Implement. */
   readOnly?: boolean;
   /**
@@ -170,7 +172,9 @@ export default function MessageList(props: {
   let topSentinel: HTMLDivElement | undefined;
   let bottomSentinel: HTMLDivElement | undefined;
 
-  const messages = (): ChatMessage[] => props.chat?.messages ?? [];
+  const messages = createMemo(() =>
+    visiblePreparationMessages(props.chat?.messages ?? [], props.quietPreparation, props.sending)
+  );
   const [win, setWin] = createSignal<MessageWindow>({ start: 0, end: 0 });
   const [stick, setStick] = createSignal(true);
   const [flashId, setFlashId] = createSignal<string | null>(null);
@@ -189,7 +193,7 @@ export default function MessageList(props: {
    * the input instead (it's marked failed), so there is nothing to retry.
    */
   const isLatest = (m: ChatMessage) => {
-    const list = messages();
+    const list = props.chat?.messages ?? [];
     return !props.sending && !props.readOnly && list[list.length - 1]?.id === m.id;
   };
   // T01: a task's planners run at once, their records side by side at the
@@ -256,6 +260,16 @@ export default function MessageList(props: {
   const resultOf = (tc: ChatToolCall) => toolIndex().results.get(tc);
   /** Live progress (keyed by call id) is the newest call's with that id. */
   const newestOfId = (tc: ChatToolCall) => toolIndex().latest.get(tc.id) === tc;
+  const liveToolCalls = createMemo(() => {
+    if (!props.sending || props.starting || props.chat?.hasNewer) return new Set<ChatToolCall>();
+    const latest = [...messages()].reverse().find((message) => message.role !== 'tool');
+    return new Set(
+      latest?.role === 'assistant' && !latest.error && !latest.meta?.interrupted
+        ? (latest.toolCalls ?? [])
+        : []
+    );
+  });
+  const isCallRunning = (call: ChatToolCall) => liveToolCalls().has(call);
 
   const runningPlanReview: ReviewMeta = {
     kind: 'plan',
@@ -383,7 +397,7 @@ export default function MessageList(props: {
       toolCall={tc}
       result={resultOf(tc)}
       notLive={!newestOfId(tc)}
-      running={props.sending}
+      running={isCallRunning(tc)}
       note={props.toolNotes?.[tc.id]}
       superseded={todoCallStates().superseded.has(tc.id)}
       interrupted={tc.id === todoCallStates().latest && todoCallStates().interruptedLatest}
@@ -1142,6 +1156,8 @@ export default function MessageList(props: {
     const el = scrollRef;
     if (!el) return;
     const observer = new ResizeObserver(() => {
+      // Size expanded tool output to this pane, including after the composer resizes.
+      el.style.setProperty('--chat-block-height', `${Math.floor(el.clientHeight * 0.35)}px`);
       // Next frame: scrolling inside the callback renders more items, whose
       // resizing the observers would only hear of in the frame after.
       if (!topLock && following())
@@ -1791,6 +1807,7 @@ export default function MessageList(props: {
                               dialogId={props.dialogId}
                               result={resultOf}
                               running={props.sending}
+                              isCallRunning={isCallRunning}
                               superseded={run()!.calls.every((c) =>
                                 todoCallStates().superseded.has(c.id)
                               )}

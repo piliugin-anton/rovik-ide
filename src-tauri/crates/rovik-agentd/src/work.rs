@@ -161,6 +161,18 @@ async fn merge_into(
 ) -> Result<Merged, Fail> {
     let place = daemon.store.place(chat).filter(|p| p.project == project);
     let place = place.ok_or_else(|| bad_request("This chat works in another project here."))?;
+    let application_root =
+        root(daemon, chat).ok_or_else(|| bad_request("This chat has no project worktree."))?;
+    let application = rovik_core::harness::ide::application_guard(
+        daemon.core.paths.data_dir.join("harness"),
+        application_root,
+        project.to_string(),
+    )
+    .await
+    .map_err(|error| internal(error.to_string()))?;
+    if application["blocked"] == true {
+        return Err(Fail::new(FailCode::Busy, "Reviewed harness changes remain on this host. Synchronization is blocked until their delivery or explicit reconciliation."));
+    }
     let config = daemon.store.config_of(chat).unwrap_or_default();
     let resolves = mark || config.permissions.chat_resolves_conflicts;
     let _base = daemon.results.hold_base().await;
@@ -168,6 +180,11 @@ async fn merge_into(
         .store
         .base_of(chat)
         .ok_or_else(|| internal("The chat's worktree has no base commit."))?;
+    // A previously authenticated source belongs to the old synchronized tree.
+    // Keep its frozen context for run management, but require a new source
+    // binding before any subsequent intake, even if this merge fails.
+    rovik_core::harness::ide_source::invalidate(&daemon.core.paths.data_dir, chat)
+        .map_err(|error| internal(error.to_string()))?;
     let (projects, id) = (daemon.projects.clone(), project.to_string());
     let merged = rt::spawn_blocking(move || {
         projects.prepare(&id, &excludes)?;

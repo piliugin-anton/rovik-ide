@@ -223,10 +223,10 @@ async fn on_the_host(
     options: &TestOptions,
     steps: &mut Steps<'_>,
 ) {
-    let probe = match run_probe(shell).await {
+    let probe = match probe_server(shell).await {
         Ok(probe) => probe,
-        Err(step) => {
-            steps.push(step);
+        Err(why) => {
+            steps.push(Step::new(Check::System, Outcome::Failed, why));
             return;
         }
     };
@@ -417,12 +417,6 @@ fn refused(target: &SshTarget, e: SshError) -> Vec<Step> {
             Step::new(Check::LogIn, Outcome::Failed, e.to_string()),
         ],
     }
-}
-
-/// Runs the probe, and reads what it says.
-async fn run_probe(shell: &dyn HostShell) -> Result<Probe, Step> {
-    let failed = |why: String| Step::new(Check::System, Outcome::Failed, why);
-    probe_server(shell).await.map_err(failed)
 }
 
 /// What the server offers, as the probe says (H04, and the deploy).

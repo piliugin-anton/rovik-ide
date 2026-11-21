@@ -3466,6 +3466,7 @@ a.rs (3 matches)
             ask_user_schema(),
             todo_schema(),
             submit_plan_schema(),
+            super::super::verified_preparation::schema(),
             restore_context_schema(),
             super::super::subagent::task_schema(&[super::super::subagent::Kind::Scout], false),
             super::super::worker::extend_scope_schema(),

@@ -45,6 +45,11 @@ pub trait Backend: Send + Sync {
     fn dir_is_empty(&self, ino: Ino) -> VfsResult<bool>;
     fn readdir_plus(&self, ino: Ino) -> VfsResult<Vec<(DirEntry, Attr)>>;
     fn open(&self, ino: Ino, write: bool) -> VfsResult<Attr>;
+    /// Finishes pending close-time work without releasing the open handle.
+    /// Backends with no such work can leave this as a no-op.
+    fn flush(&self, _ino: Ino) -> VfsResult<()> {
+        Ok(())
+    }
     fn release(&self, ino: Ino);
     fn getxattr(&self, ino: Ino, name: &str) -> VfsResult<Vec<u8>>;
     fn setxattr(
@@ -127,6 +132,9 @@ impl Backend for VirtualFs {
     }
     fn open(&self, ino: Ino, write: bool) -> VfsResult<Attr> {
         VirtualFs::open(self, ino, write)
+    }
+    fn flush(&self, ino: Ino) -> VfsResult<()> {
+        VirtualFs::flush(self, ino)
     }
     fn release(&self, ino: Ino) {
         VirtualFs::release(self, ino)

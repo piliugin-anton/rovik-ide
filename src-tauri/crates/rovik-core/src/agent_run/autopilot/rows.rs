@@ -170,6 +170,7 @@ pub(in crate::agent_run) async fn settle_spent(
     patch_stage(core, dialog_id, record, |r| {
         r.spent = Some(r.spent.unwrap_or_default().plus(total));
         r.spending = None;
+        r.strict_accounting_open = false;
     })
     .await
     .map(drop)
@@ -182,12 +183,24 @@ pub(in crate::agent_run) async fn keep_cut_spending(
     dialog_id: &str,
     record: &str,
 ) -> Result<(), String> {
-    if record_in(core, dialog_id, record).await?.spending.is_none() {
+    let previous = record_in(core, dialog_id, record).await?;
+    let strict =
+        previous.name == Stage::Plan && super::strict::requires_verified(core, dialog_id).await?;
+    if previous.spending.is_none() && !strict {
         return Ok(());
     }
     patch_stage(core, dialog_id, record, |r| {
         let cut = r.spending.take().unwrap_or_default();
         r.spent = Some(r.spent.unwrap_or_default().plus(cut));
+        if strict {
+            if r.strict_accounting_open {
+                r.strict_interrupted = true;
+                let accounted = r.spent.get_or_insert_with(Default::default);
+                accounted.uncosted = accounted.uncosted.saturating_add(1);
+            }
+            // Persist before any request, including the first one after a crash.
+            r.strict_accounting_open = true;
+        }
     })
     .await
     .map(drop)
@@ -294,6 +307,11 @@ pub async fn current_task(
     dialog_id: &str,
 ) -> Result<Option<(String, Vec<Recorded>)>, String> {
     let all = load(core, dialog_id).await?;
+    if let Some(owned) = super::strict::owned_in(&all) {
+        if !super::strict::released(&owned.1) {
+            return Ok(Some(owned));
+        }
+    }
     let Some(task) = latest_task(&all).map(str::to_string) else {
         return Ok(None);
     };

@@ -191,6 +191,10 @@ pub type Delivering<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// A server's delivery of its tasks' results (the daemon's `Results`),
 /// set with `AgentState::set_deliverer`.
 pub trait Deliverer: Send + Sync {
+    /// Whether this chat's explicit delivery target is its current host workspace.
+    fn keeps_on_host(&self, _dialog_id: &str) -> bool {
+        false
+    }
     /// Pushes the chat's result, and opens its pull request when asked.
     /// None: the server keeps its results for their computer.
     fn push(&self, ask: DeliverAsk) -> Delivering<Option<Pushed>>;
