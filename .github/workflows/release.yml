@@ -249,6 +249,8 @@ jobs:
             runner: windows-latest
             args: --config src-tauri/tauri.windows-backend.conf.json
     runs-on: ${{ matrix.runner }}
+    env:
+      ROVIK_GITHUB_CLIENT_ID: ${{ vars.ROVIK_GITHUB_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
