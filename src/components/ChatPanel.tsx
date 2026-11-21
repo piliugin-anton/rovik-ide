@@ -1,3 +1,11 @@
+import {
+  planKey,
+  setActiveVerifiedPlan,
+  verifiedImplementationStatus,
+  type PlanImplementation,
+} from '../lib/planImplementations';
+import { contentDigest } from '../lib/contentDigest';
+import { preparationActivity } from '../lib/verifiedPlanProgress';
 import { onBackendRestored } from '../lib/backendSession';
 import { workloadFocus } from '../lib/workloadFocus';
 import { invoke } from '@tauri-apps/api/core';
@@ -3364,6 +3372,8 @@ export default function ChatPanel(props: ChatProps) {
         });
       return await dispatch(await prepare());
     } catch (err) {
+      if (start.kind === 'send' && start.message.meta?.verifiedPreparation)
+        store.applyPatch(dialogId, start.message.id, { error: String(err), failed: true });
       console.error('Agent run not started:', err);
       notify({
         kind: 'error',
@@ -5205,7 +5215,20 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
       <For each={Array.from(plans().values())}>
         {(plan) => {
+          let content: string | undefined;
+          const report = (status: PlanImplementation['status']) => {
+            if (plan.path)
+              setActiveVerifiedPlan(plan.dialogId, {
+                projectId: plan.projectId,
+                dialogId: plan.dialogId,
+                path: plan.path,
+                content,
+                status,
+              });
+          };
+          if (plan.implementRequested) report('implementing');
           onCleanup(() => {
+            if (plan.path) setActiveVerifiedPlan(plan.dialogId);
             setPreparation(plan.dialogId, undefined);
             setQuietPreparation(plan.dialogId, undefined);
             setStrictActive(plan.dialogId, undefined);
@@ -5240,13 +5263,25 @@ export default function ChatPanel(props: ChatProps) {
               retryPreparation={plan.retryPreparation}
               profile={profile()}
               agentRunning={isRunning(plan.dialogId)}
+              preparationActivity={(id) =>
+                preparationActivity(store.messagesOf(plan.dialogId), id, toolNotes(plan.dialogId))
+              }
               onPreparationChange={(session) => {
+                content = session.plan.content;
                 setPreparation(plan.dialogId, session);
                 if (plan.implementRequested)
                   setQuietPreparation(plan.dialogId, session.preparationId);
               }}
-              onRunChange={() => setPreparation(plan.dialogId, undefined)}
+              onPreparationActive={(active) => report(active ? 'implementing' : 'interrupted')}
+              onRunChange={(run) => {
+                report(verifiedImplementationStatus(run));
+                setPreparation(plan.dialogId, undefined);
+              }}
               onPrepare={async (preparationId) => {
+                const fingerprint =
+                  content === undefined
+                    ? undefined
+                    : (await contentDigest(content.replace(/\r\n/g, '\n'))).slice('sha256:'.length);
                 if (
                   !plan.path ||
                   activeDialogId() !== plan.dialogId ||
@@ -5278,6 +5313,8 @@ export default function ChatPanel(props: ChatProps) {
                       mode: 'agent',
                       verifiedPreparation: preparationId,
                       planPath: plan.path,
+                      planKey: planKey(plan.path),
+                      planFingerprint: fingerprint,
                     },
                   },
                   undefined

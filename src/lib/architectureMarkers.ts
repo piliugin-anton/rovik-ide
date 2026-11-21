@@ -1,3 +1,4 @@
+import { contentDigest } from './contentDigest';
 import type {
   ArchitectureFinding,
   ArchitectureView,
@@ -48,17 +49,11 @@ export interface ArchitectureMarkerHost {
   disposing(listener: (model: ArchitectureModel) => void): () => void;
   publish(model: ArchitectureModel, owner: string, markers: ArchitectureMarker[]): void;
 }
-/** Exact UTF-8 bytes, retaining the model's line endings and optional BOM. */
-export async function architectureContentDigest(content: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
-  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
-}
-
 /** Model creation, cache eviction, edits and project changes share one dedicated owner. */
 export function installArchitectureMarkers(
   controller: ReturnType<typeof createArchitectureFeedbackController>,
   host: ArchitectureMarkerHost,
-  digest: (content: string) => Promise<string> = architectureContentDigest
+  digest: (content: string) => Promise<string> = contentDigest
 ): () => void {
   let current: ArchitectureView | undefined;
   let publication = 0;

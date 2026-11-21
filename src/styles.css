@@ -11489,6 +11489,9 @@ dialog.verified-changes-dialog {
   border-top: 1px solid var(--border);
   font-size: 12px;
 }
+.verified-plan-status.needs-attention .verified-plan-label {
+  color: var(--warning);
+}
 .verified-plan-label,
 .verified-plan-actions {
   display: inline-flex;

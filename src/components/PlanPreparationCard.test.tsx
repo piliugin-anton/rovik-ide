@@ -46,6 +46,8 @@ function mount(
     resumed?: string;
     retry?: boolean;
     running?: boolean;
+    automatic?: boolean;
+    activity?: () => { failure: string };
     prepare?: (id: string) => Promise<boolean>;
   } = {}
 ) {
@@ -68,6 +70,8 @@ function mount(
           contextProblem={options.context?.()}
           executionLabel="This computer"
           agentRunning={options.running}
+          automatic={options.automatic}
+          preparationActivity={options.activity}
           onPrepare={async (id) => {
             prepared.push(id);
             return options.prepare ? options.prepare(id) : true;
@@ -427,4 +431,33 @@ test('refreshing after Retry does not launch the preparation agent a second time
   button(page.root, 'Refresh').click();
   await flush();
   assert.deepEqual(page.prepared, ['preparation-1']);
+});
+
+test('a successful status read preserves the failed preparation launch diagnostic', async () => {
+  const original = window.setTimeout;
+  let poll: (() => Promise<void>) | undefined;
+  window.setTimeout = ((callback: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    if (timeout === 1500) {
+      poll = callback as () => Promise<void>;
+      return 0;
+    }
+    return original(callback, timeout, ...args);
+  }) as typeof window.setTimeout;
+  try {
+    respond = () => planPreparation('preparing');
+    const page = mount({
+      automatic: true,
+      prepare: async () => false,
+      activity: () => ({ failure: 'The preparation host disconnected' }),
+    });
+    await flush();
+    assert.match(page.root.textContent!, /The preparation host disconnected/);
+    assert.ok(poll);
+    await poll();
+    await flush();
+    assert.match(page.root.textContent!, /The preparation host disconnected/);
+    assert.ok(button(page.root, 'Retry'));
+  } finally {
+    window.setTimeout = original;
+  }
 });

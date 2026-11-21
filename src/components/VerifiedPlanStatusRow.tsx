@@ -4,6 +4,7 @@ export interface PlanStatus {
   title: string;
   message?: string;
   busy?: boolean;
+  attention?: boolean;
   onDismiss?: () => void;
   actions?: { label: string; primary?: boolean; run: () => void }[];
 }
@@ -13,7 +14,11 @@ export default function VerifiedPlanStatusRow(props: { status?: PlanStatus }) {
   return (
     <Show when={props.status}>
       {(status) => (
-        <section class="verified-plan-status" aria-label="Verified plan status">
+        <section
+          class="verified-plan-status"
+          classList={{ 'needs-attention': !!status().attention }}
+          aria-label="Verified plan status"
+        >
           <span role="status" class="verified-plan-label">
             <Show when={status().busy}>
               <span class="tool-call-spinner" aria-hidden="true" />
@@ -22,7 +27,7 @@ export default function VerifiedPlanStatusRow(props: { status?: PlanStatus }) {
           </span>
           <Show when={status().message}>
             {(message) => (
-              <span class="verified-plan-message" tabIndex={0}>
+              <span class="verified-plan-message" aria-live="polite" tabIndex={0}>
                 {message()}
               </span>
             )}

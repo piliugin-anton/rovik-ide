@@ -1,3 +1,4 @@
+import { implementationProgress, type preparationActivity } from '../lib/verifiedPlanProgress';
 import { createMemo, createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
 import type { ModelProfile } from '../types';
 import {
@@ -39,6 +40,8 @@ export default function PolyglotPlanImplementation(props: {
   /** An explicit chat Retry checks the saved session before resuming preparation. */
   retryPreparation?: boolean;
   agentRunning?: boolean;
+  onPreparationActive?: (active: boolean) => void;
+  preparationActivity?: (id: string) => ReturnType<typeof preparationActivity>;
   onPrepare?: (preparationId: string) => Promise<boolean>;
   onStopPreparation?: () => Promise<void>;
   onPreparationChange?: (preparation: PlanPreparation) => void;
@@ -60,7 +63,9 @@ export default function PolyglotPlanImplementation(props: {
   const [review, setReview] = createSignal<HarnessChangeReview>();
   const [exported, setExported] = createSignal<{ path?: string }>();
   const [busy, setBusy] = createSignal(false);
-  const [error, setError] = createSignal('');
+  const [actionError, setError] = createSignal('');
+  const [readError, setReadError] = createSignal('');
+  const error = () => actionError() || readError();
   const [fresh, setFresh] = createSignal(false);
   const [releaseReviewed, setReleaseReviewed] = createSignal<string>();
   const [pollRevision, setPollRevision] = createSignal(0);
@@ -113,6 +118,7 @@ export default function PolyglotPlanImplementation(props: {
     }
   }
   const acceptRun = (value: HarnessRun) => {
+    setReadError('');
     setRun(value);
     setApproval(undefined);
     setFresh(true);
@@ -129,6 +135,8 @@ export default function PolyglotPlanImplementation(props: {
     props.runId;
     generation++;
     requestNumber++;
+    setReadError('');
+    setError('');
     setRun(undefined);
     setPreparedSnapshot(undefined);
     setApproval(undefined);
@@ -163,12 +171,12 @@ export default function PolyglotPlanImplementation(props: {
           if (!disposed && scope === generation && number === requestNumber) {
             setRun(value);
             setFresh(true);
-            setError('');
+            setReadError('');
             props.onRunChange?.(value);
           }
         } catch (cause) {
           if (!disposed && scope === generation && number === requestNumber) {
-            setError(String(cause));
+            setReadError(String(cause));
             setFresh(false);
           }
         } finally {
@@ -299,24 +307,27 @@ export default function PolyglotPlanImplementation(props: {
 
   const row = createMemo<PlanStatus | undefined>(() => {
     const current = run();
-    if (props.background || !props.automatic || !current || details() || review()) return;
+    if (props.background || !props.automatic || details() || review()) return;
     const problem = inputProblem() || error();
+    const id = current?.runId ?? props.runId;
     if (problem)
       return {
         title: 'Implementation needs attention',
+        attention: true,
         message: problem,
 
         onDismiss: props.onClose,
         actions:
-          !props.contextProblem && !busy()
+          !props.contextProblem && !busy() && id
             ? [
                 {
                   label: 'Refresh',
-                  run: () => void runAction({ action: 'status', runId: current.runId }),
+                  run: () => void runAction({ action: 'status', runId: id }),
                 },
               ]
             : [],
       };
+    if (!current) return { title: 'Loading implementation status', busy: true };
     if (shownStatus() === 'verified')
       return {
         title: 'Verified changes are ready',
@@ -335,6 +346,7 @@ export default function PolyglotPlanImplementation(props: {
     if (shownStatus() === 'running')
       return {
         title: 'Implementing',
+        message: implementationProgress(current),
 
         busy: true,
         actions:
@@ -356,7 +368,8 @@ export default function PolyglotPlanImplementation(props: {
     )
       return {
         title: 'Implementation paused',
-        message: current.reason || current.reasons?.[0],
+        attention: true,
+        message: implementationProgress(current),
         onDismiss: props.onClose,
         actions: busy()
           ? []
@@ -388,6 +401,7 @@ export default function PolyglotPlanImplementation(props: {
         onDismiss: props.onClose,
       };
     return {
+      attention: shownStatus() !== 'applied',
       title:
         shownStatus() === 'applied'
           ? 'Changes applied on the host'
@@ -395,10 +409,9 @@ export default function PolyglotPlanImplementation(props: {
             ? 'Verification failed'
             : 'Implementation needs attention',
       message:
-        current.reason ||
-        current.reasons?.[0] ||
+        implementationProgress(current) ||
         current.pendingApprovals[0]?.summary ||
-        props.planPath?.split('/').pop(),
+        'Open the run details to inspect its verification state.',
       onDismiss: props.onClose,
       actions: [{ label: 'View details', run: () => setDetails(true) }],
     };
@@ -421,6 +434,8 @@ export default function PolyglotPlanImplementation(props: {
           contextProblem={props.contextProblem}
           executionLabel={props.executionLabel}
           agentRunning={props.agentRunning}
+          preparationActivity={props.preparationActivity}
+          onActiveChange={props.onPreparationActive}
           onPrepare={props.onPrepare ?? (() => Promise.resolve(false))}
           onStop={props.onStopPreparation ?? (() => Promise.resolve())}
           onPreparation={(value) => {
@@ -835,6 +850,8 @@ export default function PolyglotPlanImplementation(props: {
                     class="link-button"
                     disabled={unavailable()}
                     onClick={() => {
+                      setReadError('');
+                      setError('');
                       setRun(undefined);
                       setRestart(true);
                     }}

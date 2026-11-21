@@ -1,9 +1,9 @@
+import { contentDigest } from './contentDigest';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createArchitectureFeedbackController } from './architectureFeedback';
 import {
   ARCHITECTURE_MARKER_OWNER,
-  architectureContentDigest,
   installArchitectureMarkers,
   type ArchitectureMarker,
   type ArchitectureModel,
@@ -150,16 +150,16 @@ test('hash completion cannot restore markers after a source change or cancellati
 
 test('displayed text identity preserves exact line endings and the optional byte order mark', async () => {
   assert.equal(
-    await architectureContentDigest(architectureSource),
+    await contentDigest(architectureSource),
     architectureEvidence().observations[0].findings[0].locations[0].contentDigest
   );
   assert.notEqual(
-    await architectureContentDigest(architectureSource.replace('\n', '\r\n')),
-    await architectureContentDigest(architectureSource)
+    await contentDigest(architectureSource.replace('\n', '\r\n')),
+    await contentDigest(architectureSource)
   );
   assert.notEqual(
-    await architectureContentDigest('\ufeff' + architectureSource),
-    await architectureContentDigest(architectureSource)
+    await contentDigest('\ufeff' + architectureSource),
+    await contentDigest(architectureSource)
   );
 });
 

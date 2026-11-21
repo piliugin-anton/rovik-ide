@@ -684,6 +684,10 @@ fn write_template(
     // Refresh service-owned guidance on retry while preserving the agent's drafts.
     fs::write(workspace.join(DRAFTS).join("example.json"), &example)?;
     fs::write(
+        workspace.join(DRAFTS).join("solid-component-example.mjs"),
+        include_bytes!("solid-component-example.mjs"),
+    )?;
+    fs::write(
         workspace.join(DRAFTS).join("schema.ts"),
         typescript_preparation_contract()?,
     )?;
@@ -1433,6 +1437,8 @@ mod tests {
         assert!(instructions.contains("never the linux-x86_64 runtime label"));
         assert!(instructions.contains(".rovik-verification.tsconfig.json"));
         let workspace = project.preparation_workspace(&record.id).unwrap();
+        assert!(instructions.contains("solid-component-example.mjs"));
+        assert!(workspace.join(DRAFTS).join("solid-component-example.mjs").is_file());
         let example_path = workspace.join(DRAFTS).join("example.json");
         let example = fs::read_to_string(&example_path).unwrap();
         let submitted: Submission = wire::decode(example.as_bytes()).unwrap();

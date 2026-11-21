@@ -6,7 +6,12 @@ import { createSignal } from 'solid-js';
 import PlanImplementationAction from './PlanImplementationAction';
 import { initAgentRuns, onShowChat } from '../lib/agentRuns';
 import { chatStore } from '../lib/chatStore';
-import { refreshPlanImplementations, type PlanImplementation } from '../lib/planImplementations';
+import {
+  getPlanImplementation,
+  setActiveVerifiedPlan,
+  refreshPlanImplementations,
+  type PlanImplementation,
+} from '../lib/planImplementations';
 
 const file = '/p/.rovik/plans/contact.md';
 const calls: { cmd: string; args: any }[] = [];
@@ -32,6 +37,13 @@ const callbacks = new Map<number, (event: any) => void>();
       if (lookupError) throw new Error('Database unavailable');
       return record;
     }
+    if (cmd === 'polyglot_harness') {
+      assert.equal(args.dialogId, 'implementation-chat');
+      return args.request.action === 'preparationStatus'
+        ? { plan: { path: file, content: '# Contact form\n' }, runId: 'verified-run' }
+        : { runId: 'verified-run', status: 'verified' };
+    }
+    if (cmd === 'chat_list_dialogs') return { items: [], nextCursor: null };
     if (cmd === 'chat_get_dialog')
       return {
         id: 'implementation-chat',
@@ -234,4 +246,43 @@ test('plan implementation prepares verification by default and preserves an expl
   } finally {
     dispose();
   }
+});
+
+test('a verified preparation and its candidate replace the action with the owning chat link', async () => {
+  record = null;
+  const plan = {
+    projectId: 'verified-project',
+    dialogId: 'implementation-chat',
+    path: file,
+    content: '# Contact form\n',
+  };
+  await chatStore.switchProject(plan.projectId);
+  const root = container();
+  const dispose = render(
+    () => <PlanImplementationAction path={file} content={plan.content} canImplement />,
+    root
+  );
+  try {
+    setActiveVerifiedPlan(plan.dialogId, { ...plan, status: 'implementing' });
+    await tick();
+    assert.match(root.textContent!, /Implementing in chat/);
+    assert.equal(root.querySelector('.primary'), null);
+    setActiveVerifiedPlan(plan.dialogId, { ...plan, status: 'implemented' });
+    await tick();
+    assert.match(root.textContent!, /Implemented in chat/);
+    root.querySelector<HTMLButtonElement>('.link-button')!.click();
+    await tick();
+    assert.equal(chatStore.state.activeId, plan.dialogId);
+  } finally {
+    dispose();
+    setActiveVerifiedPlan(plan.dialogId);
+  }
+});
+
+test('reopening a verified plan reads the candidate status from its chat host and checks the revision', async () => {
+  record = { ...evidence('interrupted'), preparationId: 'preparation' };
+  const reopened = await getPlanImplementation('p', file, '# Contact form\r\n', '/p');
+  assert.equal(reopened?.status, 'implemented');
+  assert.equal(reopened?.runId, 'verified-run');
+  assert.equal(await getPlanImplementation('p', file, '# Changed', '/p'), null);
 });

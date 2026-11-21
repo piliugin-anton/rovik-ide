@@ -208,8 +208,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   once in **Model providers → Verification pricing**. Enter ordinary prices per
   million tokens, such as `0.225`; budget errors show the saved prices, and
   **Set model prices** opens settings when a price is missing. Preparation uses ordinary
-  chat billing and implementation uses its separate budget. The status row offers
-  stop, continue and retry actions when needed. **Retry** checks the saved
+  chat billing and implementation uses its separate budget. The status row shows the preparation agent’s current tool or the implementation phase.
+  The plan action links to the owning chat during preparation and after verification.
+  When a check fails, the row includes the reported diagnostic and offers the available recovery actions.
+  Solid.js projects with the locked DOM test dependencies can use the supplied protected rendering example. **Retry** checks the saved
   preparation: it resumes active drafts, creates a fresh session for cancelled or
   stale inputs, and opens completed reviews or existing implementation runs.
   Choose **Review changes** when verification finishes, inspect the diff and its
