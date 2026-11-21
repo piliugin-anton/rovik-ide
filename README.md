@@ -211,6 +211,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   chat billing and implementation uses its separate budget. The status row shows the preparation agent’s current tool or the implementation phase.
   The plan action links to the owning chat during preparation and after verification.
   When a check fails, the row includes the reported diagnostic and offers the available recovery actions.
+  When design approval is needed, **Review proposed design** opens the changed lines by file.
+  **Approve design** lets verification continue.
   Solid.js projects with the locked DOM test dependencies can use the supplied protected rendering example. **Retry** checks the saved
   preparation: it resumes active drafts, creates a fresh session for cancelled or
   stale inputs, and opens completed reviews or existing implementation runs.

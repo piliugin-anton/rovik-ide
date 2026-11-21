@@ -1,3 +1,4 @@
+import VerificationSummary, { approvalDecision, verificationMessage } from './VerificationSummary';
 import { implementationProgress, type preparationActivity } from '../lib/verifiedPlanProgress';
 import { createMemo, createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
 import type { ModelProfile } from '../types';
@@ -210,6 +211,44 @@ export default function PolyglotPlanImplementation(props: {
       : undefined;
   };
 
+  const [previewDesign, setPreviewDesign] = createSignal<HarnessApproval>();
+  function previewChanges(item?: HarnessApproval) {
+    const current = run();
+    if (!current?.candidateDigest || (item && current.candidateDigest !== item.subjectDigest)) {
+      setError('The proposed changes have changed. Refresh the run before approving the design.');
+      return;
+    }
+    void request<HarnessChangeReview>(
+      { action: 'reviewChanges', runId: current.runId },
+      (changes) => {
+        if (
+          changes.runId !== current.runId ||
+          changes.candidateDigest !== current.candidateDigest ||
+          !Array.isArray(changes.files)
+        )
+          throw new Error('The proposed changes could not be confirmed. Open the review again.');
+        setReviewSubject(undefined);
+        setPreviewDesign(item);
+        setExported(undefined);
+        setReview(changes);
+      }
+    );
+  }
+  const designApproval = () => {
+    const item = previewDesign();
+    return (
+      item &&
+      shownStatus() !== 'stale' &&
+      run()?.pendingApprovals.find(
+        (pending) =>
+          pending.approvalType === 'design-review' &&
+          pending.subjectDigest === item.subjectDigest &&
+          pending.subjectDigest === review()?.candidateDigest &&
+          pending.subjectDigest === run()?.candidateDigest &&
+          pending.subject != null
+      )
+    );
+  };
   async function openChanges() {
     const current = run();
     if (!current || unavailable() || inputProblem() || shownStatus() !== 'verified') return;
@@ -304,6 +343,16 @@ export default function PolyglotPlanImplementation(props: {
       if (!disposed && scope === generation) setBusy(false);
     }
   }
+
+  function restartPlan() {
+    setReadError('');
+    setError('');
+    setDetails(false);
+    setRun(undefined);
+    setRestart(true);
+  }
+  const restartInFooter = () =>
+    props.automatic && !props.runId && ['stale', 'failed'].includes(shownStatus());
 
   const row = createMemo<PlanStatus | undefined>(() => {
     const current = run();
@@ -400,6 +449,11 @@ export default function PolyglotPlanImplementation(props: {
 
         onDismiss: props.onClose,
       };
+    const decision =
+      current.pendingApprovals.length === 1 ? current.pendingApprovals[0] : undefined;
+    const design =
+      decision?.approvalType === 'design-review' &&
+      decision.subjectDigest === current.candidateDigest;
     return {
       attention: shownStatus() !== 'applied',
       title:
@@ -409,11 +463,24 @@ export default function PolyglotPlanImplementation(props: {
             ? 'Verification failed'
             : 'Implementation needs attention',
       message:
-        implementationProgress(current) ||
-        current.pendingApprovals[0]?.summary ||
-        'Open the run details to inspect its verification state.',
+        current.pendingApprovals.length || !implementationProgress(current)
+          ? verificationMessage(current, shownStatus())
+          : implementationProgress(current).split('\n')[0].slice(0, 300),
       onDismiss: props.onClose,
-      actions: [{ label: 'View details', run: () => setDetails(true) }],
+      actions: [
+        {
+          label: design
+            ? 'Review proposed design'
+            : current.pendingApprovals.length
+              ? 'Review decision'
+              : 'View details',
+          run: () => {
+            setDetails(true);
+            if (design) previewChanges(decision);
+            else if (decision) setApproval(decision);
+          },
+        },
+      ],
     };
   });
 
@@ -449,7 +516,7 @@ export default function PolyglotPlanImplementation(props: {
       }
     >
       <Show
-        when={!props.background && (!props.automatic || details())}
+        when={!props.background && (!props.automatic || (details() && !review()))}
         fallback={
           <Show
             when={!props.background && review()}
@@ -457,8 +524,28 @@ export default function PolyglotPlanImplementation(props: {
           >
             {(changes) => (
               <VerifiedChangesDialog
+                preview={!reviewSubject()}
+                onApproveDesign={
+                  !reviewSubject() && designApproval()
+                    ? () => {
+                        const item = designApproval();
+                        if (item && !inputProblem())
+                          void runAction({
+                            action: 'approve',
+                            runId: changes().runId,
+                            request: item.request,
+                          });
+                      }
+                    : undefined
+                }
                 review={changes()}
-                destination={reviewTarget()}
+                destination={
+                  !reviewSubject()
+                    ? previewDesign()
+                      ? 'Check whether these changes implement the saved plan before approving the design.'
+                      : 'These changes are available for inspection.'
+                    : reviewTarget()
+                }
                 exportPath={exported()?.path}
                 onExport={() =>
                   void request<{ path?: string }>(
@@ -470,11 +557,15 @@ export default function PolyglotPlanImplementation(props: {
                 problem={
                   inputProblem() ||
                   error() ||
-                  (shownStatus() !== 'verified' ||
-                  run()?.application?.subjectDigest !== reviewSubject() ||
-                  !matchingApplication(run(), changes().candidateDigest)
-                    ? 'The checkout or candidate changed. Reopen the review.'
-                    : undefined)
+                  (!reviewSubject()
+                    ? previewDesign() && !designApproval()
+                      ? 'The approval changed. Reopen the review.'
+                      : undefined
+                    : shownStatus() !== 'verified' ||
+                        run()?.application?.subjectDigest !== reviewSubject() ||
+                        !matchingApplication(run(), changes().candidateDigest)
+                      ? 'The checkout or candidate changed. Reopen the review.'
+                      : undefined)
                 }
                 onApply={() => void applyChanges()}
                 onClose={() => setReview(undefined)}
@@ -489,7 +580,9 @@ export default function PolyglotPlanImplementation(props: {
             props.automatic
               ? shownStatus() === 'failed'
                 ? 'Verification failed'
-                : 'Verification details'
+                : run()?.pendingApprovals.length
+                  ? 'Approval needed'
+                  : 'Verification details'
               : props.runId
                 ? 'Verified Autopilot task'
                 : 'Plan implementation'
@@ -500,6 +593,16 @@ export default function PolyglotPlanImplementation(props: {
           onClose={props.automatic ? () => setDetails(false) : props.onClose}
           actions={
             <>
+              <Show when={restartInFooter()}>
+                <button
+                  class="chat-action-button"
+                  type="button"
+                  disabled={unavailable()}
+                  onClick={restartPlan}
+                >
+                  Prepare again
+                </button>
+              </Show>
               <Show when={run()}>
                 {(current) => (
                   <Show when={current().canCancel}>
@@ -554,7 +657,10 @@ export default function PolyglotPlanImplementation(props: {
           <Show when={run()}>
             {(current) => (
               <section aria-label="Verified implementation result">
-                <Show when={!props.automatic || !current().reason}>
+                <Show when={props.automatic}>
+                  <VerificationSummary run={current()} status={shownStatus()} />
+                </Show>
+                <Show when={!props.automatic}>
                   <p role="status" class="settings-status">
                     {shownStatus() === 'applied'
                       ? current().applicationReceipt?.deliveredLocally
@@ -564,44 +670,42 @@ export default function PolyglotPlanImplementation(props: {
                         ? 'Accepted — verified candidate'
                         : `Implementation ${shownStatus()}`}
                   </p>
-                </Show>
-                <Show when={!props.automatic}>
                   <p class="settings-hint">
                     Run {current().runId} · {current().state}
                   </p>
+                  <Show when={shownStatus() === 'stale'}>
+                    <p class="settings-status warning">
+                      Current inputs are changed or could not be confirmed. This result does not
+                      verify the current project.
+                    </p>
+                  </Show>
+                  <Show when={current().reason}>
+                    <p>{current().reason}</p>
+                  </Show>
+                  <For
+                    each={current().reasons?.filter((reason) => reason !== current().reason) ?? []}
+                  >
+                    {(reason) => <p>{reason}</p>}
+                  </For>
+                  <For each={current().checks ?? []}>
+                    {(check) => (
+                      <details>
+                        <summary>
+                          {check.check_id}: {check.status} · {check.executed_test_count} cases
+                        </summary>
+                        <p>{check.failed_case_ids.join(', ')}</p>
+                        <For each={check.diagnostics}>
+                          {(diagnostic) => (
+                            <p>
+                              {diagnostic.rule_id}: {diagnostic.message} {diagnostic.file}{' '}
+                              {diagnostic.line}
+                            </p>
+                          )}
+                        </For>
+                      </details>
+                    )}
+                  </For>
                 </Show>
-                <Show when={shownStatus() === 'stale'}>
-                  <p class="settings-status warning">
-                    Current inputs are changed or could not be confirmed. This result does not
-                    verify the current project.
-                  </p>
-                </Show>
-                <Show when={current().reason}>
-                  <p>{current().reason}</p>
-                </Show>
-                <For
-                  each={current().reasons?.filter((reason) => reason !== current().reason) ?? []}
-                >
-                  {(reason) => <p>{reason}</p>}
-                </For>
-                <For each={current().checks ?? []}>
-                  {(check) => (
-                    <details>
-                      <summary>
-                        {check.check_id}: {check.status} · {check.executed_test_count} cases
-                      </summary>
-                      <p>{check.failed_case_ids.join(', ')}</p>
-                      <For each={check.diagnostics}>
-                        {(diagnostic) => (
-                          <p>
-                            {diagnostic.rule_id}: {diagnostic.message} {diagnostic.file}{' '}
-                            {diagnostic.line}
-                          </p>
-                        )}
-                      </For>
-                    </details>
-                  )}
-                </For>
                 <Show when={!props.automatic && current().providerBinding}>
                   <details>
                     <summary>Bound provider identity</summary>
@@ -622,10 +726,12 @@ export default function PolyglotPlanImplementation(props: {
                           This receipt is historical; the current checkout no longer matches it.
                         </p>
                       </Show>
-                      <details>
-                        <summary>Application receipt</summary>
-                        <SubjectFields value={receipt()} />
-                      </details>
+                      <Show when={!props.automatic}>
+                        <details>
+                          <summary>Application receipt</summary>
+                          <SubjectFields value={receipt()} />
+                        </details>
+                      </Show>
                       <Show
                         when={receipt().location === 'host' && !receipt().synchronizationReleased}
                       >
@@ -666,25 +772,51 @@ export default function PolyglotPlanImplementation(props: {
                       type="button"
                       class="link-button"
                       disabled={unavailable()}
-                      onClick={() => setApproval(item)}
+                      onClick={() =>
+                        props.automatic && item.approvalType === 'design-review'
+                          ? previewChanges(item)
+                          : setApproval(item)
+                      }
                     >
-                      Review {item.approvalType}
+                      Review{' '}
+                      {props.automatic
+                        ? approvalDecision(item.approvalType).name
+                        : item.approvalType}
                     </button>
                   )}
                 </For>
                 <Show when={approval()}>
                   {(item) => (
                     <section aria-label="Implementation approval">
-                      <p>{item().summary}</p>
-                      <PolyglotApproval approval={item()} />
-                      <p class="settings-hint">
-                        Subject <code>{item().subjectDigest}</code> · Scope{' '}
-                        <code>{item().scopeDigest}</code>
+                      <p>
+                        {props.automatic
+                          ? approvalDecision(item().approvalType).prompt
+                          : item().summary}
                       </p>
+                      <Show
+                        when={props.automatic}
+                        fallback={<PolyglotApproval approval={item()} />}
+                      >
+                        <details>
+                          <summary>Inspect approval evidence</summary>
+                          <PolyglotApproval approval={item()} />
+                        </details>
+                      </Show>
+                      <Show when={!props.automatic}>
+                        <p class="settings-hint">
+                          Subject <code>{item().subjectDigest}</code> · Scope{' '}
+                          <code>{item().scopeDigest}</code>
+                        </p>
+                      </Show>
                       <button
                         type="button"
                         class="chat-action-button"
-                        disabled={unavailable() || item().subject == null}
+                        disabled={
+                          unavailable() ||
+                          item().subject == null ||
+                          (props.automatic &&
+                            (shownStatus() === 'stale' || item().approvalType === 'design-review'))
+                        }
                         onClick={() =>
                           void runAction({
                             action: 'approve',
@@ -693,7 +825,10 @@ export default function PolyglotPlanImplementation(props: {
                           })
                         }
                       >
-                        Approve {item().approvalType}
+                        Approve{' '}
+                        {props.automatic
+                          ? approvalDecision(item().approvalType).name
+                          : item().approvalType}
                       </button>
                       <button
                         type="button"
@@ -741,21 +876,33 @@ export default function PolyglotPlanImplementation(props: {
                     Refresh implementation result
                   </button>
                 </Show>
-                <button
-                  type="button"
-                  class="chat-action-button"
-                  disabled={unavailable() || !current().candidateDigest}
-                  onClick={() =>
-                    void request<HarnessChangeReview>(
-                      { action: 'reviewChanges', runId: current().runId },
-                      setReview
-                    )
+                <Show
+                  when={
+                    !props.automatic ||
+                    (current().candidateDigest &&
+                      !current().pendingApprovals.some(
+                        (item) => item.approvalType === 'design-review'
+                      ))
                   }
                 >
-                  {shownStatus() === 'verified'
-                    ? 'Review verified changes'
-                    : 'Review candidate changes'}
-                </button>
+                  <button
+                    type="button"
+                    class="chat-action-button"
+                    disabled={unavailable() || !current().candidateDigest}
+                    onClick={() =>
+                      props.automatic
+                        ? previewChanges()
+                        : void request<HarnessChangeReview>(
+                            { action: 'reviewChanges', runId: current().runId },
+                            setReview
+                          )
+                    }
+                  >
+                    {shownStatus() === 'verified'
+                      ? 'Review verified changes'
+                      : 'Review candidate changes'}
+                  </button>
+                </Show>
                 <button
                   type="button"
                   class="link-button"
@@ -797,7 +944,20 @@ export default function PolyglotPlanImplementation(props: {
                 <Show when={current().application}>
                   {(application) => (
                     <section aria-label="Reviewed application">
-                      <SubjectFields value={application().subject} />
+                      <Show
+                        when={!props.automatic}
+                        fallback={
+                          <p>
+                            Destination:{' '}
+                            {matchingApplication(
+                              current(),
+                              current().candidateDigest ?? undefined
+                            ) || props.executionLabel}
+                          </p>
+                        }
+                      >
+                        <SubjectFields value={application().subject} />
+                      </Show>
                       <p>
                         Approve the exact delivery subject above, then apply it to the named
                         checkout.
@@ -844,17 +1004,12 @@ export default function PolyglotPlanImplementation(props: {
                     </section>
                   )}
                 </Show>
-                <Show when={!props.runId && current().status !== 'running'}>
+                <Show when={!restartInFooter() && !props.runId && current().status !== 'running'}>
                   <button
                     type="button"
                     class="link-button"
                     disabled={unavailable()}
-                    onClick={() => {
-                      setReadError('');
-                      setError('');
-                      setRun(undefined);
-                      setRestart(true);
-                    }}
+                    onClick={restartPlan}
                   >
                     Prepare a new implementation
                   </button>
@@ -874,7 +1029,9 @@ export default function PolyglotPlanImplementation(props: {
             {(value) => (
               <div role="status">
                 <p>Review bundle saved on the execution host.</p>
-                <SubjectFields value={value()} />
+                <Show when={value().path}>
+                  <p>{value().path}</p>
+                </Show>
               </div>
             )}
           </Show>

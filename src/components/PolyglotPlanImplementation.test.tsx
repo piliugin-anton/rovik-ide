@@ -571,3 +571,120 @@ test('Implement automatically runs the prepared plan and waits for Apply on the 
   assert.deepEqual(actions().slice(-2), ['approve', 'applyApplication']);
   assert.match(root.textContent!, /Verified changes applied/);
 });
+
+async function automaticRun(result: ReturnType<typeof implementationRun>) {
+  const root = container();
+  cleanups.push(
+    render(
+      () => (
+        <PolyglotPlanImplementation
+          automatic
+          runId={result.runId}
+          target={{ root: '/project', dialogId: 'chat' }}
+          profile={planProfile}
+          unsavedFiles={[]}
+          executionLabel="This computer"
+          onClose={() => {}}
+        />
+      ),
+      root
+    )
+  );
+  await flush();
+  return root;
+}
+
+test('design approval opens the candidate diff and approves only the reviewed candidate', async () => {
+  reset();
+  const result = implementationRun();
+  const request = {
+    run_id: result.runId,
+    subject_digest: result.candidateDigest!,
+    approval_type: 'design-review',
+    policy_digest: 'policy',
+    scope_digest: 'scope',
+    expires_ms: null,
+  };
+  result.pendingApprovals = [
+    {
+      approvalType: 'design-review',
+      subjectDigest: request.subject_digest,
+      subject: { files: { privateMetadata: 'internal snapshot' } },
+      subjectKind: 'snapshot',
+      summary: 'Review the exact design-review decision',
+      assets: [],
+      scopeDigest: 'scope',
+      policyDigest: 'policy',
+      request,
+    },
+  ];
+  let digest = 'older';
+  respond = (op) =>
+    op.action === 'reviewChanges'
+      ? {
+          runId: result.runId,
+          candidateDigest: digest,
+          files: [
+            { path: 'src/a.ts', before: 'common\nold', after: 'common\nnew' },
+            { path: 'src/b.ts', after: 'second' },
+          ],
+        }
+      : result;
+  const root = await automaticRun(result);
+  button(root, 'Review proposed design').click();
+  await flush();
+  assert.match(root.textContent!, /could not be confirmed/);
+  assert.equal(document.querySelector('dialog'), null);
+  digest = result.candidateDigest!;
+  button(root, 'Review proposed design').click();
+  await flush();
+  const dialog = document.querySelector('dialog')!;
+  assert.match(dialog.textContent!, /old.*new/s);
+  assert.doesNotMatch(dialog.textContent!, /common|internal snapshot|Apply changes|sha256:/);
+  const select = dialog.querySelector('select')!;
+  select.value = '1';
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  assert.match(dialog.textContent!, /second/);
+  button(dialog, 'Approve design').click();
+  await flush();
+  assert.deepEqual(calls[calls.length - 1]?.args.request, {
+    action: 'approve',
+    runId: result.runId,
+    request,
+  });
+});
+
+test('verification details explain a failure without opening logs for every check', async () => {
+  reset();
+  const result = implementationRun('failed');
+  result.checks = [
+    {
+      check_id: 'unit',
+      status: 'pass',
+      executed_test_count: 5,
+      diagnostics: [],
+      failed_case_ids: [],
+    },
+    {
+      check_id: 'ui',
+      status: 'fail',
+      executed_test_count: 1,
+      failed_case_ids: ['submit'],
+      diagnostics: [
+        {
+          rule_id: 'private-rule',
+          file: 'src/Form.tsx',
+          line: 18,
+          message: 'Submit stayed disabled.\n' + 'stack trace\n'.repeat(200),
+        },
+      ],
+    },
+  ];
+  respond = () => result;
+  const root = await automaticRun(result);
+  button(root, 'View details').click();
+  assert.match(root.textContent!, /1 of 2 checks passed/);
+  assert.match(root.textContent!, /ui failed.*src\/Form.tsx:18.*Submit stayed disabled/s);
+  assert.doesNotMatch(root.textContent!, /private-rule|stack trace/);
+  assert.equal(root.querySelectorAll('details').length, 0);
+});
