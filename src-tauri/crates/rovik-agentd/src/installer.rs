@@ -1371,7 +1371,15 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.0.join("rovik.slice"), slice(&file)).unwrap();
+        // Services require sysinit.target by default. Provide it locally so
+        // verify can check our units without loading the runner's services.
+        std::fs::write(
+            dir.0.join("sysinit.target"),
+            "[Unit]\nDescription=Test system initialization\n",
+        )
+        .unwrap();
         let out = Command::new("systemd-analyze")
+            .env("SYSTEMD_UNIT_PATH", &dir.0)
             .arg("verify")
             .arg(dir.0.join("rovik.slice"))
             .arg(dir.0.join("rovik-agentd@ann.service"))
