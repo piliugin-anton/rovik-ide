@@ -2395,10 +2395,10 @@ export default function App() {
           </Show>
         </Show>
 
-        <Show when={sidebarTab() === 'chat'}>
-          <Show
-            when={!chatsBlocked()}
-            fallback={
+        <Show
+          when={!chatsBlocked()}
+          fallback={
+            <Show when={sidebarTab() === 'chat'}>
               <div class="files-empty chats-blocked">
                 <Show
                   when={chatsBlocked()?.kind === 'no-project-elsewhere'}
@@ -2429,24 +2429,25 @@ export default function App() {
                   </button>
                 </Show>
               </div>
+            </Show>
+          }
+        >
+          <ChatPanel
+            visible={sidebarTab() === 'chat'}
+            rootPath={rootPath}
+            unsavedFiles={() =>
+              openFiles()
+                .filter((file) => file.dirty && !file.readOnly)
+                .map((file) => file.path)
             }
-          >
-            <ChatPanel
-              rootPath={rootPath}
-              unsavedFiles={() =>
-                openFiles()
-                  .filter((file) => file.dirty && !file.readOnly)
-                  .map((file) => file.path)
-              }
-              onLoadingChange={setLoadingChats}
-              activeFileContext={activeFileContext}
-              files={tree.files}
-              projectId={() => {
-                const p = currentProject();
-                return p === undefined ? undefined : (p?.id ?? null);
-              }}
-            />
-          </Show>
+            onLoadingChange={setLoadingChats}
+            activeFileContext={activeFileContext}
+            files={tree.files}
+            projectId={() => {
+              const p = currentProject();
+              return p === undefined ? undefined : (p?.id ?? null);
+            }}
+          />
         </Show>
 
         <Show when={sidebarTab() === 'git'}>

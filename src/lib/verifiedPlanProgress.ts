@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types';
 import type { HarnessRun } from './polyglotHarness';
+import { pauseText } from './runPause';
 import { isRequestMessage } from './requests';
 import { callFailed, parseArgsLenient, str } from './toolArgs';
 
@@ -43,7 +44,10 @@ export function preparationActivity(
   for (let index = messages.length - 1; index >= start; index--) {
     const message = messages[index];
     const failure =
-      message.error || message.meta?.failure?.message || message.meta?.interrupted?.message;
+      message.error ||
+      message.meta?.failure?.message ||
+      message.meta?.interrupted?.message ||
+      (message.meta?.paused && pauseText(message.meta.paused));
     if (failure) return { failure };
     status ||=
       message.status?.text ||

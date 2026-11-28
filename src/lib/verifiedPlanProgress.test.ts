@@ -46,6 +46,13 @@ test('preparation shows live tool activity and trial diagnostics only for the cu
     preparationActivity(messages, 'session')!.failure!,
     /baseline.*frontend.*Missing JSX transform/
   );
+  messages.push({
+    id: 'pause',
+    role: 'assistant',
+    content: '',
+    meta: { paused: { kind: 'drain', toolCalls: 1 } },
+  });
+  assert.match(preparationActivity(messages, 'session')!.failure!, /Rovik restarted/);
   messages.push({ id: 'other', role: 'user', content: 'Unrelated' });
   assert.equal(preparationActivity(messages, 'session'), undefined);
 });

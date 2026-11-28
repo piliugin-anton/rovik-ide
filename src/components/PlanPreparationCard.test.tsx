@@ -46,8 +46,10 @@ function mount(
     resumed?: string;
     retry?: boolean;
     running?: boolean;
+    agentPreparation?: string | null;
     automatic?: boolean;
     activity?: () => { failure: string };
+    onActiveChange?: (active: boolean) => void;
     prepare?: (id: string) => Promise<boolean>;
   } = {}
 ) {
@@ -70,7 +72,9 @@ function mount(
           contextProblem={options.context?.()}
           executionLabel="This computer"
           agentRunning={options.running}
+          agentPreparation={options.agentPreparation}
           automatic={options.automatic}
+          onActiveChange={options.onActiveChange}
           preparationActivity={options.activity}
           onPrepare={async (id) => {
             prepared.push(id);
@@ -460,4 +464,61 @@ test('a successful status read preserves the failed preparation launch diagnosti
   } finally {
     window.setTimeout = original;
   }
+});
+
+test('opening a saved preparation reports work to the editor until the host confirms the agent is idle', async () => {
+  let finish!: (value: PlanPreparation) => void;
+  respond = () => new Promise((resolve) => (finish = resolve));
+  const states: boolean[] = [];
+  const page = mount({
+    resumed: 'preparation-1',
+    automatic: true,
+    onActiveChange: (active) => states.push(active),
+  });
+  await flush();
+  assert.ok(page.root.querySelector('.tool-call-spinner'));
+  assert.equal(states.at(-1), true, 'the editor and chat agree while opening the preparation');
+  finish(planPreparation('preparing'));
+  await flush();
+  assert.equal(states.at(-1), false);
+  assert.equal(page.root.querySelector('.tool-call-spinner'), null);
+  assert.ok(button(page.root, 'Continue'));
+  assert.deepEqual(page.prepared, []);
+});
+
+test('returning to a project after its pending capture was interrupted offers an explicit retry', async () => {
+  let finish!: (value: PlanPreparation) => void;
+  respond = () => new Promise((resolve) => (finish = resolve));
+  const [context, setContext] = createSignal<string | null>(null);
+  const page = mount({ automatic: true, context });
+  await flush();
+  setContext('Return to the original project.');
+  finish(planPreparation('preparing'));
+  await flush();
+  setContext(null);
+  await flush();
+  assert.equal(page.root.querySelectorAll('.tool-call-spinner').length, 0, 'no request is running');
+  assert.match(page.root.textContent!, /Preparation paused/);
+  assert.equal(calls.length, 1);
+  respond = () => planPreparation('preparing');
+  button(page.root, 'Continue').click();
+  await flush();
+  assert.deepEqual(page.prepared, ['preparation-1']);
+});
+
+test('a later request in the same chat does not animate the preparation or offer to stop that request', async () => {
+  respond = () => planPreparation('preparing');
+  const active: boolean[] = [];
+  const page = mount({
+    resumed: 'preparation-1',
+    automatic: true,
+    running: true,
+    agentPreparation: null,
+    onActiveChange: (value) => active.push(value),
+  });
+  await flush();
+  assert.match(page.root.textContent!, /Another request is running/);
+  assert.equal(page.root.querySelectorAll('.tool-call-spinner').length, 0);
+  assert.doesNotMatch(page.root.textContent!, /Stop/);
+  assert.equal(active.at(-1), false);
 });

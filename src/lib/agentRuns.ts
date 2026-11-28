@@ -567,7 +567,11 @@ export function handleBackendAgent(event: AgentEvent) {
       for (const listener of [...runEndedListeners]) listener(event.dialogId);
       break;
     case 'messagesAdded':
-      if (event.messages.some((m) => m.meta?.planImplementation || m.meta?.planFile))
+      if (
+        event.messages.some(
+          (m) => m.meta?.planImplementation || m.meta?.planFile || m.meta?.verifiedPreparation
+        )
+      )
         refreshPlanImplementations();
       // Messages sent to the run that it read: kept until it has gone on.
       markSteerDraftsStored(

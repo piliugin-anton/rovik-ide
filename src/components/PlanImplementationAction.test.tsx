@@ -6,6 +6,7 @@ import { createSignal } from 'solid-js';
 import PlanImplementationAction from './PlanImplementationAction';
 import { initAgentRuns, onShowChat } from '../lib/agentRuns';
 import { chatStore } from '../lib/chatStore';
+import { chatApi } from '../lib/chatApi';
 import {
   getPlanImplementation,
   setActiveVerifiedPlan,
@@ -285,4 +286,65 @@ test('reopening a verified plan reads the candidate status from its chat host an
   assert.equal(reopened?.status, 'implemented');
   assert.equal(reopened?.runId, 'verified-run');
   assert.equal(await getPlanImplementation('p', file, '# Changed', '/p'), null);
+});
+
+test('an interrupted chat cannot mask a running preparation for the same plan revision', async () => {
+  const plan = { projectId: 'overlap', path: file, content: '# Contact form' };
+  for (const order of [
+    ['old', 'live'],
+    ['live', 'old'],
+  ]) {
+    try {
+      for (const dialogId of order)
+        setActiveVerifiedPlan(dialogId, {
+          ...plan,
+          dialogId,
+          status: dialogId === 'live' ? 'implementing' : 'interrupted',
+        });
+      const result = await getPlanImplementation(plan.projectId, plan.path, plan.content);
+      assert.equal(result?.dialogId, 'live');
+      assert.equal(result?.status, 'implementing');
+    } finally {
+      for (const id of order) setActiveVerifiedPlan(id);
+    }
+  }
+});
+
+test('without a mounted chat the editor distinguishes a live preparation from a stopped or unrelated agent', async () => {
+  const original = (window as any).__TAURI_INTERNALS__.invoke;
+  const getMessages = chatApi.getMessages;
+  const dialogId = 'implementation-chat';
+  let currentPreparation = 'preparation';
+  let running = true;
+  record = { ...evidence('interrupted'), preparationId: currentPreparation };
+  (window as any).__TAURI_INTERNALS__.invoke = (cmd: string, args: any) =>
+    cmd === 'polyglot_harness'
+      ? Promise.resolve({ status: 'preparing', plan: { path: file, content: '# Contact form' } })
+      : cmd === 'desktop_event_status'
+        ? Promise.resolve({ runs: running ? [{ dialogId, runId: 'agent' }] : [] })
+        : original(cmd, args);
+  chatApi.getMessages = async () => ({
+    messages: [
+      {
+        id: 'request',
+        role: 'user',
+        content: '',
+        meta: { verifiedPreparation: currentPreparation, planPath: file },
+      },
+    ],
+    hasOlder: false,
+    hasNewer: false,
+  });
+  const lookup = () => getPlanImplementation('p', file, '# Contact form', '/p');
+  try {
+    assert.equal((await lookup())?.status, 'implementing');
+    currentPreparation = 'unrelated';
+    assert.equal((await lookup())?.status, 'interrupted');
+    currentPreparation = 'preparation';
+    running = false;
+    assert.equal((await lookup())?.status, 'interrupted');
+  } finally {
+    chatApi.getMessages = getMessages;
+    (window as any).__TAURI_INTERNALS__.invoke = original;
+  }
 });

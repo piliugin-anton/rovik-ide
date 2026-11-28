@@ -1,4 +1,13 @@
-import { createMemo, createEffect, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
+import {
+  createMemo,
+  createEffect,
+  createSignal,
+  For,
+  on,
+  onCleanup,
+  Show,
+  untrack,
+} from 'solid-js';
 import VerifiedPlanStatusRow, { type PlanStatus } from './VerifiedPlanStatusRow';
 import type { ModelProfile } from '../types';
 import { openAppSettings } from '../lib/appSettings';
@@ -26,6 +35,8 @@ export default function PlanPreparationCard(props: {
   contextProblem?: string | null;
   executionLabel: string;
   agentRunning?: boolean;
+  /** A known request identifies its preparation, or null for an ordinary turn. */
+  agentPreparation?: string | null;
   onActiveChange?: (active: boolean) => void;
   preparationActivity?: (id: string) => { activity?: string; failure?: string } | undefined;
   onPrepare: (preparationId: string) => Promise<boolean>;
@@ -45,14 +56,15 @@ export default function PlanPreparationCard(props: {
   const [contextRevision, setContextRevision] = createSignal(0);
   let disposed = false;
   let generation = 0;
+  let statusRequest = 0;
   let attempted = false;
   const problem = () =>
     props.contextProblem ?? preparationProblem(props.profile, props.unsavedFiles);
   const status = () => preparation()?.status;
   const providerProblem = () => preparationProviderProblem(preparation(), props.profile);
   const accept = (value: PlanPreparation) => {
-    setPreparation(value);
     props.onPreparation(value);
+    setPreparation(value);
   };
   const active = (scope: number) => !disposed && scope === generation && !props.contextProblem;
 
@@ -122,16 +134,18 @@ export default function PlanPreparationCard(props: {
     }
   }
 
-  async function refresh(retry = false) {
+  async function refresh() {
     const id = preparation()?.preparationId ?? props.preparationId;
     if (!id || props.contextProblem) return;
     const scope = generation;
+    const request = ++statusRequest;
+    const current = () => active(scope) && request === statusRequest;
     try {
       const value = await harnessRequest<PlanPreparation>(props.target, {
         action: 'preparationStatus',
         preparationId: id,
       });
-      if (active(scope) && id === (preparation()?.preparationId ?? props.preparationId)) {
+      if (current() && id === (preparation()?.preparationId ?? props.preparationId)) {
         accept(value);
         setReadError('');
         if (value.runId) {
@@ -139,17 +153,28 @@ export default function PlanPreparationCard(props: {
             action: 'status',
             runId: value.runId,
           });
-          if (active(scope)) props.onStart(run);
-        } else if (retry && !props.agentRunning && !problem()) {
-          const resumable = ['preparing', 'blocked'].includes(value.status);
-          if (['cancelled', 'stale'].includes(value.status) || (resumable && providerProblem()))
-            await begin();
-          else if (resumable) await launchPreparation(value.preparationId, scope);
+          if (current()) props.onStart(run);
         }
+        return value;
       }
     } catch (cause) {
-      if (active(scope)) setReadError(String(cause));
+      if (current()) setReadError(String(cause));
     }
+  }
+
+  async function openPreparation(retry = false) {
+    if (busy() || props.contextProblem) return;
+    const scope = generation;
+    setBusy(true);
+    setReadError('');
+    const value = await refresh();
+    if (!active(scope)) return;
+    setBusy(false);
+    if (!retry || !value || value.runId || props.agentRunning || problem()) return;
+    const resumable = ['preparing', 'blocked'].includes(value.status);
+    if (['cancelled', 'stale'].includes(value.status) || (resumable && providerProblem()))
+      await begin();
+    else if (resumable) await launchPreparation(value.preparationId, scope);
   }
 
   async function continuePreparation() {
@@ -215,32 +240,54 @@ export default function PlanPreparationCard(props: {
     setError('');
     setContextRevision((value) => value + 1);
   });
-  createEffect(() => {
-    if (props.contextProblem) {
-      generation++;
-      setBusy(false);
-      setLaunching(false);
-    }
-  });
+  createEffect(
+    on(
+      () => props.contextProblem,
+      (issue, previous) => {
+        if (issue) {
+          generation++;
+          setBusy(false);
+          setLaunching(false);
+          if (attempted) setAuthorized(false);
+        } else if (previous && attempted && (preparation() || props.preparationId)) {
+          // A request may have reached its host before the project or host changed.
+          void openPreparation();
+        }
+      }
+    )
+  );
   createEffect(() => {
     contextRevision();
+    if (props.contextProblem) return;
     if (props.preparationId && !attempted) {
       attempted = true;
-      void untrack(() => refresh(props.retry));
+      void untrack(() => openPreparation(props.retry));
     } else if (!attempted && !problem()) {
       attempted = true;
       void untrack(begin);
     }
   });
+  createEffect(
+    on(
+      () => props.agentRunning,
+      (running, previous) => {
+        // Read the final host result even if the last poll saw a blocked preparation.
+        if (previous && !running && preparation() && !busy() && !launching())
+          void openPreparation();
+      }
+    )
+  );
   createEffect(() => {
     poll();
-    props.agentRunning;
     const current = preparation();
     if (
       !current ||
       busy() ||
       props.contextProblem ||
-      !['preparing', 'ready'].includes(current.status)
+      !(
+        ['preparing', 'ready'].includes(current.status) ||
+        (current.status === 'blocked' && props.agentRunning)
+      )
     )
       return;
     const timer = window.setTimeout(
@@ -280,25 +327,21 @@ export default function PlanPreparationCard(props: {
     void untrack(implement);
   });
 
-  createEffect(() => {
-    if (!preparation()?.runId)
-      props.onActiveChange?.(
-        !error() &&
-          !problem() &&
-          !providerProblem() &&
-          (!!busy() ||
-            launching() ||
-            (status() === 'preparing' && !!props.agentRunning) ||
-            (status() === 'ready' && authorized()))
-      );
-  });
-  const row = createMemo<PlanStatus | undefined>(() => {
-    if (props.background || !props.automatic) return;
+  const row = createMemo<PlanStatus>(() => {
     const issue = problem() || providerProblem() || error();
     const current = preparation();
     const progress = current && props.preparationActivity?.(current.preparationId);
     const actions = [];
-    if (issue || ['blocked', 'stale', 'cancelled'].includes(status() ?? '')) {
+    const otherTurn =
+      props.agentRunning &&
+      props.agentPreparation !== undefined &&
+      props.agentPreparation !== current?.preparationId;
+    const agentWorking = launching() || (props.agentRunning && !otherTurn);
+    if (
+      issue ||
+      ['stale', 'cancelled'].includes(status() ?? '') ||
+      (status() === 'blocked' && !agentWorking)
+    ) {
       if (props.profile && !savedHarnessRates(props.profile))
         actions.push({
           label: 'Set model prices',
@@ -308,8 +351,8 @@ export default function PlanPreparationCard(props: {
         actions.push({
           label: 'Retry',
           run: () => {
-            if (!current && props.preparationId) void refresh(props.retry);
-            else if (current?.runId || readError()) void refresh();
+            if (!current && props.preparationId) void openPreparation(props.retry);
+            else if (current?.runId || readError()) void openPreparation();
             else if (status() === 'ready' && !providerProblem()) void implement();
             else if (status() === 'preparing' && !providerProblem()) void continuePreparation();
             else void begin();
@@ -326,7 +369,13 @@ export default function PlanPreparationCard(props: {
         actions,
       };
     }
-    if (status() === 'ready' && !authorized() && !busy())
+    if (otherTurn && !busy() && !launching())
+      return {
+        title: 'Preparation paused',
+        message: 'Another request is running in this chat.',
+        onDismiss: props.onClose,
+      };
+    if (status() === 'ready' && !current?.runId && !busy() && !agentWorking)
       return {
         title: 'Ready to implement',
         message: current?.review?.summary,
@@ -335,18 +384,36 @@ export default function PlanPreparationCard(props: {
           {
             label: 'Implement plan',
             primary: true,
-            run: () => setAuthorized(true),
+            run: () => void implement(),
           },
         ],
       };
-    if (status() === 'preparing' && !launching() && !props.agentRunning && !busy())
+    if (
+      !busy() &&
+      !launching() &&
+      (!current || (current.status === 'preparing' && !props.agentRunning))
+    )
       return {
         title: 'Preparation paused',
         attention: true,
         onDismiss: props.onClose,
         message:
-          progress?.failure || current?.error || current?.reason || 'Continue in the plan’s chat.',
-        actions: [{ label: 'Continue', run: () => void continuePreparation() }],
+          progress?.failure ||
+          current?.error ||
+          current?.reason ||
+          (current
+            ? 'The agent stopped before the checks were ready.'
+            : 'Preparation stopped before the project snapshot was available.'),
+        actions: [
+          {
+            label: 'Continue',
+            run: () => {
+              if (current) void continuePreparation();
+              else if (props.preparationId) void openPreparation(true);
+              else void begin();
+            },
+          },
+        ],
       };
     return {
       title: status() === 'ready' ? 'Starting implementation' : 'Preparing checks',
@@ -354,12 +421,16 @@ export default function PlanPreparationCard(props: {
       message:
         status() === 'ready'
           ? 'Starting the verified run'
-          : progress?.failure ||
-            progress?.activity ||
-            current?.error ||
-            (!current
-              ? 'Opening the saved preparation and project snapshot'
-              : 'Waiting for the preparation agent'),
+          : current && busy() && !agentWorking
+            ? 'Checking the preparation result'
+            : progress?.failure ||
+              progress?.activity ||
+              current?.error ||
+              (!current
+                ? props.preparationId
+                  ? 'Opening the saved preparation'
+                  : 'Taking a snapshot of the project'
+                : 'Waiting for the preparation agent'),
       attention: !!progress?.failure,
       busy: true,
       actions:
@@ -369,7 +440,10 @@ export default function PlanPreparationCard(props: {
     };
   });
 
-  if (props.automatic) return <VerifiedPlanStatusRow status={row()} />;
+  // The editor follows the same transition as the chat, including while the row is hidden.
+  createEffect(() => props.onActiveChange?.(!!row().busy));
+  if (props.automatic)
+    return <VerifiedPlanStatusRow status={props.background ? undefined : row()} />;
   return (
     <section
       class={`chat-verify plan-preparation ${problem() || providerProblem() || error() || ['blocked', 'stale', 'cancelled'].includes(status() ?? '') ? 'needs-approval' : status() === 'ready' ? 'clean' : 'running'}`}

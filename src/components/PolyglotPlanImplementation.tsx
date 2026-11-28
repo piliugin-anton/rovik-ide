@@ -41,6 +41,7 @@ export default function PolyglotPlanImplementation(props: {
   /** An explicit chat Retry checks the saved session before resuming preparation. */
   retryPreparation?: boolean;
   agentRunning?: boolean;
+  agentPreparation?: string | null;
   onPreparationActive?: (active: boolean) => void;
   preparationActivity?: (id: string) => ReturnType<typeof preparationActivity>;
   onPrepare?: (preparationId: string) => Promise<boolean>;
@@ -501,6 +502,7 @@ export default function PolyglotPlanImplementation(props: {
           contextProblem={props.contextProblem}
           executionLabel={props.executionLabel}
           agentRunning={props.agentRunning}
+          agentPreparation={props.agentPreparation}
           preparationActivity={props.preparationActivity}
           onActiveChange={props.onPreparationActive}
           onPrepare={props.onPrepare ?? (() => Promise.resolve(false))}

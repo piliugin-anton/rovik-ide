@@ -87,8 +87,8 @@ interface ChatState {
   queued: Record<string, QueuedSteer[]>;
   /** Chats with agent messages the user hasn't seen yet (dot indicator). */
   unread: Record<string, true>;
-  /** The chat panel is mounted (sidebar tab is "chat"): the active chat is seen. */
-  chatVisible: boolean;
+  /** True when visible, false while a plan keeps the panel mounted, undefined when unmounted. */
+  chatVisible: boolean | undefined;
 }
 
 export type MessagePatch = Partial<
@@ -148,7 +148,7 @@ export function createChatStore() {
     steerable: {},
     queued: {},
     unread: unreadIds(marks.all()),
-    chatVisible: false,
+    chatVisible: undefined,
   });
   // Another window's marks: a chat read there, or a reply come in there.
   marks.subscribe((saved) => {
@@ -555,7 +555,7 @@ export function createChatStore() {
 
   /** Whether the user is looking at this chat's messages right now. */
   function isSeen(dialogId: string): boolean {
-    return state.chatVisible && state.activeId === dialogId;
+    return !!state.chatVisible && state.activeId === dialogId;
   }
 
   /** Marks a chat unseen when an agent message arrives while it isn't seen. */
@@ -575,8 +575,8 @@ export function createChatStore() {
     void marks.set({ [dialogId]: null });
   }
 
-  /** Whether the chat panel's messages are on screen (sidebar tab is chat). */
-  function setChatVisible(visible: boolean) {
+  /** True on screen, false while hidden, undefined when the panel is unmounted. */
+  function setChatVisible(visible: boolean | undefined) {
     setState('chatVisible', visible);
     // Showing the panel means the active chat is seen.
     if (visible && state.activeId) markRead(state.activeId);

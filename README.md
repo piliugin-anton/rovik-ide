@@ -192,7 +192,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   default on **Implement this plan**. The ordinary chat agent prepares checks in
   a private source copy, reports progress and asks about missing requirements in
   the conversation. Preparation and verified implementation proceed automatically,
-  with one compact status row in the owning chat. Questions appear in the conversation.
+  with one compact status row in the owning chat. You can switch to Files or Git
+  while checks run. If preparation stops, follow the chat link in the open plan
+  to see the reason and continue the same preparation. Questions appear in the conversation.
   Protected tests and a real failing control are staged outside your checkout;
   native preparation trials must succeed before the review becomes ready. The
   trusted backend prepares its verifier image and supported locked dependencies

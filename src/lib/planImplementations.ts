@@ -1,4 +1,5 @@
-import type { PlanPreparation } from './planPreparation';
+import { preparationToRetry, type PlanPreparation } from './planPreparation';
+import type { AgentStatus } from './agentRuns';
 import { harnessRequest, type HarnessRun } from './polyglotHarness';
 import { invoke } from '@tauri-apps/api/core';
 import { createSignal } from 'solid-js';
@@ -26,7 +27,11 @@ export function planKey(path: string) {
   return '.rovik/plans/' + path.split(/[\\/]/).pop();
 }
 
-export type PlanImplementationLink = Pick<PlanImplementation, 'dialogId' | 'status' | 'runId'> & {
+export type PlanImplementationLink = Pick<
+  PlanImplementation,
+  'dialogId' | 'runId' | 'preparationId'
+> & {
+  status: PlanImplementation['status'] | 'preparation-paused';
   verified?: boolean;
 };
 
@@ -35,7 +40,7 @@ type ActivePlan = {
   path: string;
   content?: string;
   dialogId: string;
-  status: PlanImplementation['status'];
+  status: PlanImplementationLink['status'];
 };
 const active = new Map<string, ActivePlan>();
 
@@ -72,19 +77,16 @@ export async function getPlanImplementation(
 ): Promise<PlanImplementationLink | null> {
   const key = planKey(path);
   const text = content.replace(/\r\n/g, '\n');
-  for (const plan of active.values()) {
-    if (
-      plan.projectId === projectId &&
-      planKey(plan.path) === key &&
-      (plan.content === undefined || plan.content.replace(/\r\n/g, '\n') === text)
-    )
-      return {
-        dialogId: plan.dialogId,
-        runId: null,
-        verified: true,
-        status: plan.status,
-      };
-  }
+  const matches = [...active.values()]
+    .reverse()
+    .filter(
+      (plan) =>
+        plan.projectId === projectId &&
+        planKey(plan.path) === key &&
+        (plan.content === undefined || plan.content.replace(/\r\n/g, '\n') === text)
+    );
+  const plan = matches.find((entry) => entry.status === 'implementing') ?? matches[0];
+  if (plan) return { dialogId: plan.dialogId, runId: null, verified: true, status: plan.status };
   const record = await invoke<PlanImplementation | null>('chat_plan_implementation', {
     projectId,
     path,
@@ -98,7 +100,20 @@ export async function getPlanImplementation(
   });
   if (planKey(session.plan.path) !== key || session.plan.content.replace(/\r\n/g, '\n') !== text)
     return null;
-  if (!session.runId) return { ...record, verified: true };
+  if (!session.runId) {
+    // An unpromoted session can outlive its agent. The owning chat may also be running a later request.
+    if (['preparing', 'blocked', 'ready'].includes(session.status)) {
+      const { runs } = await invoke<AgentStatus>('desktop_event_status', {
+        scope: { projectId, chats: [record.dialogId] },
+      });
+      if (runs.some((run) => run.dialogId === record.dialogId)) {
+        const request = await preparationToRetry(record.dialogId);
+        if (request?.preparationId === record.preparationId)
+          return { ...record, verified: true, status: 'implementing' };
+      }
+    }
+    return { ...record, verified: true };
+  }
   const run = await harnessRequest<HarnessRun>(target, { action: 'status', runId: session.runId });
   return { ...record, verified: true, runId: run.runId, status: verifiedImplementationStatus(run) };
 }

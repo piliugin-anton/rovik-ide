@@ -2,7 +2,7 @@ import {
   planKey,
   setActiveVerifiedPlan,
   verifiedImplementationStatus,
-  type PlanImplementation,
+  type PlanImplementationLink,
 } from '../lib/planImplementations';
 import { contentDigest } from '../lib/contentDigest';
 import { preparationActivity } from '../lib/verifiedPlanProgress';
@@ -308,6 +308,8 @@ const usageCache = new Map<string, ContextUsage>();
 const clmBudgetCache = new Map<string, number | null>();
 
 interface ChatProps {
+  /** Whether the chat sidebar is on screen. */
+  visible?: boolean;
   /** Includes the chat list, active transcript and composer restoration. */
   onLoadingChange?: (loading: boolean) => void;
   rootPath: Accessor<string | null>;
@@ -336,7 +338,17 @@ function chatValues<T>() {
   return [values, set] as const;
 }
 
+/** Keep the plan controller alive when the user opens Files or Git during verification. */
 export default function ChatPanel(props: ChatProps) {
+  const [ownsPlan, setOwnsPlan] = createSignal(false);
+  return (
+    <Show when={props.visible !== false || ownsPlan()}>
+      <ChatContents {...props} onPlansChange={setOwnsPlan} />
+    </Show>
+  );
+}
+
+function ChatContents(props: ChatProps & { onPlansChange: (hasPlan: boolean) => void }) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   type StrictPlan = {
     root: string;
@@ -351,6 +363,7 @@ export default function ChatPanel(props: ChatProps) {
     owner: string;
   };
   const [plans, setPlan] = chatValues<StrictPlan>();
+  createEffect(() => props.onPlansChange(plans().size > 0));
   const strictPlan = (id = activeDialogId()) => plans().get(id ?? '');
   const setStrictPlan = (plan: StrictPlan) => setPlan(plan.dialogId, plan);
   const [preparations, setPreparation] = chatValues<PlanPreparation>();
@@ -503,11 +516,13 @@ export default function ChatPanel(props: ChatProps) {
   let isMounted = true;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
 
-  // This panel is mounted only while the sidebar tab is "chat": while it is,
-  // the active chat's messages are on screen, so arriving agent messages in
-  // it are seen (no dot); anything else gets a dot until it is opened.
-  onMount(() => store.setChatVisible(true));
-  onCleanup(() => store.setChatVisible(false));
+  createEffect(
+    on(
+      () => props.visible !== false,
+      (visible) => store.setChatVisible(visible)
+    )
+  );
+  onCleanup(() => store.setChatVisible(undefined));
   createEffect(() => {
     const id = activeDialogId();
     if (id && store.state.chatVisible) store.markRead(id);
@@ -3337,7 +3352,7 @@ export default function ChatPanel(props: ChatProps) {
               })
             : profile;
         if (!dispatchedProfile) return false;
-        await startRun({
+        const runId = await startRun({
           dialogId,
           start,
           profile: dispatchedProfile,
@@ -3354,6 +3369,8 @@ export default function ChatPanel(props: ChatProps) {
           localDate: localDate(),
           config: configuration,
         });
+        if (!runId && start.kind === 'send' && start.message.meta?.verifiedPreparation)
+          throw new Error('The host did not start the preparation agent. Retry in this chat.');
         return true;
       };
       if (captured)
@@ -3909,7 +3926,7 @@ export default function ChatPanel(props: ChatProps) {
       !activeProfile()
     )
       return;
-    if (resumed.has(dialogId)) return;
+    if (resumed.has(dialogId) || strictPlan(dialogId)) return;
     // A remote chat's daemon picks its run up itself (K07). The task as
     // stored: the page held may show none of its records.
     if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place, taskStages())) return;
@@ -3983,7 +4000,7 @@ export default function ChatPanel(props: ChatProps) {
     try {
       await store.flush();
       const preparation = await preparationToRetry(dialogId);
-      if (!current()) return;
+      if (!current() || (kind === 'resume' && strictPlan(dialogId))) return;
       if (preparation) {
         if (!retryPreparation && preparationReplyClosed(dialogId, preparation.preparationId))
           return;
@@ -5026,6 +5043,7 @@ export default function ChatPanel(props: ChatProps) {
   return (
     <div
       class="chat-panel"
+      hidden={props.visible === false}
       classList={{ 'loading-history': showHistoryLoading() }}
       aria-busy={showHistoryLoading()}
     >
@@ -5216,7 +5234,14 @@ export default function ChatPanel(props: ChatProps) {
       <For each={Array.from(plans().values())}>
         {(plan) => {
           let content: string | undefined;
-          const report = (status: PlanImplementation['status']) => {
+          const agentPreparation = createMemo(() => {
+            if (!isRunning(plan.dialogId)) return;
+            const chat = store.state.open[plan.dialogId];
+            if (!chat || chat.hasNewer) return;
+            const request = [...chat.messages].reverse().find(isRequestMessage);
+            return request && (request.meta?.verifiedPreparation ?? null);
+          });
+          const report = (status: PlanImplementationLink['status']) => {
             if (plan.path)
               setActiveVerifiedPlan(plan.dialogId, {
                 projectId: plan.projectId,
@@ -5263,6 +5288,7 @@ export default function ChatPanel(props: ChatProps) {
               retryPreparation={plan.retryPreparation}
               profile={profile()}
               agentRunning={isRunning(plan.dialogId)}
+              agentPreparation={agentPreparation()}
               preparationActivity={(id) =>
                 preparationActivity(store.messagesOf(plan.dialogId), id, toolNotes(plan.dialogId))
               }
@@ -5272,7 +5298,9 @@ export default function ChatPanel(props: ChatProps) {
                 if (plan.implementRequested)
                   setQuietPreparation(plan.dialogId, session.preparationId);
               }}
-              onPreparationActive={(active) => report(active ? 'implementing' : 'interrupted')}
+              onPreparationActive={(active) =>
+                report(active ? 'implementing' : 'preparation-paused')
+              }
               onRunChange={(run) => {
                 report(verifiedImplementationStatus(run));
                 setPreparation(plan.dialogId, undefined);

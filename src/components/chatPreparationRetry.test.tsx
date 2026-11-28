@@ -6,6 +6,9 @@ import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import ChatPanel from './ChatPanel';
+import PlanImplementationAction from './PlanImplementationAction';
+import { onShowChat } from '../lib/agentRuns';
+import { requestImplementPlan } from '../lib/plans';
 import { chatStore } from '../lib/chatStore';
 import type { MessageRow } from '../lib/chatApi';
 import type { PlanPreparation } from '../lib/planPreparation';
@@ -32,6 +35,7 @@ async function page(
     skipRetry?: boolean;
     interrupted?: boolean;
     closedPreparation?: boolean;
+    editor?: boolean;
   } = {}
 ) {
   localStorage.clear();
@@ -142,18 +146,36 @@ async function page(
   };
   const [rootPath, setRootPath] = createSignal('/project');
   const root = container();
+  const [visible, setVisible] = createSignal(true);
+  if (options.editor) cleanups.push(onShowChat(() => setVisible(true)));
   cleanups.push(
     render(
       () => (
         <>
           <NotificationHost />
           <ChatPanel
+            visible={visible()}
             rootPath={rootPath}
             projectId={() => `project-${dialog.id}`}
             activeFileContext={() => null}
             files={() => []}
             unsavedFiles={() => []}
           />
+          {options.editor && (
+            <aside class="plan-editor-bar">
+              <PlanImplementationAction
+                path={savedHarnessPlan.path}
+                content={savedHarnessPlan.content}
+                canImplement
+                onImplement={(requireVerified) =>
+                  requestImplementPlan({
+                    path: savedHarnessPlan.path,
+                    requireVerified: !!requireVerified,
+                  })
+                }
+              />
+            </aside>
+          )}
         </>
       ),
       root
@@ -180,6 +202,7 @@ async function page(
     root,
     calls,
     setRootPath,
+    setVisible,
     finishHistory: () => {
       assert.ok(finishHistory);
       finishHistory();
@@ -431,4 +454,110 @@ test('two chats can prepare independently while the first status request is stil
     [other.id, 'prep-other'],
     [first.dialog.id, 'preparation-1'],
   ]);
+});
+
+test('the open plan follows preparation across sidebar switches, interruption and continuation in the owning chat', async () => {
+  const pageView = await page(undefined, { editor: true, skipRetry: true });
+  const editor = pageView.root.querySelector<HTMLElement>('.plan-editor-bar')!;
+  const panel = pageView.root.querySelector<HTMLElement>('.chat-panel')!;
+  const getRow = () => panel.querySelector<HTMLElement>('[aria-label="Verified plan status"]')!;
+  const original = (window as any).__TAURI_INTERNALS__.invoke;
+  let finishCapture!: (session: PlanPreparation) => void;
+  let ready = false;
+  let lastStatus: (() => void) | undefined;
+  let waitForStatus = false;
+  let agentStarts = 0;
+  let promotions = 0;
+  (window as any).__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+    if (command === 'chat_get_dialog') return pageView.dialog;
+    if (command === 'agent_start') {
+      agentStarts++;
+      chatStore.setRunning(pageView.dialog.id, true);
+      assert.equal(args.request.start.message.meta.verifiedPreparation, 'preparation-1');
+      return 'preparation-agent';
+    }
+    if (command === 'polyglot_harness') {
+      if (args.request.action === 'beginPlanPreparation')
+        return new Promise((resolve) => {
+          finishCapture = resolve;
+        });
+      if (args.request.action === 'preparationStatus') {
+        const result = planPreparation(ready ? 'ready' : 'preparing');
+        return waitForStatus
+          ? new Promise((resolve) => {
+              lastStatus = () => resolve(result);
+            })
+          : result;
+      }
+      if (args.request.action === 'startPreparedImplementation') {
+        promotions++;
+        return implementationRun('verified');
+      }
+    }
+    return original(command, args);
+  };
+  editor.querySelector<HTMLButtonElement>('.primary')!.click();
+  await flush();
+  assert.match(getRow().textContent!, /Preparing checks/);
+  assert.match(editor.textContent!, /Implementing in chat/);
+  assert.equal(editor.querySelectorAll('.primary').length, 0);
+  pageView.setVisible(false);
+  await flush();
+  assert.ok(panel.isConnected && panel.hidden);
+  assert.equal(chatStore.state.chatVisible, false);
+  finishCapture(planPreparation('preparing'));
+  await flush();
+  assert.equal(agentStarts, 1);
+  assert.match(editor.textContent!, /Implementing in chat/);
+
+  waitForStatus = true;
+  chatStore.setRunning(pageView.dialog.id, false);
+  await flush();
+  assert.match(editor.textContent!, /Implementing in chat/);
+  assert.match(getRow().textContent!, /Checking the preparation result/);
+  assert.ok(lastStatus);
+  waitForStatus = false;
+  lastStatus();
+  await flush();
+  assert.match(editor.textContent!, /Continue preparation in chat/);
+  assert.equal(editor.querySelectorAll('.primary').length, 0);
+  assert.equal(getRow().querySelectorAll('.tool-call-spinner').length, 0);
+  editor.querySelector<HTMLButtonElement>('.link-button')!.click();
+  await flush();
+  assert.equal(panel.hidden, false);
+  assert.match(getRow().textContent!, /Preparation paused/);
+  const resume = [...getRow().querySelectorAll('button')].find((b) => b.textContent === 'Continue');
+  assert.ok(resume);
+  resume.click();
+  await flush();
+  assert.equal(agentStarts, 2);
+  assert.match(editor.textContent!, /Implementing in chat/);
+  pageView.setVisible(false);
+  ready = true;
+  chatStore.setRunning(pageView.dialog.id, false);
+  await flush();
+  assert.equal(promotions, 1);
+  assert.match(editor.textContent!, /Implemented in chat/);
+  assert.equal(editor.querySelectorAll('.primary').length, 0);
+  assert.equal(getRow().querySelectorAll('.tool-call-spinner').length, 0);
+});
+
+test('when the host declines a preparation turn the chat shows the reason and a working retry', async () => {
+  const pageView = await page('preparing', { skipRetry: true });
+  const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+  (window as any).__TAURI_INTERNALS__.invoke = (cmd: string, args: any) =>
+    cmd === 'agent_start' ? Promise.resolve(null) : invoke(cmd, args);
+  const retry = [...pageView.root.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Retry'
+  )!;
+  retry.click();
+  await flush();
+  const row = pageView.root.querySelector<HTMLElement>('[aria-label="Verified plan status"]')!;
+  assert.match(row.textContent!, /host did not start the preparation agent/);
+  assert.equal(row.querySelectorAll('.tool-call-spinner').length, 0);
+  (window as any).__TAURI_INTERNALS__.invoke = invoke;
+  [...row.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!.click();
+  await flush();
+  assert.equal(pageView.starts().length, 1);
+  assert.equal(pageView.starts()[0].start.message.meta.verifiedPreparation, 'preparation-1');
 });

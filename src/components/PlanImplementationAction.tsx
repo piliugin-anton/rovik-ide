@@ -44,8 +44,13 @@ export default function PlanImplementationAction(props: {
     })
   );
   createEffect(() => {
-    const record = !implementation.error && implementation();
-    if (!record || !record.verified || !record.runId || record.status !== 'implementing') return;
+    const record = implementation.error ? undefined : implementation();
+    if (
+      !record?.verified ||
+      !(record.runId || record.preparationId) ||
+      record.status !== 'implementing'
+    )
+      return;
     // Reopened editor tabs may be the only mounted observer of this host run.
     const timer = window.setTimeout(() => void refetch(), 1500);
     onCleanup(() => window.clearTimeout(timer));
@@ -68,6 +73,8 @@ export default function PlanImplementationAction(props: {
         return 'Implemented in';
       case 'implementing':
         return 'Implementing in';
+      case 'preparation-paused':
+        return 'Continue preparation in';
       case 'review-needed':
         return 'Implementation finished; review needed in';
       default:
@@ -79,7 +86,7 @@ export default function PlanImplementationAction(props: {
     try {
       const dialog = await chatApi.getDialog(record.dialogId);
       if (!dialog) throw new Error('The implementation chat has been deleted.');
-      if (chatStore.state.chatVisible) {
+      if (chatStore.state.chatVisible !== undefined) {
         // The mounted panel saves/restores composer drafts when selecting a chat.
         showChat({ dialogId: record.dialogId });
         return;
@@ -129,7 +136,15 @@ export default function PlanImplementationAction(props: {
           )}
         </Show>
       </Show>
-      <Show when={props.canImplement && status() !== 'implemented' && status() !== 'implementing'}>
+      <Show
+        when={
+          props.canImplement &&
+          !implementation.error &&
+          status() !== 'implemented' &&
+          status() !== 'implementing' &&
+          status() !== 'preparation-paused'
+        }
+      >
         <button
           type="button"
           class="chat-action-button primary"
