@@ -39,6 +39,18 @@ pub const BACKEND_VERSION: &str = "rovik-docker-v1";
 /// Rootless Podman has a distinct identity; Docker approvals cannot authorize it.
 pub const PODMAN_BACKEND_VERSION: &str = "rovik-podman-v1";
 
+/// The online preparation may inherit these by name. Offline jobs clear all of them.
+pub(crate) const PROXY_VARIABLES: [&str; 8] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
+
 /// Explicit execution environment identity, persisted before any checks run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -588,16 +600,7 @@ impl ContainerBackend {
             ]);
         }
         // Docker client proxy defaults are not capabilities inside an offline job.
-        for key in [
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-            "no_proxy",
-        ] {
+        for key in PROXY_VARIABLES {
             create.args(["--env", &format!("{key}=")]);
         }
         create

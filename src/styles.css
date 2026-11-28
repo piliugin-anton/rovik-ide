@@ -1872,7 +1872,27 @@ body.tree-dragging {
 .chat-failure {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-self: flex-start;
+  gap: 4px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border-left: 2px solid var(--error);
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.chat-failure-title {
+  color: var(--error);
+}
+
+.chat-failure-summary {
+  margin: 0;
 }
 
 .chat-failure-actions {
@@ -1901,14 +1921,14 @@ body.tree-dragging {
 }
 
 .chat-failure-details {
-  max-height: 200px;
+  max-height: min(12rem, 30vh);
   margin: 0;
   padding: 6px 8px;
   overflow: auto;
   background: var(--bg-editor);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  color: var(--fg-dim);
+  color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: pre-wrap;
@@ -1996,10 +2016,6 @@ body.tree-dragging {
 .chat-working {
   padding: 0 8px;
   font-size: 12px;
-}
-
-.chat-error {
-  color: var(--error);
 }
 
 .chat-input-row {

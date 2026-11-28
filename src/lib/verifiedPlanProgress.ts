@@ -48,7 +48,7 @@ export function preparationActivity(
       message.meta?.failure?.message ||
       message.meta?.interrupted?.message ||
       (message.meta?.paused && pauseText(message.meta.paused));
-    if (failure) return { failure };
+    if (failure) return { failure, shownInChat: !!message.error };
     status ||=
       message.status?.text ||
       (message.role === 'assistant' && !message.toolCalls?.length

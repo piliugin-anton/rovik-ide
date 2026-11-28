@@ -44,6 +44,15 @@ export function preparationPrompt(planPath: string) {
   return `Prepare verification for the plan in \`${planPath}\`.`;
 }
 
+/** The generated request starts the agent without adding a user-authored chat bubble. */
+export function isPreparationPrompt(message: ChatMessage): boolean {
+  return (
+    !!message.meta?.verifiedPreparation &&
+    message.role === 'user' &&
+    message.content === preparationPrompt(message.meta.planPath ?? '')
+  );
+}
+
 /** Keep the conversation readable while its private tool transcript stays in durable history. */
 export function visiblePreparationMessages(
   messages: ChatMessage[],
@@ -67,8 +76,7 @@ export function visiblePreparationMessages(
       message.meta?.interrupted
     )
       return [message];
-    if (message.role === 'user')
-      return message.content === preparationPrompt(message.meta?.planPath ?? '') ? [] : [message];
+    if (message.role === 'user') return isPreparationPrompt(message) ? [] : [message];
     if (message.role === 'tool')
       return questions.has(message.tool_call_id ?? '') || message.meta?.questions ? [message] : [];
     const asks = message.toolCalls?.filter((call) => call.name === 'ask_user');

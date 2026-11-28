@@ -36,6 +36,7 @@ import { segmentsOfMessage, type DraftSegment } from '../lib/composerSegments';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import { pauseText } from '../lib/runPause';
 import MessageContent from './MessageContent';
+import ChatFailureNotice from './ChatFailureNotice';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
@@ -62,7 +63,7 @@ import { isRequestMessage } from '../lib/requests';
 import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 import ThinkingBlock from './ThinkingBlock';
-import { visiblePreparationMessages } from '../lib/planPreparation';
+import { isPreparationPrompt, visiblePreparationMessages } from '../lib/planPreparation';
 import PlanImplementationAction from './PlanImplementationAction';
 
 const BOTTOM_TOLERANCE_PX = 8;
@@ -119,6 +120,8 @@ export default function MessageList(props: {
   dialogId: string | null;
   chat: OpenChat | undefined;
   quietPreparation?: string;
+  /** A saved preparation can own a startup error before its first request was stored. */
+  preparationError?: string;
   sending: boolean;
   /** The backend is preparing the run, before its first reply exists. */
   starting?: boolean;
@@ -178,7 +181,6 @@ export default function MessageList(props: {
   const [win, setWin] = createSignal<MessageWindow>({ start: 0, end: 0 });
   const [stick, setStick] = createSignal(true);
   const [flashId, setFlashId] = createSignal<string | null>(null);
-  const [openDetails, setOpenDetails] = createSignal<string | null>(null);
 
   // Ticks for countdowns (retry waits, rate-limit resets).
   const [now, setNow] = createSignal(Date.now());
@@ -1378,7 +1380,14 @@ export default function MessageList(props: {
         </Show>
 
         <div ref={innerRef} class="chat-messages-inner">
-          <For each={visible()} fallback={<div class="empty-state">Ask the model anything</div>}>
+          <For
+            each={visible()}
+            fallback={
+              <Show when={!props.preparationError}>
+                <div class="empty-state">Ask the model anything</div>
+              </Show>
+            }
+          >
             {(m) => (
               <div
                 ref={trackItem}
@@ -1422,48 +1431,6 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={m.error}>
-                  <div
-                    class="chat-message chat-failure"
-                    classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
-                  >
-                    <span class="chat-error">
-                      {m.meta?.failure ? describeFailure(m.meta.failure, now()) : m.error}
-                    </span>
-                    <div class="chat-failure-actions">
-                      <Show
-                        when={
-                          m.meta?.failure &&
-                          canRetry(m.meta.failure) &&
-                          isLatest(m) &&
-                          !requestUndelivered()
-                        }
-                      >
-                        <button
-                          type="button"
-                          class="chat-action-button"
-                          onClick={() => props.onRetry()}
-                        >
-                          Retry
-                        </button>
-                      </Show>
-                      <Show when={m.meta?.failure?.details}>
-                        <button
-                          type="button"
-                          class="link-button"
-                          aria-expanded={openDetails() === m.id}
-                          onClick={() => setOpenDetails((id) => (id === m.id ? null : m.id))}
-                        >
-                          {openDetails() === m.id ? 'Hide details' : 'Details'}
-                        </button>
-                      </Show>
-                    </div>
-                    <Show when={openDetails() === m.id}>
-                      <pre class="chat-failure-details">{m.meta?.failure?.details}</pre>
-                    </Show>
-                  </div>
-                </Show>
-
                 {/* The IDE's messages to the model (check failures) show as the
                   verification record instead. */}
                 {/* The model's thinking, apart from the reply. */}
@@ -1478,7 +1445,12 @@ export default function MessageList(props: {
                 </Show>
 
                 <Show
-                  when={!m.error && (!isBlank(ownText(m)) || hasAttachments(m)) && !m.meta?.harness}
+                  when={
+                    (!m.error ||
+                      (m.role === 'user' && !isPreparationPrompt(m) && m.content !== m.error)) &&
+                    (!isBlank(ownText(m)) || hasAttachments(m)) &&
+                    !m.meta?.harness
+                  }
                 >
                   <div class="chat-message-wrap" classList={{ user: m.role === 'user' }}>
                     <div
@@ -1553,6 +1525,26 @@ export default function MessageList(props: {
                       <CopyMessageButton segments={segmentsOfMessage(m)} />
                     </Show>
                   </div>
+                </Show>
+
+                <Show when={m.error}>
+                  {(error) => (
+                    <ChatFailureNotice
+                      title={
+                        m.meta?.verifiedPreparation ? 'Plan preparation failed' : 'Request failed'
+                      }
+                      message={m.meta?.failure ? describeFailure(m.meta.failure, now()) : error()}
+                      details={m.meta?.failure?.details}
+                      onRetry={
+                        m.meta?.failure &&
+                        canRetry(m.meta.failure) &&
+                        isLatest(m) &&
+                        !requestUndelivered()
+                          ? props.onRetry
+                          : undefined
+                      }
+                    />
+                  )}
                 </Show>
 
                 {/* The reply stopped arriving but isn't over (see REPLY_IDLE_MS). */}
@@ -1822,6 +1814,9 @@ export default function MessageList(props: {
               </div>
             )}
           </For>
+          <Show when={atNewest() && !props.sending && props.preparationError}>
+            {(error) => <ChatFailureNotice title="Plan preparation failed" message={error()} />}
+          </Show>
           {/* Preparation can wait on MCP servers before a reply row exists. */}
           <Show when={props.starting && atNewest() && !messages().some((m) => m.pending)}>
             <div class="tool-group active chat-waiting" role="status">

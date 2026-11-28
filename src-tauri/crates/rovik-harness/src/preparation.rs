@@ -9,8 +9,10 @@ use crate::{
     identity::Digest,
     process::{process, ProcessOutput},
     require,
-    runner::{Cancellation, ContainerBackend, BACKEND_VERSION, PODMAN_BACKEND_VERSION},
-    wire, Error, Result,
+    runner::{
+        Cancellation, ContainerBackend, BACKEND_VERSION, PODMAN_BACKEND_VERSION, PROXY_VARIABLES,
+    },
+    wire, Error, FailureCategory, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -204,14 +206,7 @@ fn certificate() -> Result<Option<Vec<u8>>> {
 }
 
 fn proxy_options(command: &mut Command, option: &str) {
-    for name in [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-    ] {
+    for name in PROXY_VARIABLES {
         if std::env::var_os(name).is_some_and(|value| !value.is_empty()) {
             command.arg(option).arg(name);
         }
@@ -299,21 +294,48 @@ fn successful(output: ProcessOutput, action: &str) -> Result<Vec<u8>> {
         !output.exceeded,
         format!("{action} exceeded its output limit."),
     )?;
-    require(
-        output.code == Some(0),
-        format!(
-            "{action} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .rev()
-                .take(4000)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>()
-        ),
-    )?;
+    if output.code != Some(0) {
+        return Err(container_failure(action, &output));
+    }
     Ok(output.stdout)
+}
+
+fn container_failure(action: &str, output: &ProcessOutput) -> Error {
+    let mut headline = format!("{action} failed.");
+    let mut log = if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    // Docker and Podman can use different streams for build progress. The
+    // Dockerfile printed at the end can also push Cargo's cause out of the tail.
+    for stream in [&output.stderr, &output.stdout] {
+        let text = String::from_utf8_lossy(stream);
+        if let Some(host) = text.lines().rev().find_map(unresolved_host) {
+            headline = format!("The verification container could not resolve {host}. Check DNS or proxy settings on the verification host, then retry.");
+            log = stream;
+            break;
+        }
+    }
+    let details = String::from_utf8_lossy(&log[log.len().saturating_sub(4000)..]);
+    if !details.trim().is_empty() {
+        headline.push('\n');
+        headline.push_str(details.trim());
+    }
+    Error::classified(FailureCategory::Infrastructure, headline)
+}
+
+fn unresolved_host(line: &str) -> Option<&str> {
+    if line.contains("warning: spurious network error") {
+        return None;
+    }
+    let (_, rest) = line
+        .split_once("Could not resolve host: ")
+        .or_else(|| line.split_once("Could not resolve proxy: "))?;
+    let host = rest
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')))
+        .next()?;
+    (!host.is_empty() && host.len() <= 253).then_some(host)
 }
 
 fn facts(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
@@ -685,6 +707,12 @@ mod tests {
                     assert!(timeout <= BUILD_LIMIT && limit <= OUTPUT_LIMIT);
                     match operation.as_str() {
                         "build" => {
+                            for name in ["ALL_PROXY", "all_proxy"] {
+                                assert_eq!(
+                                    args.windows(2).any(|pair| pair == ["--build-arg", name]),
+                                    std::env::var_os(name).is_some_and(|value| !value.is_empty())
+                                );
+                            }
                             let context = Path::new(args.last().unwrap());
                             assert_eq!(
                                 fs::read(context.join("helper/src/bin/rovik-harness-tool.rs"))?,
@@ -810,6 +838,42 @@ mod tests {
                 .join(digest.hex())
                 .join("environment.json")
                 .exists());
+        }
+
+        #[test]
+        fn a_registry_dns_failure_survives_a_long_build_log_on_either_engine_stream() {
+            let cause = "[6] Could not resolve hostname (Could not resolve host: index.crates.io)";
+            let log = format!(
+                "#14 81.62 {cause}\n{}\nexit code: 101",
+                "RUN cargo metadata\n".repeat(400)
+            );
+            for stdout in [false, true] {
+                let mut failed = output(b"");
+                failed.code = Some(1);
+                if stdout {
+                    failed.stdout = log.as_bytes().to_vec();
+                    failed.stderr = b"container build failed".to_vec();
+                } else {
+                    failed.stderr = log.as_bytes().to_vec();
+                }
+                let err = successful(failed, "Preparing the verification environment").unwrap_err();
+                assert_eq!(err.category, FailureCategory::Infrastructure);
+                let (summary, details) = err.message.split_once('\n').unwrap();
+                assert!(summary.contains("could not resolve index.crates.io"));
+                assert!(details.ends_with("exit code: 101") && details.len() <= 4000);
+            }
+        }
+
+        #[test]
+        fn a_compile_error_after_a_transient_warning_keeps_its_build_diagnostics() {
+            let mut failed = output(b"warning: spurious network error (3 tries remaining): Could not resolve host: index.crates.io\n");
+            failed.stderr = b"compiler exited with code 1".to_vec();
+            failed.code = Some(1);
+            let err = successful(failed, "Preparing the verification environment").unwrap_err();
+            assert_eq!(
+                err.message,
+                "Preparing the verification environment failed.\ncompiler exited with code 1"
+            );
         }
 
         #[test]

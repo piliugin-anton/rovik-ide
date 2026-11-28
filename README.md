@@ -198,9 +198,14 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Protected tests and a real failing control are staged outside your checkout;
   native preparation trials must succeed before the review becomes ready. The
   trusted backend prepares its verifier image and supported locked dependencies
-  on first use. Unrelated example or fixture build roots can be explicitly
-  excluded in the proposal; the review lists the reason and freezes those roots
-  against implementation edits. Exclusions retain the full source snapshot and
+  on first use. A cold build needs registry access from inside Docker or Podman,
+  including access to `index.crates.io` for the verifier itself. If Cargo cannot
+  resolve the registry, the chat shows the hostname in an error notice. **Details**
+  opens the build output. After restoring DNS or proxy access on the verification
+  host, choose **Retry** to resume the same preparation. Unrelated example or
+  fixture build roots can be explicitly excluded in the proposal. The review
+  lists the reason and freezes those roots against implementation edits.
+  Exclusions retain the full source snapshot and
   dependency graph. Automatic preparation currently needs Linux x86_64 with working
   Docker or rootless Podman, locally or on a connected host, and an
   OpenAI-compatible Chat Completions model. Rootless Podman also requires the

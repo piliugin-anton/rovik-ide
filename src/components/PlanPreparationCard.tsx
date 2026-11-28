@@ -11,6 +11,8 @@ import {
 import VerifiedPlanStatusRow, { type PlanStatus } from './VerifiedPlanStatusRow';
 import type { ModelProfile } from '../types';
 import { openAppSettings } from '../lib/appSettings';
+import { summarizeChatError } from '../lib/chatErrors';
+import type { preparationActivity } from '../lib/verifiedPlanProgress';
 import { savedHarnessRates } from '../lib/harnessRates';
 import { harnessRequest, type HarnessRun, type HarnessTarget } from '../lib/polyglotHarness';
 import {
@@ -38,7 +40,7 @@ export default function PlanPreparationCard(props: {
   /** A known request identifies its preparation, or null for an ordinary turn. */
   agentPreparation?: string | null;
   onActiveChange?: (active: boolean) => void;
-  preparationActivity?: (id: string) => { activity?: string; failure?: string } | undefined;
+  preparationActivity?: (id: string) => ReturnType<typeof preparationActivity>;
   onPrepare: (preparationId: string) => Promise<boolean>;
   onStop: () => Promise<void>;
   onPreparation: (preparation: PlanPreparation) => void;
@@ -331,6 +333,12 @@ export default function PlanPreparationCard(props: {
     const issue = problem() || providerProblem() || error();
     const current = preparation();
     const progress = current && props.preparationActivity?.(current.preparationId);
+    const failure = issue || progress?.failure || current?.error || current?.reason;
+    const summary = failure && summarizeChatError(failure);
+    const statusReason =
+      progress?.shownInChat && progress.failure === failure && summary !== failure
+        ? 'See error in chat.'
+        : summary;
     const actions = [];
     const otherTurn =
       props.agentRunning &&
@@ -354,7 +362,12 @@ export default function PlanPreparationCard(props: {
             if (!current && props.preparationId) void openPreparation(props.retry);
             else if (current?.runId || readError()) void openPreparation();
             else if (status() === 'ready' && !providerProblem()) void implement();
-            else if (status() === 'preparing' && !providerProblem()) void continuePreparation();
+            else if (
+              current &&
+              ['preparing', 'blocked'].includes(current.status) &&
+              !providerProblem()
+            )
+              void continuePreparation();
             else void begin();
           },
         });
@@ -364,8 +377,7 @@ export default function PlanPreparationCard(props: {
         attention: true,
 
         onDismiss: props.onClose,
-        message:
-          issue || current?.error || current?.reason || 'Prepare the plan again to continue.',
+        message: statusReason || 'Prepare the plan again to continue.',
         actions,
       };
     }
@@ -398,9 +410,7 @@ export default function PlanPreparationCard(props: {
         attention: true,
         onDismiss: props.onClose,
         message:
-          progress?.failure ||
-          current?.error ||
-          current?.reason ||
+          statusReason ||
           (current
             ? 'The agent stopped before the checks were ready.'
             : 'Preparation stopped before the project snapshot was available.'),
@@ -423,15 +433,15 @@ export default function PlanPreparationCard(props: {
           ? 'Starting the verified run'
           : current && busy() && !agentWorking
             ? 'Checking the preparation result'
-            : progress?.failure ||
-              progress?.activity ||
-              current?.error ||
-              (!current
-                ? props.preparationId
-                  ? 'Opening the saved preparation'
-                  : 'Taking a snapshot of the project'
-                : 'Waiting for the preparation agent'),
-      attention: !!progress?.failure,
+            : launching() && current?.status === 'blocked'
+              ? 'Retrying preparation'
+              : (progress?.failure ? statusReason : progress?.activity || statusReason) ||
+                (!current
+                  ? props.preparationId
+                    ? 'Opening the saved preparation'
+                    : 'Taking a snapshot of the project'
+                  : 'Waiting for the preparation agent'),
+      attention: !!progress?.failure && !launching(),
       busy: true,
       actions:
         current && !busy() && status() === 'preparing'

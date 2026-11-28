@@ -155,6 +155,7 @@ import UploadProgress from './UploadProgress';
 import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
 import { isRequestMessage } from '../lib/requests';
+import { summarizeChatError } from '../lib/chatErrors';
 import {
   dismissChecklist,
   liveChecklist,
@@ -826,6 +827,21 @@ function ChatContents(props: ChatProps & { onPlansChange: (hasPlan: boolean) => 
     return id ? store.state.open[id] : undefined;
   };
   const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
+  // A verifier build can fail before agent_start stores the request. The
+  // preparation still owns the diagnostic after the chat is reopened.
+  const restoredPreparationError = createMemo(() => {
+    const plan = strictPlan();
+    if (!plan) return;
+    const session = preparations().get(plan.dialogId);
+    if (session?.status !== 'blocked' || session.plan.path !== plan.path || !session.error) return;
+    const error = session.error;
+    const recorded = messages().some(
+      (message) =>
+        message.meta?.verifiedPreparation === session.preparationId &&
+        (message.error === error || message.error === `Error: ${error}`)
+    );
+    return recorded ? undefined : error;
+  });
   const quietTurn = createMemo(() => {
     const id = quietPreparation();
     if (!id || strictPlan()?.dialogId !== activeDialogId()) return false;
@@ -3389,15 +3405,18 @@ function ChatContents(props: ChatProps & { onPlansChange: (hasPlan: boolean) => 
         });
       return await dispatch(await prepare());
     } catch (err) {
-      if (start.kind === 'send' && start.message.meta?.verifiedPreparation)
-        store.applyPatch(dialogId, start.message.id, { error: String(err), failed: true });
+      const message = String(err);
+      const preparation = start.kind === 'send' && start.message.meta?.verifiedPreparation;
+      if (preparation)
+        store.applyPatch(dialogId, start.message.id, { error: message, failed: true });
       console.error('Agent run not started:', err);
-      notify({
-        kind: 'error',
-        title: "The agent couldn't start",
-        message: String(err),
-        timeout: 12_000,
-      });
+      if (!preparation || activeDialogId() !== dialogId || props.visible === false)
+        notify({
+          kind: 'error',
+          title: preparation ? 'Plan preparation failed' : "The agent couldn't start",
+          message: preparation ? summarizeChatError(message) : message,
+          timeout: 12_000,
+        });
       return false;
     }
   }
@@ -5145,6 +5164,7 @@ function ChatContents(props: ChatProps & { onPlansChange: (hasPlan: boolean) => 
       <MessageList
         dialogId={activeDialogId()}
         chat={activeChat()}
+        preparationError={restoredPreparationError()}
         quietPreparation={
           strictPlan()?.dialogId === activeDialogId() &&
           !pendingApprovalsOf(activeDialogId() ?? '').length

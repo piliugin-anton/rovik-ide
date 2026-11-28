@@ -437,6 +437,27 @@ test('refreshing after Retry does not launch the preparation agent a second time
   assert.deepEqual(page.prepared, ['preparation-1']);
 });
 
+test('Retry after a verifier build failure reuses the blocked preparation and its snapshot', async () => {
+  respond = () => ({
+    ...planPreparation('blocked'),
+    error:
+      'Preparing the verification environment failed: RUN cargo metadata\n[6] Could not resolve host: index.crates.io',
+  });
+  const page = mount({ automatic: true, resumed: 'preparation-1' });
+  await flush();
+  const row = page.root.querySelector('[aria-label="Verified plan status"]');
+  assert.ok(row);
+  assert.match(row.textContent!, /could not resolve index\.crates\.io/i);
+  assert.doesNotMatch(row.textContent!, /RUN cargo metadata/);
+  button(page.root, 'Retry').click();
+  await flush();
+  assert.deepEqual(page.prepared, ['preparation-1']);
+  assert.deepEqual(
+    calls.map((call) => call.request.action),
+    ['preparationStatus']
+  );
+});
+
 test('a successful status read preserves the failed preparation launch diagnostic', async () => {
   const original = window.setTimeout;
   let poll: (() => Promise<void>) | undefined;

@@ -20,6 +20,8 @@ import {
 } from '../test/polyglotPlanFixtures';
 
 const cleanups: (() => void)[] = [];
+const buildError =
+  'Preparing the verification environment failed: RUN cargo metadata\n[6] Could not resolve host: index.crates.io';
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   chatStore.resetExecution();
@@ -36,6 +38,7 @@ async function page(
     interrupted?: boolean;
     closedPreparation?: boolean;
     editor?: boolean;
+    preparationError?: string;
   } = {}
 ) {
   localStorage.clear();
@@ -43,7 +46,7 @@ async function page(
   const invoke = (window as any).__TAURI_INTERNALS__.invoke;
   const calls: { command: string; args: any }[] = [];
   const dialog = {
-    id: `${options.interrupted ? 'interrupted' : 'retry'}-${status ?? 'ordinary'}${options.closedPreparation ? '-closed' : ''}`,
+    id: crypto.randomUUID(),
     title: 'Plan',
     createdAt: 1,
     updatedAt: 2,
@@ -134,6 +137,7 @@ async function page(
       if (args.request.action === 'preparationStatus')
         return {
           ...planPreparation(status),
+          ...(options.preparationError && { error: options.preparationError }),
           ...(options.promoted ? { runId: 'implementation-1' } : {}),
         };
       if (args.request.action === 'beginPlanPreparation')
@@ -560,4 +564,39 @@ test('when the host declines a preparation turn the chat shows the reason and a 
   await flush();
   assert.equal(pageView.starts().length, 1);
   assert.equal(pageView.starts()[0].start.message.meta.verifiedPreparation, 'preparation-1');
+});
+
+test('a container build error appears once in the owning chat with its output collapsed', async () => {
+  const view = await page('blocked', { skipRetry: true });
+  const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+  (window as any).__TAURI_INTERNALS__.invoke = (cmd: string, args: any) =>
+    cmd === 'agent_start' ? Promise.reject(buildError) : invoke(cmd, args);
+  [...view.root.querySelectorAll('button')]
+    .find((button) => button.textContent === 'Retry')!
+    .click();
+  await flush();
+  const notices = [...view.root.querySelectorAll('[aria-label="Chat error"]')];
+  assert.equal(
+    notices.filter((notice) => notice.textContent?.includes('index.crates.io')).length,
+    1
+  );
+  const row = view.root.querySelector('[aria-label="Verified plan status"]');
+  assert.match(row?.textContent ?? '', /See error in chat/);
+  assert.doesNotMatch(view.root.textContent!, /RUN cargo metadata/);
+  assert.equal(view.root.querySelector('.notification'), null);
+});
+
+test('reopening a blocked preparation restores its error details when startup stored no error in chat', async () => {
+  const view = await page('blocked', {
+    interrupted: true,
+    skipRetry: true,
+    preparationError: buildError,
+  });
+  const notices = view.root.querySelectorAll('[aria-label="Chat error"]');
+  assert.equal(notices.length, 1, view.root.textContent ?? '');
+  assert.match(notices[0].textContent!, /could not resolve index\.crates\.io/);
+  assert.doesNotMatch(view.root.textContent!, /RUN cargo metadata/);
+  notices[0].querySelector<HTMLButtonElement>('button[aria-expanded]')!.click();
+  assert.equal(notices[0].querySelector('pre')?.textContent, buildError);
+  assert.equal(view.starts().length, 0);
 });
