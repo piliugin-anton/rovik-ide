@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { createSignal } from 'solid-js';
 import MessageList from './MessageList';
+import { preparationPrompt } from '../lib/planPreparation';
 import type { ChatMessage } from '../types';
 
 (window as any).__TAURI_INTERNALS__ = { invoke: async () => null, transformCallback: () => 0 };
@@ -52,6 +53,67 @@ function list(messages: ChatMessage[], connectorTitle?: string, starting = false
 const user: ChatMessage = { id: 'u1', role: 'user', content: 'Add a test', finalized: true };
 const working = (root: HTMLElement) =>
   [...root.querySelectorAll('[role="status"]')].map((e) => e.textContent);
+
+test('a verifier build failure has its own notice and keeps the build log behind Details', () => {
+  const error = [
+    'Preparing the verification environment failed: RUN cargo metadata',
+    '#14 81.62 error: failed to get `quick-xml` as a dependency',
+    '#14 81.62 [6] Could not resolve hostname (Could not resolve host: index.crates.io)',
+    '#14 ERROR: process did not complete successfully: exit code: 101',
+  ].join('\n');
+  const request: ChatMessage = {
+    id: 'prep',
+    role: 'user',
+    content: preparationPrompt('plan.md'),
+    meta: { verifiedPreparation: 'p1', planPath: 'plan.md' },
+    error,
+    failed: true,
+  };
+  const { root, dispose } = list([user, request]);
+  try {
+    const notice = root.querySelector('[aria-label="Chat error"]');
+    assert.ok(notice);
+    assert.equal(notice.closest('.chat-message'), null);
+    assert.match(notice.textContent!, /could not resolve index\.crates\.io/i);
+    assert.doesNotMatch(root.textContent!, /cargo metadata|quick-xml|Prepare verification for/);
+    assert.deepEqual(
+      [...root.querySelectorAll('.chat-message.user')].map((el) => el.textContent?.trimEnd()),
+      [user.content]
+    );
+    const details = notice.querySelector<HTMLButtonElement>('button[aria-expanded]');
+    assert.ok(details);
+    details.click();
+    assert.equal(details.getAttribute('aria-expanded'), 'true');
+    assert.equal(notice.querySelector('pre')?.textContent, error);
+    details.click();
+    assert.equal(notice.querySelector('pre'), null);
+  } finally {
+    dispose();
+  }
+});
+
+test('only the current tool step spins, including when interrupted calls are folded together', () => {
+  const call = (id: string): ChatMessage => ({
+    id,
+    role: 'assistant',
+    content: '',
+    finalized: true,
+    toolCalls: [{ id, name: 'prepare_verified_plan', arguments: '{}' }],
+  });
+  const model = list([user, call('old'), call('current')]);
+  try {
+    const group = model.root.querySelector('.tool-group');
+    assert.ok(group);
+    assert.match(group.textContent!, /1 not run/);
+    model.setStarting(true);
+    assert.equal(model.root.querySelectorAll('.message-tools .tool-call-spinner').length, 0);
+    model.setStarting(false);
+    model.setHasNewer(true);
+    assert.equal(model.root.querySelectorAll('.message-tools .tool-call-spinner').length, 0);
+  } finally {
+    model.dispose();
+  }
+});
 
 test('an API chat shows progress during preparation and hands over to the reply', () => {
   const model = list([user], undefined, true);
@@ -208,4 +270,17 @@ test('a failed reply that ran nothing shows the error alone', () => {
   assert.equal(root.querySelector('.tool-group'), null);
   assert.match(root.textContent ?? '', /isn’t signed in/);
   dispose();
+});
+
+test('a failed user-authored request keeps its text separate from the system error', () => {
+  const { root, dispose } = list([{ ...user, failed: true, error: 'The connection closed.' }]);
+  try {
+    assert.equal(root.querySelector('.chat-message.user')?.textContent?.trimEnd(), user.content);
+    const notice = root.querySelector('[aria-label="Chat error"]');
+    assert.match(notice?.textContent ?? '', /The connection closed/);
+    assert.equal(notice!.closest('.chat-message'), null);
+    assert.equal(notice!.querySelector('button'), null);
+  } finally {
+    dispose();
+  }
 });

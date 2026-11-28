@@ -108,6 +108,15 @@ impl Daemon {
 
     async fn serve(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         match request {
+            Request::Harness {
+                dialog_id,
+                source,
+                operation,
+                ..
+            } => {
+                // answer authenticated this chat before any paths or private state are resolved.
+                crate::harness::serve(self, dialog_id, source, operation).await
+            }
             Request::MemorySync {
                 project,
                 replica,
@@ -183,7 +192,10 @@ impl Daemon {
                 Ok(Response::Bool(self.pages.answered(&id, outcome)))
             }
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
-            Request::AgentStart(start) => self.start(computer, *start).await,
+            Request::AgentStart(start) => self.start(computer, *start, false, None).await,
+            Request::VerifiedAutopilotStart { start, source } => {
+                self.start(computer, *start, true, source).await
+            }
             // This computer's runs only take the effort it picked (D16).
             Request::AgentSetEffort {
                 profile_id,
@@ -383,8 +395,44 @@ impl Daemon {
 
     /// A start (6.2): the store keeps its keys apart and its settings, and
     /// the chat becomes the computer's.
-    async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
+    async fn start(
+        &self,
+        computer: &str,
+        mut start: StartRequest,
+        verified: bool,
+        source: Option<rovik_protocol::harness::SourceBinding>,
+    ) -> Result<Response, Fail> {
         self.can_run(&start.dialog_id)?;
+        let configuration = start
+            .config
+            .clone()
+            .unwrap_or_else(|| self.core.agents.config_for(&start.dialog_id));
+        let new_strict = rovik_protocol::harness::normalize_verified_autopilot(
+            &mut start,
+            &configuration.autopilot,
+        )
+        .map_err(|error| Fail::new(FailCode::BadRequest, error))?;
+        let existing_strict =
+            rovik_core::agent_run::autopilot::requires_verified(&self.core, &start.dialog_id)
+                .await
+                .map_err(|error| Fail::new(FailCode::BadRequest, error))?;
+        if verified != (new_strict || existing_strict) {
+            return Err(Fail::new(FailCode::BadRequest,
+                "Verified Autopilot requires its dedicated source-bound start; ordinary starts cannot resume a strict task."));
+        }
+        if new_strict {
+            let source =
+                source.ok_or_else(|| {
+                    Fail::new(FailCode::BadRequest,
+                "Synchronize the current desktop source before starting verified Autopilot.")
+                })?;
+            crate::harness::bind_for_start(self, &start.dialog_id, source).await?;
+        } else if source.is_some() {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                "An existing verified task must resume its frozen source binding.",
+            ));
+        }
         let mcp_changed = self.store.started(computer, &start)?;
         self.mcp_changed(&mcp_changed);
         self.tell_marked(&mut start);

@@ -36,6 +36,7 @@ import { segmentsOfMessage, type DraftSegment } from '../lib/composerSegments';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import { pauseText } from '../lib/runPause';
 import MessageContent from './MessageContent';
+import ChatFailureNotice from './ChatFailureNotice';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
@@ -62,6 +63,7 @@ import { isRequestMessage } from '../lib/requests';
 import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 import ThinkingBlock from './ThinkingBlock';
+import { isPreparationPrompt, visiblePreparationMessages } from '../lib/planPreparation';
 import PlanImplementationAction from './PlanImplementationAction';
 
 const BOTTOM_TOLERANCE_PX = 8;
@@ -117,6 +119,9 @@ export interface MessageListController {
 export default function MessageList(props: {
   dialogId: string | null;
   chat: OpenChat | undefined;
+  quietPreparation?: string;
+  /** A saved preparation can own a startup error before its first request was stored. */
+  preparationError?: string;
   sending: boolean;
   /** The backend is preparing the run, before its first reply exists. */
   starting?: boolean;
@@ -152,7 +157,7 @@ export default function MessageList(props: {
   onOpenProjectChecks: () => void;
   /** The finished Plan-mode reply that gets "Implement this plan". */
   planMessageId?: string | null;
-  onImplementPlan?: () => void;
+  onImplementPlan?: (requireVerified?: boolean) => void;
   /** The chat can't change now (it's moving): no Retry, Continue or Implement. */
   readOnly?: boolean;
   /**
@@ -170,11 +175,12 @@ export default function MessageList(props: {
   let topSentinel: HTMLDivElement | undefined;
   let bottomSentinel: HTMLDivElement | undefined;
 
-  const messages = (): ChatMessage[] => props.chat?.messages ?? [];
+  const messages = createMemo(() =>
+    visiblePreparationMessages(props.chat?.messages ?? [], props.quietPreparation, props.sending)
+  );
   const [win, setWin] = createSignal<MessageWindow>({ start: 0, end: 0 });
   const [stick, setStick] = createSignal(true);
   const [flashId, setFlashId] = createSignal<string | null>(null);
-  const [openDetails, setOpenDetails] = createSignal<string | null>(null);
 
   // Ticks for countdowns (retry waits, rate-limit resets).
   const [now, setNow] = createSignal(Date.now());
@@ -189,7 +195,7 @@ export default function MessageList(props: {
    * the input instead (it's marked failed), so there is nothing to retry.
    */
   const isLatest = (m: ChatMessage) => {
-    const list = messages();
+    const list = props.chat?.messages ?? [];
     return !props.sending && !props.readOnly && list[list.length - 1]?.id === m.id;
   };
   // T01: a task's planners run at once, their records side by side at the
@@ -256,6 +262,16 @@ export default function MessageList(props: {
   const resultOf = (tc: ChatToolCall) => toolIndex().results.get(tc);
   /** Live progress (keyed by call id) is the newest call's with that id. */
   const newestOfId = (tc: ChatToolCall) => toolIndex().latest.get(tc.id) === tc;
+  const liveToolCalls = createMemo(() => {
+    if (!props.sending || props.starting || props.chat?.hasNewer) return new Set<ChatToolCall>();
+    const latest = [...messages()].reverse().find((message) => message.role !== 'tool');
+    return new Set(
+      latest?.role === 'assistant' && !latest.error && !latest.meta?.interrupted
+        ? (latest.toolCalls ?? [])
+        : []
+    );
+  });
+  const isCallRunning = (call: ChatToolCall) => liveToolCalls().has(call);
 
   const runningPlanReview: ReviewMeta = {
     kind: 'plan',
@@ -383,7 +399,7 @@ export default function MessageList(props: {
       toolCall={tc}
       result={resultOf(tc)}
       notLive={!newestOfId(tc)}
-      running={props.sending}
+      running={isCallRunning(tc)}
       note={props.toolNotes?.[tc.id]}
       superseded={todoCallStates().superseded.has(tc.id)}
       interrupted={tc.id === todoCallStates().latest && todoCallStates().interruptedLatest}
@@ -1142,6 +1158,8 @@ export default function MessageList(props: {
     const el = scrollRef;
     if (!el) return;
     const observer = new ResizeObserver(() => {
+      // Size expanded tool output to this pane, including after the composer resizes.
+      el.style.setProperty('--chat-block-height', `${Math.floor(el.clientHeight * 0.35)}px`);
       // Next frame: scrolling inside the callback renders more items, whose
       // resizing the observers would only hear of in the frame after.
       if (!topLock && following())
@@ -1362,7 +1380,14 @@ export default function MessageList(props: {
         </Show>
 
         <div ref={innerRef} class="chat-messages-inner">
-          <For each={visible()} fallback={<div class="empty-state">Ask the model anything</div>}>
+          <For
+            each={visible()}
+            fallback={
+              <Show when={!props.preparationError}>
+                <div class="empty-state">Ask the model anything</div>
+              </Show>
+            }
+          >
             {(m) => (
               <div
                 ref={trackItem}
@@ -1406,48 +1431,6 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={m.error}>
-                  <div
-                    class="chat-message chat-failure"
-                    classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
-                  >
-                    <span class="chat-error">
-                      {m.meta?.failure ? describeFailure(m.meta.failure, now()) : m.error}
-                    </span>
-                    <div class="chat-failure-actions">
-                      <Show
-                        when={
-                          m.meta?.failure &&
-                          canRetry(m.meta.failure) &&
-                          isLatest(m) &&
-                          !requestUndelivered()
-                        }
-                      >
-                        <button
-                          type="button"
-                          class="chat-action-button"
-                          onClick={() => props.onRetry()}
-                        >
-                          Retry
-                        </button>
-                      </Show>
-                      <Show when={m.meta?.failure?.details}>
-                        <button
-                          type="button"
-                          class="link-button"
-                          aria-expanded={openDetails() === m.id}
-                          onClick={() => setOpenDetails((id) => (id === m.id ? null : m.id))}
-                        >
-                          {openDetails() === m.id ? 'Hide details' : 'Details'}
-                        </button>
-                      </Show>
-                    </div>
-                    <Show when={openDetails() === m.id}>
-                      <pre class="chat-failure-details">{m.meta?.failure?.details}</pre>
-                    </Show>
-                  </div>
-                </Show>
-
                 {/* The IDE's messages to the model (check failures) show as the
                   verification record instead. */}
                 {/* The model's thinking, apart from the reply. */}
@@ -1462,7 +1445,12 @@ export default function MessageList(props: {
                 </Show>
 
                 <Show
-                  when={!m.error && (!isBlank(ownText(m)) || hasAttachments(m)) && !m.meta?.harness}
+                  when={
+                    (!m.error ||
+                      (m.role === 'user' && !isPreparationPrompt(m) && m.content !== m.error)) &&
+                    (!isBlank(ownText(m)) || hasAttachments(m)) &&
+                    !m.meta?.harness
+                  }
                 >
                   <div class="chat-message-wrap" classList={{ user: m.role === 'user' }}>
                     <div
@@ -1537,6 +1525,26 @@ export default function MessageList(props: {
                       <CopyMessageButton segments={segmentsOfMessage(m)} />
                     </Show>
                   </div>
+                </Show>
+
+                <Show when={m.error}>
+                  {(error) => (
+                    <ChatFailureNotice
+                      title={
+                        m.meta?.verifiedPreparation ? 'Plan preparation failed' : 'Request failed'
+                      }
+                      message={m.meta?.failure ? describeFailure(m.meta.failure, now()) : error()}
+                      details={m.meta?.failure?.details}
+                      onRetry={
+                        m.meta?.failure &&
+                        canRetry(m.meta.failure) &&
+                        isLatest(m) &&
+                        !requestUndelivered()
+                          ? props.onRetry
+                          : undefined
+                      }
+                    />
+                  )}
                 </Show>
 
                 {/* The reply stopped arriving but isn't over (see REPLY_IDLE_MS). */}
@@ -1791,6 +1799,7 @@ export default function MessageList(props: {
                               dialogId={props.dialogId}
                               result={resultOf}
                               running={props.sending}
+                              isCallRunning={isCallRunning}
                               superseded={run()!.calls.every((c) =>
                                 todoCallStates().superseded.has(c.id)
                               )}
@@ -1805,6 +1814,9 @@ export default function MessageList(props: {
               </div>
             )}
           </For>
+          <Show when={atNewest() && !props.sending && props.preparationError}>
+            {(error) => <ChatFailureNotice title="Plan preparation failed" message={error()} />}
+          </Show>
           {/* Preparation can wait on MCP servers before a reply row exists. */}
           <Show when={props.starting && atNewest() && !messages().some((m) => m.pending)}>
             <div class="tool-group active chat-waiting" role="status">

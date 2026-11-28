@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canRetry, describeFailure } from './chatErrors';
+import { canRetry, describeFailure, summarizeChatError } from './chatErrors';
+
+test('error notices keep the host headline and bound a single long line of output', () => {
+  const headline = 'The verification container could not resolve index.crates.io.';
+  assert.equal(summarizeChatError(headline + '\r\n#14 RUN cargo metadata'), headline);
+  assert.equal(summarizeChatError('The connection closed.'), 'The connection closed.');
+  assert.equal(summarizeChatError('x'.repeat(1000)), 'x'.repeat(239) + '…');
+});
 
 test('a reply cut by a server restart says so, and can be taken again', () => {
   const failure = {

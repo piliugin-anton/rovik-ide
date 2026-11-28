@@ -4,6 +4,18 @@
 // line while retrying, and the final message when a request gives up.
 import type { ChatError, StoredFailure } from '../types';
 
+/** Keep native output out of chat summaries, including build errors saved by older hosts. */
+export function summarizeChatError(message: string): string {
+  if (/^(?:Error: )?Preparing the verification environment failed:/i.test(message)) {
+    const dns = /could not resolve (?:host|proxy):\s*([a-z0-9][a-z0-9._-]{0,252})/i.exec(message);
+    return dns
+      ? `The verification container could not resolve ${dns[1]}. Check DNS or proxy settings on the verification host, then retry.`
+      : 'The verification environment could not be built.';
+  }
+  const headline = message.trim().split(/\r?\n/, 1)[0];
+  return headline.length > 240 ? headline.slice(0, 239).trimEnd() + '…' : headline;
+}
+
 /** "45 s", "12 min", "4 h 12 min" */
 export function formatDuration(ms: number): string {
   const secs = Math.max(0, Math.ceil(ms / 1000));

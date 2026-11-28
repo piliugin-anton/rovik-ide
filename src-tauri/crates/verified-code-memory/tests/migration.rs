@@ -517,3 +517,89 @@ fn a_record_of_the_previous_shape_is_given_the_hash_of_its_own_words() {
         "the corrected record is found by the word the correction wrote"
     );
 }
+
+#[test]
+fn reopening_waits_for_an_active_writer_before_reading_migration_state() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("memory.db");
+    let record = MemoryStore::open(&path)
+        .unwrap()
+        .remember(retry_memory())
+        .unwrap();
+    let mut writer = Connection::open(&path).unwrap();
+    let transaction = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let (started, starting) = mpsc::channel();
+    let (finished, result) = mpsc::channel();
+    let opener = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        finished.send(MemoryStore::open(&path)).unwrap();
+    });
+    starting.recv().unwrap();
+    // The writer stays held until we have observed the opener waiting. A
+    // deferred migration instead fails immediately when it upgrades its read.
+    let early = result.recv_timeout(Duration::from_millis(250));
+    transaction.commit().unwrap();
+    let store = match early {
+        Err(mpsc::RecvTimeoutError::Timeout) => result
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap(),
+        other => panic!("opening must wait for the writer, got {other:?}"),
+    };
+    opener.join().unwrap();
+    assert_eq!(store.get(record.id).unwrap().content, record.content);
+}
+
+#[test]
+fn concurrent_openers_migrate_a_legacy_store_once_without_losing_records() {
+    use std::sync::{Arc, Barrier};
+    let (_directory, path, records) = store_of_the_previous_shape(vec![retry_memory()]);
+    let barrier = Arc::new(Barrier::new(4));
+    let openers: Vec<_> = (0..4)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                MemoryStore::open(path)
+            })
+        })
+        .collect();
+    for opener in openers {
+        let store = opener.join().unwrap().unwrap();
+        assert_eq!(
+            store.get(records[0].id).unwrap().content,
+            records[0].content
+        );
+        assert_eq!(
+            ids(&store, &RetrievalQuery::new(REPO, "retryqueue journal")),
+            vec![records[0].id.to_string()]
+        );
+    }
+}
+
+#[test]
+fn concurrent_openers_initialize_a_new_database() {
+    use std::sync::{Arc, Barrier};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("memory.db");
+    let barrier = Arc::new(Barrier::new(4));
+    let openers: Vec<_> = (0..4)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                MemoryStore::open(path)
+            })
+        })
+        .collect();
+    for opener in openers {
+        opener.join().unwrap().unwrap();
+    }
+}

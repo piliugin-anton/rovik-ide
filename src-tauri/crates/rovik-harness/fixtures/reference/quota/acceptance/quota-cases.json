@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "illustrative_not_business_approved": true,
+  "numeric_wire_encoding": "unsigned decimal strings parsed with range checks",
+  "cases": [
+    {
+      "id": "reserve-success",
+      "before": {
+        "remaining": "7"
+      },
+      "request": {
+        "amount": "3"
+      },
+      "expected": {
+        "status": "ok",
+        "remaining": "4"
+      }
+    },
+    {
+      "id": "reserve-exact",
+      "before": {
+        "remaining": "7"
+      },
+      "request": {
+        "amount": "7"
+      },
+      "expected": {
+        "status": "ok",
+        "remaining": "0"
+      }
+    },
+    {
+      "id": "reserve-insufficient",
+      "before": {
+        "remaining": "7"
+      },
+      "request": {
+        "amount": "8"
+      },
+      "expected": {
+        "status": "insufficient",
+        "remaining": "7"
+      }
+    },
+    {
+      "id": "reserve-zero",
+      "before": {
+        "remaining": "7"
+      },
+      "request": {
+        "amount": "0"
+      },
+      "expected": {
+        "status": "invalid_amount",
+        "remaining": "7"
+      }
+    },
+    {
+      "id": "reserve-empty",
+      "before": {
+        "remaining": "0"
+      },
+      "request": {
+        "amount": "1"
+      },
+      "expected": {
+        "status": "insufficient",
+        "remaining": "0"
+      }
+    },
+    {
+      "id": "reserve-maximum",
+      "before": {
+        "remaining": "18446744073709551615"
+      },
+      "request": {
+        "amount": "18446744073709551615"
+      },
+      "expected": {
+        "status": "ok",
+        "remaining": "0"
+      }
+    },
+    {
+      "id": "reserve-insufficient-maximum",
+      "before": {
+        "remaining": "1"
+      },
+      "request": {
+        "amount": "18446744073709551615"
+      },
+      "expected": {
+        "status": "insufficient",
+        "remaining": "1"
+      }
+    }
+  ]
+}

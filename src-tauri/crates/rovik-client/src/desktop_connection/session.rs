@@ -24,6 +24,16 @@ enum Backend {
 }
 
 impl Connection {
+    #[cfg(any(unix, windows))]
+    pub(super) async fn from_connected(
+        data: &std::path::Path,
+        (stream, ready): (crate::local_backend::Stream, crate::local_backend::Ready),
+    ) -> std::io::Result<Self> {
+        let directory = crate::local_backend::directory(data);
+        let client =
+            crate::local_backend::rpc::Client::from_connected(&directory, stream, ready).await?;
+        Ok(Self::local(client))
+    }
     pub(super) fn usable(&self) -> bool {
         if *self.closing.borrow() || self.events.failure().is_some() {
             return false;

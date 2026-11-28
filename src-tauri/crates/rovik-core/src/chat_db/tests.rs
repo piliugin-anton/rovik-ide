@@ -61,6 +61,17 @@ fn plan_implementation_lookup_matches_project_revision_and_latest_attempt_across
     assert_eq!(lookup(&conn, plan).unwrap().status, "implementing");
     delete_dialog(&mut conn, "implementer").unwrap();
     assert_eq!(lookup(&conn, plan).unwrap().dialog_id, "planner");
+    let mut verified = message("verified", "user", "Prepare checks.");
+    verified.meta = Some(json!({
+        "verifiedPreparation": "prep", "planKey": ".rovik/plans/contact.md",
+        "planFingerprint": plan_fingerprint(plan)
+    }));
+    add(&mut conn, "planner", vec![verified]);
+    assert_eq!(
+        lookup(&conn, plan).unwrap().preparation_id.as_deref(),
+        Some("prep")
+    );
+    assert!(lookup(&conn, "# Edited").is_none());
     delete_dialog(&mut conn, "planner").unwrap();
     assert!(lookup(&conn, plan).is_none());
 }

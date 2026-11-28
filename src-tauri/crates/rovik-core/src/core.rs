@@ -173,6 +173,7 @@ impl Core {
     /// paused commands resumed and the workload's history written, and the
     /// database marked closed cleanly.
     pub async fn shutdown(&self) {
+        crate::harness::ide::cancel_all();
         crate::connectors::end_all();
         self.browser.shutdown().await;
         self.mcp.shutdown().await;

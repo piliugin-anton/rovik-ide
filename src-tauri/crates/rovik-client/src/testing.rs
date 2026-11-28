@@ -58,6 +58,12 @@ pub struct Fake {
     /// It answers `PageOpened` that the page isn't wanted any more (its
     /// command stopped waiting), once set.
     pub unwanted_pages: Arc<AtomicBool>,
+    /// Whether reviewed harness output prevents desktop-to-host synchronization.
+    pub application_blocked: Arc<AtomicBool>,
+    /// Optional admission barrier for tests of long-running start replies.
+    pub agent_start_gate: Arc<Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
+    /// Signals that a start reached the scripted daemon before its reply is released.
+    pub agent_start_received: Arc<tokio::sync::Notify>,
 }
 
 impl Connector for Fake {
@@ -117,6 +123,15 @@ async fn serve(mut io: DuplexStream, fake: Fake) {
                 let status = fake.status.lock().unwrap().clone();
                 let measured = fake.storage.lock().unwrap().clone();
                 let res = Ok(match (&req, info, status, measured) {
+                    (
+                        Request::Harness {
+                            operation: rovik_protocol::harness::Operation::ApplicationState,
+                            ..
+                        },
+                        ..,
+                    ) => Response::Harness(
+                        serde_json::json!({"blocked":fake.application_blocked.load(Ordering::Relaxed),"runs":[]}),
+                    ),
                     (Request::HostInfo, Some(info), _, _) => Response::HostInfo(info),
                     (Request::AgentStatus, _, Some(status), _) => Response::AgentStatus(status),
                     (Request::Storage, _, _, Some((before, _))) => Response::Storage(before),
@@ -126,7 +141,21 @@ async fn serve(mut io: DuplexStream, fake: Fake) {
                     }
                     _ => answer(&req),
                 });
+                let start = matches!(
+                    &req,
+                    Request::AgentStart(_) | Request::VerifiedAutopilotStart { .. }
+                );
                 fake.requests.lock().unwrap().push(req);
+                if start {
+                    let gate = fake.agent_start_gate.lock().unwrap().clone();
+                    if let Some(gate) = gate {
+                        fake.agent_start_received.notify_one();
+                        let Ok(permit) = gate.acquire().await else {
+                            return;
+                        };
+                        permit.forget();
+                    }
+                }
                 Frame::Reply { id, res }
             }
             _ => continue,
@@ -203,6 +232,9 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 
 fn answer(request: &Request) -> Response {
     match request {
+        Request::Harness {
+            dialog_id, root, ..
+        } => Response::Harness(serde_json::json!({"dialogId":dialog_id,"root":root})),
         Request::ClmReadFile { dialog_id, path } => Response::Text(format!("{dialog_id}:{path}")),
         Request::ClmStatus { .. } => Response::ClmStatus(rovik_protocol::clm::ClmStatus {
             mode: Some("clm".into()),
@@ -221,7 +253,9 @@ fn answer(request: &Request) -> Response {
         Request::ClmReadRevision { dialog_id, number } => {
             Response::Text(format!("{dialog_id}:revision-{number}"))
         }
-        Request::AgentStart(_) => Response::RunId(Some("run-1".into())),
+        Request::AgentStart(_) | Request::VerifiedAutopilotStart { .. } => {
+            Response::RunId(Some("run-1".into()))
+        }
         Request::AgentStatus => Response::AgentStatus(AgentStatus::default()),
         Request::AgentStop { .. }
         | Request::AgentPause { .. }

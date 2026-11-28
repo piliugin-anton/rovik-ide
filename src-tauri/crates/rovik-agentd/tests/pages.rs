@@ -245,6 +245,71 @@ fn heard(app: &TestCore, which: impl Fn(&Value) -> bool) -> Option<Value> {
         .cloned()
 }
 
+/// Read later output through the agent's real background tool, until the
+/// readiness line arrives. Each read finishes before starting another turn.
+async fn background_output(
+    remote: &Remote,
+    project: &std::path::Path,
+    id: &str,
+    readiness: &str,
+) -> String {
+    let mut output = String::new();
+    let ready = tokio::time::timeout(Duration::from_secs(30), async {
+        for attempt in 0.. {
+            while remote
+                .status()
+                .await
+                .unwrap()
+                .runs
+                .iter()
+                .any(|run| run.dialog_id == CHAT)
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            let call_id: &'static str =
+                Box::leak(format!("background-output-{attempt}").into_boxed_str());
+            let (url, seen) = model(vec![
+                Reply::Call {
+                    id: call_id,
+                    name: "background",
+                    args: json!({"action":"output","id":id}),
+                },
+                Reply::Text("Read the server output."),
+            ])
+            .await;
+            let mut request =
+                start_request(&url, project, "Read the running server's output.".into());
+            if let rovik_core::agent_run::StartKind::Send { message } = &mut request.start {
+                message.id = format!("background-output-request-{attempt}");
+            }
+            remote.start(request).await.unwrap();
+            let read = until("the server's later output", || result_of(&seen, call_id)).await;
+            output.push('\n');
+            output.push_str(&read);
+            if output.lines().any(|line| line == readiness) {
+                while remote
+                    .status()
+                    .await
+                    .unwrap()
+                    .runs
+                    .iter()
+                    .any(|run| run.dialog_id == CHAT)
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    assert!(
+        ready.is_ok(),
+        "the server never reported readiness: {output}"
+    );
+    output
+}
+
 /// A server the agent leaves running (bash's `background`) outlives the
 /// call that started it and the run: the page a later command opens is
 /// still served here, through the forwarded port and the tab's, once the
@@ -258,17 +323,17 @@ async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stop
     let project = daemon.dir.0.join("project");
     write(&project.join("hello.txt"), "hello from the server\n");
     let port = free_port();
-    // What it prints first, its start's result tells: a line the shell
-    // prints at once. Python's own comes once http.server has loaded, which
-    // on a busy machine can be after a start stops waiting for it.
+    // Force readiness to arrive after the first background report: c2
+    // releases the server, so this always exercises the delayed-output path.
     let server = format!(
-        "printf 'serving on %s\\n' {port}; python3 -u -m http.server {port} --bind 127.0.0.1"
+        "while [ ! -e start-server ]; do sleep 0.05; done; \
+         printf 'serving on %s\\n' {port}; python3 -u -m http.server {port} --bind 127.0.0.1"
     );
     // The page opens once the server answers, as an agent's would: one
     // opened before is watched as a server still starting, and its port
     // would outlast a Stop that comes before the server was seen.
     let open = format!(
-        "until python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {port}))' \
+        "touch start-server; until python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {port}))' \
          2>/dev/null; do sleep 0.1; done; xdg-open http://localhost:{port}/hello.txt"
     );
     let (url, seen) = model(vec![
@@ -305,9 +370,21 @@ async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stop
         "{started}"
     );
     assert!(
-        started.contains(&format!("\nserving on {port}\n")),
-        "{started}"
+        !started.contains(&format!("\nserving on {port}\n")),
+        "the server still waited for c2 when c1 returned: {started}"
     );
+    let id = started
+        .lines()
+        .nth(1)
+        .unwrap()
+        .strip_prefix("running in the background as ")
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap()
+        .to_string();
+    let later = background_output(&remote, &project, &id, &format!("serving on {port}")).await;
+    assert!(later.contains(&format!("\nserving on {port}\n")), "{later}");
     let forwarded = remote.forwarded_ports(CHAT);
     let [ForwardedPort {
         port: there,
@@ -334,7 +411,7 @@ async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stop
     .await;
     assert_eq!(told["dialogId"], CHAT);
     assert_eq!(told["tasks"][0]["command"], json!(server));
-    let id = told["tasks"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(told["tasks"][0]["id"], id);
     let request = Request::BackgroundTasks {
         dialog_id: CHAT.into(),
     };

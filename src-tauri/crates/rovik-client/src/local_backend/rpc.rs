@@ -10,10 +10,12 @@ use rovik_protocol::Frame;
 use rovik_protocol::{Fail, Request, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{io, path::Path, sync::Arc, time::Duration};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::Mutex,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+mod client;
+mod server;
+pub use client::Client;
+pub use server::serve;
 
 // The desktop accepts images up to 50 MiB, encoded as base64 on this wire.
 // Keep the frame bounded while preserving the desktop attachment limit.
@@ -26,6 +28,9 @@ const MAX_MESSAGE: usize = {
     }
 };
 const IO_WAIT: Duration = Duration::from_secs(60);
+// Cancellation controls keep capacity even while every ordinary call is waiting.
+const ORDINARY_CALLS: usize = 32;
+const CONTROL_CALLS: usize = 4;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -50,6 +55,37 @@ enum ClientFrame {
         sink: String,
     },
     Ping,
+}
+
+impl ClientFrame {
+    fn is_control(&self) -> bool {
+        use crate::desktop_api::{agent::AgentRequest, chat::ChatRequest};
+        use rovik_protocol::harness::Operation;
+        let harness_control = |operation: &Operation| {
+            matches!(
+                operation,
+                Operation::Cancel { .. } | Operation::CancelPreparation { .. }
+            )
+        };
+        match self {
+            Self::Call { req, .. } => match req.as_ref() {
+                Request::AgentStop { .. } | Request::BackgroundStop { .. } => true,
+                Request::Harness { operation, .. } => harness_control(operation),
+                _ => false,
+            },
+            Self::Desktop { req, .. } => match req.as_ref() {
+                DesktopRequest::Agent(request) => {
+                    matches!(request.as_ref(), AgentRequest::Cancel { .. })
+                }
+                DesktopRequest::Chat(request) => {
+                    matches!(request.as_ref(), ChatRequest::CancelMove { .. })
+                }
+                DesktopRequest::Harness(request) => harness_control(&request.request),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -138,338 +174,13 @@ async fn write(stream: &mut (impl AsyncWrite + Unpin), value: &impl Serialize) -
     stream.write_all(&bytes).await
 }
 
-/// One window's serialized connection. Transport failure or cancellation
-/// invalidates it so a late reply cannot be mistaken for a later call.
-pub struct Client {
-    /// The backend instance and session this connection belongs to.
-    pub ready: Ready,
-    stream: Mutex<Option<Stream>>,
-    directory: std::path::PathBuf,
-    closing: tokio::sync::watch::Sender<bool>,
-}
-
-impl Client {
-    pub(crate) fn usable(&self) -> bool {
-        !*self.closing.borrow()
-            && self
-                .stream
-                .try_lock()
-                .map_or(true, |stream| stream.is_some())
-    }
-
-    /// Discovery directory for an independent read-only event connection.
-    pub(crate) fn directory(&self) -> &Path {
-        &self.directory
-    }
-
-    /// Attaches to an existing backend without constructing a local Core.
-    pub async fn connect(directory: &Path) -> io::Result<Self> {
-        let (stream, ready) = connect(directory).await?;
-        Self::from_connected(directory, stream, ready).await
-    }
-
-    pub(crate) async fn from_connected(
-        directory: &Path,
-        stream: Stream,
-        ready: Ready,
-    ) -> io::Result<Self> {
-        let client = Self {
-            ready,
-            stream: Mutex::new(Some(stream)),
-            directory: directory.to_path_buf(),
-            closing: tokio::sync::watch::channel(false).0,
-        };
-        // The owner session must exist before its separate event connection
-        // can attach. A reply also proves the server has entered its dispatcher.
-        client.exchange(ClientFrame::Ping).await?;
-        Ok(client)
-    }
-
-    /// Releases this client's resources without stopping backend-owned work.
-    /// An independent control connection can detach even during a stalled call.
-    pub async fn close(&self) -> io::Result<()> {
-        self.closing.send_replace(true);
-        // A caller may retain an unpolled in-flight future holding this mutex.
-        // Its cancellation disposes of the stream when polled or dropped; the
-        // separate control must not wait for that caller to run again.
-        if let Ok(mut stream) = self.stream.try_lock() {
-            stream.take();
-        }
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let control = Self::connect(&self.directory).await?;
-            control
-                .exchange(ClientFrame::CloseSession {
-                    session: self.ready.session.clone(),
-                })
-                .await?;
-            Ok(())
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Desktop client detachment timed out",
-            )
-        })?
-    }
-
-    /// Attaches an independent event stream, so output never waits behind a call.
-    pub async fn events(&self) -> io::Result<EventStream> {
-        if *self.closing.borrow() {
-            return Err(detached());
-        }
-        let (mut stream, _) = connect(&self.directory).await?;
-        tokio::time::timeout(IO_WAIT, async {
-            write(
-                &mut stream,
-                &ClientFrame::Subscribe {
-                    session: self.ready.session.clone(),
-                },
-            )
-            .await?;
-            match read(&mut stream).await? {
-                ServerFrame::Subscribed { result: Ok(()) } => Ok(EventStream { stream }),
-                ServerFrame::Subscribed { result: Err(error) } => Err(io::Error::other(error)),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected event subscription reply",
-                )),
-            }
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Desktop event subscription timed out",
-            )
-        })?
-    }
-
-    /// Sends exactly one call. An IO error leaves completion uncertain;
-    /// callers must refresh state before deciding whether to retry.
-    pub async fn call(&self, request: Request) -> io::Result<Result<Response, Fail>> {
-        self.call_on(None, request).await
-    }
-
-    /// Sends a host-specific operation (for example connector setup) to
-    /// the named remote host, as the desktop's host commands do.
-    pub async fn call_host(
-        &self,
-        host: &str,
-        request: Request,
-    ) -> io::Result<Result<Response, Fail>> {
-        if host.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "A remote host ID is required",
-            ));
-        }
-        self.call_on(Some(host.to_string()), request).await
-    }
-
-    async fn call_on(
-        &self,
-        host: Option<String>,
-        request: Request,
-    ) -> io::Result<Result<Response, Fail>> {
-        match self
-            .exchange(ClientFrame::Call {
-                id: 1,
-                req: Box::new(request),
-                host,
-            })
-            .await?
-        {
-            ServerFrame::Reply { id: 1, res } => Ok(*res),
-            _ => {
-                self.stream.lock().await.take();
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected backend reply",
-                ))
-            }
-        }
-    }
-
-    /// Runs a desktop-only operation without changing cloud protocol routing.
-    pub async fn desktop(
-        &self,
-        request: DesktopRequest,
-    ) -> io::Result<Result<serde_json::Value, serde_json::Value>> {
-        match self
-            .exchange(ClientFrame::Desktop {
-                id: 1,
-                req: Box::new(request),
-            })
-            .await?
-        {
-            ServerFrame::DesktopReply { id: 1, res } => Ok(res),
-            _ => {
-                self.stream.lock().await.take();
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected desktop reply",
-                ))
-            }
-        }
-    }
-
-    async fn exchange(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
-        let mut closing = self.closing.subscribe();
-        if *closing.borrow() {
-            return Err(detached());
-        }
-        tokio::select! {
-            biased;
-            _ = closing.changed() => Err(detached()),
-            reply = self.exchange_open(frame) => reply,
-        }
-    }
-
-    async fn exchange_open(&self, frame: ClientFrame) -> io::Result<ServerFrame> {
-        let mut slot = self.stream.lock().await;
-        let mut stream = slot.take().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotConnected,
-                "Backend connection lost; refresh state before retrying",
-            )
-        })?;
-        // Restore only after a complete matching response. Cancellation leaves
-        // the connection unusable and never retries a possibly completed write.
-        let uncertain = || {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Backend reply timed out; operation completion is unknown",
-            )
-        };
-        let result = async {
-            tokio::time::timeout(IO_WAIT, write(&mut stream, &frame))
-                .await
-                .map_err(|_| uncertain())??;
-            // Deployments and other desktop operations already own their
-            // deadlines. Do not cut them off at the framing timeout. Dropping
-            // the caller still invalidates this connection without a retry.
-            let reply: ServerFrame = if matches!(frame, ClientFrame::Desktop { .. }) {
-                read(&mut stream).await?
-            } else {
-                tokio::time::timeout(IO_WAIT, read(&mut stream))
-                    .await
-                    .map_err(|_| uncertain())??
-            };
-            let matches = matches!(
-                (&frame, &reply),
-                (ClientFrame::Ping, ServerFrame::Pong)
-                    | (ClientFrame::CloseSession { .. }, ServerFrame::SessionClosed)
-                    | (
-                        ClientFrame::Call { id: 1, .. },
-                        ServerFrame::Reply { id: 1, .. }
-                    )
-                    | (
-                        ClientFrame::Desktop { id: 1, .. },
-                        ServerFrame::DesktopReply { id: 1, .. }
-                    )
-            );
-            if !matches {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unexpected backend reply",
-                ));
-            }
-            Ok(reply)
-        }
-        .await;
-        if result.is_ok() {
-            *slot = Some(stream);
-        }
-        result
-    }
-}
-
-fn detached() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::NotConnected,
-        "Desktop client detached; an accepted operation may still complete",
-    )
-}
-
-/// Serves requests after the listener has authenticated the peer. A
-/// disconnected client does not cancel an already accepted operation.
-pub async fn serve(
-    mut stream: Stream,
-    backend: Arc<DesktopBackend>,
-    session_id: String,
+async fn write_reply(
+    stream: &mut (impl AsyncWrite + Unpin),
+    value: &impl Serialize,
 ) -> io::Result<()> {
-    let lease = backend
-        .sessions
-        .register(session_id)
-        .map_err(io::Error::other)?;
-    loop {
-        let received = tokio::select! {
-            biased;
-            _ = lease.session.closed() => return Ok(()),
-            frame = read_after_idle(&mut stream, IO_WAIT) => frame,
-        };
-        let frame: ClientFrame = match received {
-            Ok(frame) => frame,
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        // Close can also race the completed frame. Only operations already
-        // accepted by the dispatcher may outlive the client's session.
-        if lease.session.is_closed() {
-            return Ok(());
-        }
-        let reply = match frame {
-            ClientFrame::Call { id, req, host } => ServerFrame::Reply {
-                id,
-                res: Box::new(match host {
-                    Some(host) => backend.remote.host_call(&host, *req).await,
-                    None => backend.dispatch(*req).await,
-                }),
-            },
-            ClientFrame::Desktop { id, req } => ServerFrame::DesktopReply {
-                id,
-                res: req.dispatch_in(&backend, Some(&lease.session)).await,
-            },
-            ClientFrame::Subscribe { session } => {
-                let events = backend
-                    .sessions
-                    .get(&session)
-                    .and_then(|session| session.events());
-                let result = events.as_ref().map(|_| ()).map_err(Clone::clone);
-                tokio::time::timeout(
-                    IO_WAIT,
-                    write(&mut stream, &ServerFrame::Subscribed { result }),
-                )
-                .await
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::TimedOut, "Event client stopped reading")
-                })??;
-                return match events {
-                    Ok(events) => serve_events(stream, events).await,
-                    Err(_) => Ok(()),
-                };
-            }
-            ClientFrame::CancelSink { .. } => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Callback cancellation requires the event connection",
-                ))
-            }
-            ClientFrame::CloseSession { session } => {
-                // Authenticated same-user control, like Subscribe. Closing a
-                // missing session is safe to repeat after losing the first ack.
-                backend.sessions.close(&session, "Desktop client detached");
-                ServerFrame::SessionClosed
-            }
-            ClientFrame::Ping => ServerFrame::Pong,
-        };
-        tokio::time::timeout(IO_WAIT, write(&mut stream, &reply))
-            .await
-            .map_err(|_| {
-                io::Error::new(io::ErrorKind::TimedOut, "Backend client stopped reading")
-            })??;
-    }
+    tokio::time::timeout(IO_WAIT, write(stream, value))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Local RPC peer stopped reading"))?
 }
 
 /// The private event connection of one desktop client.
@@ -558,7 +269,7 @@ async fn serve_events(stream: Stream, mut events: SessionEvents) -> io::Result<(
 mod tests {
     use super::*;
 
-    async fn stream_pair() -> (Stream, Stream) {
+    pub(super) async fn stream_pair() -> (Stream, Stream) {
         let root = tempfile::tempdir().unwrap();
         let endpoint = super::super::platform::Endpoint::bind(root.path(), "rpc").unwrap();
         let (server, client) = tokio::join!(
@@ -667,20 +378,19 @@ mod tests {
         );
     }
 
-    async fn pair() -> (Client, Stream) {
+    pub(super) async fn pair() -> (Client, Stream) {
         let (client, server) = stream_pair().await;
         (
-            Client {
-                ready: Ready {
+            Client::start(
+                Path::new(""),
+                client,
+                Ready {
                     protocol: super::super::PROTOCOL,
                     boot: "test".into(),
                     version: "test".into(),
                     session: "test".into(),
                 },
-                stream: Mutex::new(Some(client)),
-                directory: std::path::PathBuf::new(),
-                closing: tokio::sync::watch::channel(false).0,
-            },
+            ),
             server,
         )
     }
@@ -734,39 +444,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelling_an_inflight_call_invalidates_the_connection() {
-        let (client, mut server) = pair().await;
-        let client = Arc::new(client);
-        let calling = client.clone();
-        let task = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
-        let _: Frame = read(&mut server).await.unwrap();
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        assert_eq!(
-            client.call(Request::AgentStatus).await.unwrap_err().kind(),
-            io::ErrorKind::NotConnected
-        );
+    async fn cancelling_an_inflight_call_preserves_other_calls_and_discards_its_late_reply() {
+        cancelled_reply(false).await;
     }
 
     #[tokio::test]
-    async fn cancelling_a_desktop_operation_invalidates_its_connection() {
+    async fn cancelling_a_desktop_operation_preserves_other_calls_and_discards_its_late_reply() {
+        cancelled_reply(true).await;
+    }
+
+    async fn cancelled_reply(desktop: bool) {
         let (client, mut server) = pair().await;
         let client = Arc::new(client);
         let calling = client.clone();
         let task = tokio::spawn(async move {
-            calling
-                .desktop(DesktopRequest::from(
-                    crate::desktop_api::hosts::HostsRequest::Upgrade { id: "host".into() },
-                ))
-                .await
+            if desktop {
+                calling
+                    .desktop(crate::desktop_api::vfs::VfsRequest::Status.into())
+                    .await
+                    .map(|_| ())
+            } else {
+                calling.call(Request::AgentStatus).await.map(|_| ())
+            }
         });
         let _: ClientFrame = read(&mut server).await.unwrap();
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
+        let calling = client.clone();
+        let next = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
+        assert!(matches!(
+            read::<ClientFrame>(&mut server).await.unwrap(),
+            ClientFrame::Call { id: 2, .. }
+        ));
+        let late = if desktop {
+            ServerFrame::DesktopReply {
+                id: 1,
+                res: Ok(serde_json::json!("late")),
+            }
+        } else {
+            ServerFrame::Reply {
+                id: 1,
+                res: Box::new(Ok(Response::Done)),
+            }
+        };
+        write(&mut server, &late).await.unwrap();
+        write(
+            &mut server,
+            &ServerFrame::Reply {
+                id: 2,
+                res: Box::new(Err(Fail::new(
+                    rovik_protocol::FailCode::Busy,
+                    "second reply",
+                ))),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            client.call(Request::AgentStatus).await.unwrap_err().kind(),
-            io::ErrorKind::NotConnected
+            next.await.unwrap().unwrap().unwrap_err().message,
+            "second reply"
         );
+        assert!(client.usable());
     }
 
     #[tokio::test]
@@ -808,3 +546,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "rpc/concurrency_tests.rs"]
+mod concurrency_tests;

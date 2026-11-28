@@ -10,6 +10,51 @@
 // state of its own.
 import type { ChatMessage } from '../types';
 import { isRequestMessage } from './requests';
+import type { AutopilotBudget, VerifiedDeliverySettings } from './autopilotSettings';
+
+/** Non-secret strict policy frozen on the task's first Plan record. */
+export interface StrictAutopilotTask {
+  schemaVersion: 1;
+  projectId: string;
+  root: string;
+  configuration: VerifiedDeliverySettings;
+  profileId: string;
+  model: string;
+  endpoint: string;
+  baselineReference?: string;
+  trackedPaths?: string[];
+  keepsOnHost?: boolean;
+  budget?: AutopilotBudget;
+}
+
+/** Durable controller ownership, copied into Implement and Deliver stage records. */
+export interface StrictAutopilotRun {
+  runId: string;
+  stopped: boolean;
+}
+
+/** Restore ownership from persisted records, independent of current user settings. */
+export function strictAutopilotTask(
+  rows: readonly StageRow[] | null | undefined
+): StrictAutopilotTask | undefined {
+  return rows?.find((row) => row.stage.strictTask)?.stage.strictTask;
+}
+
+export function strictAutopilotRun(
+  rows: readonly StageRow[] | null | undefined
+): StrictAutopilotRun | undefined {
+  return rows ? [...rows].reverse().find((row) => row.stage.strictRun)?.stage.strictRun : undefined;
+}
+
+/** A later user message cannot release a controller-owned task awaiting decisions. */
+export function unresolvedStrictTask(rows: readonly StageRow[] | null | undefined): boolean {
+  if (!rows?.length || !strictAutopilotTask(rows)) return false;
+  if (strictAutopilotRun(rows)?.stopped) return false;
+  const last = rows[rows.length - 1].stage;
+  if (last.status === 'failed' && last.outcome === 'stopped') return false;
+  const delivery = [...rows].reverse().find((row) => row.stage.name === 'deliver');
+  return delivery?.stage.status !== 'done';
+}
 
 export type StageName =
   | 'plan'
@@ -31,6 +76,8 @@ export type AutopilotEffort = 'balanced' | 'thorough';
 
 /** `meta.stage` (agent_run/autopilot/stage.rs `StageRecord`). */
 export interface StageMeta {
+  strictTask?: StrictAutopilotTask;
+  strictRun?: StrictAutopilotRun;
   /** The task: the id of the message that started it. */
   task: string;
   name: StageName;
@@ -273,6 +320,28 @@ export function taskRecords(
   newest = true,
   patched: Readonly<Record<string, StageMeta>> = {}
 ): StageRow[] | null {
+  const observed = stageRows(messages);
+  const candidates: StageRow[][] = [];
+  const merge = (base: StageRow[]) => {
+    const task = base[0]?.stage.task;
+    const rows = new Map(base.map((row) => [row.id, row]));
+    for (const row of observed.filter((row) => row.stage.task === task)) {
+      const previous = rows.get(row.id);
+      rows.set(row.id, { ...row, stage: keptStage(previous?.stage, row.stage) });
+    }
+    return [...rows.values()].map((row) => ({
+      ...row,
+      stage: patched[row.id] ? keptStage(row.stage, patched[row.id]) : row.stage,
+    }));
+  };
+  if (stored?.length) candidates.push(merge(stored));
+  if (newest) {
+    for (const row of [...observed].reverse().filter((row) => row.stage.strictTask)) {
+      candidates.push(merge(observed.filter((entry) => entry.stage.task === row.stage.task)));
+    }
+  }
+  const owned = candidates.find(unresolvedStrictTask);
+  if (owned) return owned;
   const loaded = newest ? currentTask(messages) : null;
   const task = loaded?.[0].stage.task ?? stored?.[0]?.stage.task;
   const fromStore = stored?.length && stored[0].stage.task === task ? stored : [];
@@ -507,6 +576,11 @@ export function taskLine(rows: StageRow[], running: boolean): string {
       return `Autopilot: stopped during ${lower(failed.stage.name)}`;
     }
     if (last.name === 'deliver' && last.status === 'done') {
+      const strict = strictAutopilotTask(rows);
+      if (strict)
+        return strict.keepsOnHost
+          ? 'Autopilot: verified changes applied on execution host'
+          : 'Autopilot: verified changes delivered';
       return deliveredAsPartial(last.outcome)
         ? 'Autopilot: delivered as partial'
         : 'Autopilot: delivered';

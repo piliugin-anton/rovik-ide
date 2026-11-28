@@ -29,6 +29,8 @@ commands.
 
 ## What differs from 0.7.2
 
+- `Cargo.toml`: omit `homepage`, which duplicates `repository` and triggers
+  Cargo's redundant homepage warning.
 - `src/cdp/transport/pipe.rs` (new): the pipes, Chrome's fds 3 and 4,
   and NUL-delimited message framing.
 - `src/cdp/transport/link.rs` (new): the transport's writer, reader and

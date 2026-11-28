@@ -14,12 +14,16 @@ export default function EditDiffBlock(props: {
   language?: string;
   /** File line of the first old line, when known (from the tool result). */
   startLine?: number;
+  changedLinesOnly?: boolean;
   onOpenInEditor?: () => void;
 }) {
   const oldLines = createMemo(() => snippetLines(props.oldText));
   const newLines = createMemo(() => snippetLines(props.newText));
 
   const rows = createMemo(() => diffRows(oldLines(), newLines()));
+
+  const visibleRows = () =>
+    props.changedLinesOnly ? rows().filter((row) => row.kind !== 'same') : rows();
 
   const counts = createMemo(() => ({
     removed: rows().filter((r) => r.kind === 'removed').length,
@@ -97,7 +101,7 @@ export default function EditDiffBlock(props: {
       </div>
       <div class="edit-diff-body" role="table" aria-label="Changed lines">
         <div class="edit-diff-lines">
-          <For each={rows()}>
+          <For each={visibleRows()}>
             {(row) => (
               <div class={`edit-diff-row ${row.kind}`} role="row">
                 <Show when={numbered()}>
@@ -115,9 +119,11 @@ export default function EditDiffBlock(props: {
               </div>
             )}
           </For>
-          <Show when={rows().length === 0}>
+          <Show when={visibleRows().length === 0}>
             <div class="edit-diff-row same">
-              <span class="edit-diff-code edit-diff-empty">(empty)</span>
+              <span class="edit-diff-code edit-diff-empty">
+                {props.changedLinesOnly ? 'No text changes' : '(empty)'}
+              </span>
             </div>
           </Show>
         </div>

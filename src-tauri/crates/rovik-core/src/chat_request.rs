@@ -1000,12 +1000,43 @@ impl Upload {
     }
 }
 
+async fn response_text(
+    response: reqwest::Response,
+    byte_limit: Option<usize>,
+) -> Result<String, ChatError> {
+    if let Some(limit) = byte_limit {
+        let mut body = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|e| {
+                ChatError::new(ErrorKind::Network, "The connection dropped.")
+                    .with_details(e.to_string())
+            })?;
+            if body.len().saturating_add(chunk.len()) > limit {
+                return Err(ChatError::new(
+                    ErrorKind::Provider,
+                    "The provider response exceeded its byte limit.",
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        String::from_utf8(body)
+            .map_err(|_| ChatError::new(ErrorKind::Provider, "The provider response is not UTF-8."))
+    } else {
+        response.text().await.map_err(|e| {
+            ChatError::new(ErrorKind::Network, "The connection dropped.")
+                .with_details(e.to_string())
+        })
+    }
+}
+
 async fn attempt(
     spec: &RequestSpec<'_>,
     client: &Client,
     first_byte: Duration,
     cancel: &mut watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+    byte_limit: Option<usize>,
     reservation: &mut Option<crate::agent_run::request_budget::Reservation>,
 ) -> Result<(), AttemptFailure> {
     let started = Instant::now();
@@ -1103,7 +1134,7 @@ async fn attempt(
         // stall here: bound it and keep it cancellable.
         let body = tokio::select! {
             _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
-            r = tokio::time::timeout(Duration::from_secs(10), response.text()) => {
+            r = tokio::time::timeout(Duration::from_secs(10), response_text(response,byte_limit)) => {
                 r.ok().and_then(|t| t.ok()).unwrap_or_default()
             }
         };
@@ -1134,9 +1165,9 @@ async fn attempt(
     if !spec.streaming {
         let text = tokio::select! {
             _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
-            r = tokio::time::timeout_at(deadline.into(), response.text()) => match r {
+            r = tokio::time::timeout_at(deadline.into(), response_text(response,byte_limit)) => match r {
                 Err(_) => return Err(fail(overall_error(), false)),
-                Ok(Err(e)) => return Err(fail(ChatError::new(ErrorKind::Network, "The connection dropped.").with_details(e.to_string()), false)),
+                Ok(Err(e)) => return Err(fail(e, false)),
                 Ok(Ok(t)) => t,
             },
         };
@@ -1181,6 +1212,7 @@ async fn attempt(
     let mut last_data: Option<Instant> = None;
     // The server closed the connection: this pass over the buffer is the last.
     let mut closed = false;
+    let mut received_bytes = 0usize;
 
     loop {
         let wait_until = match last_data {
@@ -1235,6 +1267,16 @@ async fn attempt(
             }
             Ok(Some(Ok(bytes))) => bytes,
         };
+        received_bytes = received_bytes.saturating_add(chunk.len());
+        if byte_limit.is_some_and(|limit| received_bytes > limit) {
+            return Err(fail(
+                ChatError::new(
+                    ErrorKind::Provider,
+                    "The provider response exceeded its byte limit.",
+                ),
+                parser.visible(),
+            ));
+        }
         buffer.extend_from_slice(&chunk);
         if closed && buffer.iter().any(|b| !b.is_ascii_whitespace()) {
             buffer.extend_from_slice(b"\n\n");
@@ -1315,6 +1357,39 @@ pub fn backoff(attempt_number: u32) -> Duration {
     Duration::from_millis((base as f64 * jitter) as u64)
 }
 
+/// Execute exactly one billable attempt for callers which own retry accounting.
+/// Bound the entire response body before parsing, including unfinished SSE events.
+pub async fn run_once(
+    spec: &RequestSpec<'_>,
+    cancel: &mut watch::Receiver<bool>,
+    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+    byte_limit: usize,
+) -> Result<(), ChatError> {
+    let client = spec.client.get().await;
+    match attempt(
+        spec,
+        &client,
+        spec.limits.first_byte,
+        cancel,
+        emit,
+        Some(byte_limit),
+        &mut None,
+    )
+    .await
+    {
+        Ok(()) => {
+            emit(ChatStreamEvent::Done);
+            Ok(())
+        }
+        Err(failure) => {
+            let mut error = failure.error;
+            error.attempts = 1;
+            error.partial = failure.visible;
+            Err(error)
+        }
+    }
+}
+
 /// Runs the request with retries. Emits stream events as they arrive and a
 /// `Retrying` event before each wait; returns the final error, if any.
 pub async fn run(
@@ -1367,6 +1442,7 @@ pub async fn run(
             first_byte,
             cancel,
             emit,
+            None,
             &mut reservation,
         )
         .await;

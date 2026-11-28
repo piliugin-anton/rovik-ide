@@ -1,4 +1,4 @@
-import { createResource, onCleanup, Show } from 'solid-js';
+import { createEffect, createResource, createSignal, onCleanup, Show } from 'solid-js';
 import { chatApi } from '../lib/chatApi';
 import { chatStore } from '../lib/chatStore';
 import { activeRunId, isRunning, showChat } from '../lib/agentRuns';
@@ -9,7 +9,7 @@ import { currentProject } from '../lib/projects';
 import {
   getPlanImplementation,
   planImplementationRevision,
-  type PlanImplementation,
+  type PlanImplementationLink,
 } from '../lib/planImplementations';
 
 /** A saved plan's implementation state, with navigation to its owning chat. */
@@ -19,21 +19,23 @@ export default function PlanImplementationAction(props: {
   /** Editor text, including unsaved edits; otherwise read the saved plan. */
   content?: string;
   canImplement?: boolean;
-  onImplement?: () => void;
+  onImplement?: (requireVerified?: boolean) => void;
 }) {
+  const [requireVerified, setRequireVerified] = createSignal(true);
   const [implementation, { refetch }] = createResource(
     () => ({
       path: props.path,
       content: props.content,
       dialogId: props.dialogId,
       revision: planImplementationRevision(),
+      root: currentProject()?.path,
       projectId:
         currentProject() === undefined ? chatStore.projectId() : (currentProject()?.id ?? null),
     }),
-    async ({ path, content, dialogId, projectId }) => {
+    async ({ path, content, dialogId, projectId, root }) => {
       const text = content ?? (dialogId ? await readPlan(dialogId, path) : undefined);
       if (text === undefined) return null;
-      return getPlanImplementation(projectId, path, text);
+      return getPlanImplementation(projectId, path, text, root);
     }
   );
   onCleanup(
@@ -41,10 +43,23 @@ export default function PlanImplementationAction(props: {
       if (path === props.path) void refetch();
     })
   );
+  createEffect(() => {
+    const record = implementation.error ? undefined : implementation();
+    if (
+      !record?.verified ||
+      !(record.runId || record.preparationId) ||
+      record.status !== 'implementing'
+    )
+      return;
+    // Reopened editor tabs may be the only mounted observer of this host run.
+    const timer = window.setTimeout(() => void refetch(), 1500);
+    onCleanup(() => window.clearTimeout(timer));
+  });
   const status = () => {
     const record = implementation.error ? undefined : implementation();
     if (
       record?.status === 'implementing' &&
+      !record.verified &&
       (!isRunning(record.dialogId) ||
         !record.runId ||
         activeRunId(record.dialogId) !== record.runId)
@@ -58,6 +73,8 @@ export default function PlanImplementationAction(props: {
         return 'Implemented in';
       case 'implementing':
         return 'Implementing in';
+      case 'preparation-paused':
+        return 'Continue preparation in';
       case 'review-needed':
         return 'Implementation finished; review needed in';
       default:
@@ -65,11 +82,11 @@ export default function PlanImplementationAction(props: {
     }
   };
 
-  async function openChat(record: PlanImplementation) {
+  async function openChat(record: PlanImplementationLink) {
     try {
       const dialog = await chatApi.getDialog(record.dialogId);
       if (!dialog) throw new Error('The implementation chat has been deleted.');
-      if (chatStore.state.chatVisible) {
+      if (chatStore.state.chatVisible !== undefined) {
         // The mounted panel saves/restores composer drafts when selecting a chat.
         showChat({ dialogId: record.dialogId });
         return;
@@ -119,16 +136,36 @@ export default function PlanImplementationAction(props: {
           )}
         </Show>
       </Show>
-      <Show when={props.canImplement && status() !== 'implemented' && status() !== 'implementing'}>
+      <Show
+        when={
+          props.canImplement &&
+          !implementation.error &&
+          status() !== 'implemented' &&
+          status() !== 'implementing' &&
+          status() !== 'preparation-paused'
+        }
+      >
         <button
           type="button"
           class="chat-action-button primary"
           disabled={implementation.loading}
-          onClick={() => props.onImplement?.()}
-          title="Switch to Agent mode and carry out this plan"
+          onClick={() => props.onImplement?.(requireVerified())}
+          title={
+            requireVerified()
+              ? 'Prepare checks and implement automatically. Review the changes before applying them.'
+              : 'Switch to Agent mode and carry out this plan'
+          }
         >
           Implement this plan
         </button>
+        <label class="chat-plan-option">
+          <input
+            type="checkbox"
+            checked={requireVerified()}
+            onChange={(event) => setRequireVerified(event.currentTarget.checked)}
+          />{' '}
+          Require verified result
+        </label>
       </Show>
     </div>
   );

@@ -15,6 +15,31 @@ const button = (root: HTMLElement) =>
 const inner = (root: HTMLElement) => root.querySelector<HTMLElement>('.resizable-inner');
 const handle = (root: HTMLElement) => root.querySelector<HTMLElement>('.resizable-handle');
 
+test('verification evidence can be selected without enabling selection of sidebar controls', () => {
+  const root = container();
+  const dispose = render(
+    () => (
+      <Resizable class="sidebar" showFloatingButton={false}>
+        <div class="polyglot-review-body">
+          <pre>Exact saved plan and acceptance criteria</pre>
+        </div>
+        <button type="button">Sidebar control</button>
+      </Resizable>
+    ),
+    root
+  );
+  try {
+    const evidence = new Event('selectstart', { bubbles: true, cancelable: true });
+    root.querySelector('pre')!.dispatchEvent(evidence);
+    assert.equal(evidence.defaultPrevented, false);
+    const chrome = new Event('selectstart', { bubbles: true, cancelable: true });
+    root.querySelector('button')!.dispatchEvent(chrome);
+    assert.equal(chrome.defaultPrevented, true);
+  } finally {
+    dispose();
+  }
+});
+
 /** The inline width of the panel, as the browser has it. */
 const width = (root: HTMLElement) => inner(root)!.style.width;
 

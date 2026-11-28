@@ -233,6 +233,11 @@ impl DeletedBase {
     /// Whether the project's entry at `abs` is still what was deleted.
     pub fn still(&self, abs: &Path) -> bool {
         match (self, DeletedBase::of(abs)) {
+            // Verified application supplies an exact content identity even for
+            // large assets; never replace that proof with the ordinary mtime fence.
+            (DeletedBase::File { hash }, Some(DeletedBase::Big { .. })) => {
+                crate::file_guard::sha256_file(abs).is_ok_and(|current| current == *hash)
+            }
             (
                 DeletedBase::Dir {
                     complete: false, ..

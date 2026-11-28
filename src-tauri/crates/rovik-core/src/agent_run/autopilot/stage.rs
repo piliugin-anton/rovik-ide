@@ -224,10 +224,25 @@ pub struct StageRecord {
     /// stage with a warning, not a tick.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub failures: u32,
+    /// Immutable strict execution policy, captured on the task's first Plan row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_task: Option<super::strict::StrictTask>,
+    /// Durable controller linkage; retries never replace it with an ordinary run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_run: Option<super::strict::StrictRun>,
+    /// A strict Plan run has begun but has not settled its request accounting.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict_accounting_open: bool,
+    /// An interrupted planning attempt may have unreported external usage.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict_interrupted: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// H07: a stage's waits for the provider's rate limit, kept in its record
@@ -304,6 +319,10 @@ impl StageRecord {
             rate_limit: None,
             spending: None,
             failures: 0,
+            strict_task: None,
+            strict_run: None,
+            strict_accounting_open: false,
+            strict_interrupted: false,
         }
     }
 

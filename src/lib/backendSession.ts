@@ -14,12 +14,20 @@ let context = (): { root: string | null; projectId: string | null } => ({
   root: null,
   projectId: null,
 });
+let prepareProject = async () => {};
 
-/** The mounted editor supplies its current folder without disposing its models or drafts. */
-export function backendProject(read: typeof context): () => void {
+/** Supplies the current folder and resolves it after an update blocked initial project loading. */
+export function backendProject(
+  read: typeof context,
+  prepare: () => Promise<void> = async () => {}
+): () => void {
   context = read;
+  prepareProject = prepare;
   return () => {
-    if (context === read) context = () => ({ root: null, projectId: null });
+    if (context === read) {
+      context = () => ({ root: null, projectId: null });
+      prepareProject = async () => {};
+    }
   };
 }
 /** Invalidates handles such as terminals and LSP processes; never restarts jobs. */
@@ -36,8 +44,7 @@ export function onBackendRestored(callback: () => void | Promise<void>): () => v
     restored.delete(callback);
   };
 }
-/** Reconnects this window explicitly, coalescing concurrent requests. */
-export const reconnectBackend = sessionRecovery({
+const recoverBackend = sessionRecovery({
   context: () => {
     const project = context();
     if (!!project.root !== !!project.projectId)
@@ -61,6 +68,51 @@ export const reconnectBackend = sessionRecovery({
   },
   busy: setBusy,
 });
+
+/** Reconnects this window explicitly, coalescing concurrent requests. */
+export const reconnectBackend = () => recoverBackend();
+
+/** The exact backend identity reviewed before requesting its replacement. */
+export interface BackendRestartTarget {
+  expectedBoot: string;
+  expectedVersion: string;
+  expectedProtocol: number;
+  expectedBuild: string;
+}
+
+const replacements = new Map<string, Promise<void>>();
+
+function recoverUpdatedBackend(open: (project: ReturnType<typeof context>) => Promise<void>) {
+  return recoverBackend(
+    async (project) => {
+      // An incompatible backend may have prevented the startup folder from
+      // resolving. Bootstrap without a project, then resolve it on the new
+      // backend before ordinary attachment and subscription restoration.
+      const registered =
+        !!project.root === !!project.projectId ? project : { root: null, projectId: null };
+      await open(registered);
+      await prepareProject();
+    },
+    () => context()
+  );
+}
+
+/** Finishes an update whose native replacement succeeded before project restoration failed. */
+export function reconnectUpdatedBackend(): Promise<void> {
+  return recoverUpdatedBackend((project) => invoke<void>('desktop_reconnect', project));
+}
+
+/** Replaces the reviewed backend once, then restores this window's declarative state. */
+export function restartBackend(target: BackendRestartTarget): Promise<void> {
+  const key = JSON.stringify(target);
+  const pending = replacements.get(key);
+  if (pending) return pending;
+  const replacing = recoverUpdatedBackend((project) =>
+    invoke<void>('desktop_restart_backend', { ...target, ...project })
+  ).finally(() => replacements.delete(key));
+  replacements.set(key, replacing);
+  return replacing;
+}
 
 /** Offers an explicit reconnect; uncertain commands and terminal jobs are never replayed. */
 export function reportBackendFailure(error: unknown): void {

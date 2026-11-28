@@ -136,31 +136,60 @@ fn a_chats_events_go_to_its_computer_and_a_subagents_with_its_lead() {
 /// four a second at most, and the last has all of it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_streamed_reply_sends_at_most_four_patches_a_second_the_last_whole() {
+    // Observe publication time, not when a scheduled collector happens to
+    // receive it. Holding the state lock while draining and injecting the
+    // next patch prevents a newer publication from replacing that timestamp.
+    fn take_sent(state: &State, sub: &mut Subscription, got: &mut Vec<(Instant, Value)>) {
+        let frames = read(sub, "laptop");
+        assert!(frames.len() <= 1, "{} patches between writes", frames.len());
+        if !frames.is_empty() {
+            let sent = state.paces.get("reply").unwrap().sent;
+            got.extend(frames.into_iter().map(|frame| (sent, frame)));
+        }
+    }
+
     let events = events(Limits::default());
     let mut sub = events.subscribe("laptop", None);
     let reply: String = (0..20_000)
         .map(|i| char::from(b'a' + (i % 26) as u8))
         .collect();
-    let collector = tokio::spawn(async move {
-        let mut got = Vec::new();
-        while let Ok(Ok(p)) =
-            tokio::time::timeout(Duration::from_millis(800), sub.live.recv()).await
-        {
-            got.push((
-                Instant::now(),
-                serde_json::from_str::<Value>(&p.text).unwrap(),
-            ));
-        }
-        got
-    });
+    let mut got = Vec::new();
     // 200 patches over two seconds.
     let streamed = Instant::now();
     for i in 1..=200 {
-        events.agent(&patched("reply", content(&reply[..i * 100])));
+        if i == 1 {
+            // Keep the public event handler in this regression: it must
+            // establish the same pacing state before publishing a patch.
+            events.agent(&patched("reply", content(&reply[..100])));
+            take_sent(&events.lock(), &mut sub, &mut got);
+            assert_eq!(got.len(), 1, "the first patch is published immediately");
+        } else {
+            let mut state = events.lock();
+            take_sent(&state, &mut sub, &mut got);
+            let route = events.route(&state, "chat").unwrap();
+            events.pace(
+                &mut state,
+                route,
+                "chat",
+                "reply",
+                content(&reply[..i * 100]),
+            );
+            take_sent(&state, &mut sub, &mut got);
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let seconds = streamed.elapsed().as_secs_f64();
-    let got = collector.await.unwrap();
+    if got.last().unwrap().1["ev"]["patch"]["content"] != reply.as_str() {
+        // The producer is finished: the only outstanding publication is its
+        // final merged patch. Silence while a producer is still scheduled
+        // cannot establish completion, even if it lasts longer than 800 ms.
+        let last = tokio::time::timeout(Duration::from_secs(30), sub.live.recv())
+            .await
+            .expect("the final streamed patch was not published")
+            .expect("the event subscription ended before the final patch");
+        let sent = events.lock().paces.get("reply").unwrap().sent;
+        got.push((sent, serde_json::from_str(&last.text).unwrap()));
+    }
     assert!(
         got.len() as f64 <= 4.0 * seconds + 2.0,
         "{} patches in {seconds:.1} s",
@@ -168,7 +197,7 @@ async fn a_streamed_reply_sends_at_most_four_patches_a_second_the_last_whole() {
     );
     for pair in got.windows(2) {
         let gap = pair[1].0.duration_since(pair[0].0);
-        assert!(gap >= Duration::from_millis(200), "{gap:?} apart");
+        assert!(gap >= events.limits.patch_every, "{gap:?} apart");
     }
     let last = &got.last().unwrap().1;
     assert_eq!(last["ev"]["patch"]["content"], reply.as_str());

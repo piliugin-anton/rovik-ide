@@ -14,10 +14,12 @@ pub mod control;
 mod handshake;
 #[cfg(any(unix, windows))]
 pub mod host;
-#[cfg(any(windows, test))]
+#[cfg(any(unix, windows))]
 mod image;
 #[cfg(any(unix, windows))]
 mod launch;
+#[cfg(any(unix, windows))]
+mod owner;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod platform;
@@ -29,12 +31,13 @@ pub mod rpc;
 #[cfg(any(unix, windows))]
 pub use handshake::{connect, Listener, Pending};
 #[cfg(any(unix, windows))]
-pub use launch::{ensure_backend, ensure_command};
+pub use launch::{ensure_backend, ensure_command, restart_backend, restart_command};
 #[cfg(any(unix, windows))]
 pub use platform::{Lease, Stream};
 
-/// Version of the local bootstrap protocol, independent of remote RPC.
-pub const PROTOCOL: u32 = 20;
+/// Version of local desktop requests and readiness, independent of remote RPC
+/// and the polyglot harness's v1 artifact schemas.
+pub const PROTOCOL: u32 = 23;
 #[cfg(any(unix, windows))]
 const MAX_HANDSHAKE: usize = 4096;
 

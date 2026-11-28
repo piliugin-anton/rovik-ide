@@ -90,6 +90,236 @@ async fn an_autopilot_message_starts_a_plan_mode_run() {
     assert_eq!(runs.last().unwrap()["autopilot"], true, "{runs:?}");
 }
 
+/// A real first Plan binds strict ownership before model dispatch. A container
+/// selected earlier can disappear; that must pause readiness, including after
+/// restart with the global requirement disabled, without ordinary implementation.
+#[tokio::test]
+async fn a_verified_task_plans_then_pauses_at_unprepared_assets_without_downgrading() {
+    use crate::harness::ide::{Configuration, IdeProject};
+    use rovik_harness::{fixtures, identity::Digest};
+    use rovik_protocol::{
+        autopilot::VerifiedDeliverySettings,
+        harness::{Engine, EngineKind, ModelRates},
+    };
+
+    let source = "implementations/quota/lib.rs";
+    let original =
+        fixtures::QUOTA_RUST.replace("requested > self.remaining", "requested >= self.remaining");
+    let h = harness(&[(source, &original)]).await;
+    let repository = git2::Repository::init(&h.project).unwrap();
+    let mut index = repository.index().unwrap();
+    index.add_path(std::path::Path::new(source)).unwrap();
+    index.write().unwrap();
+    let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
+    let signature = git2::Signature::now("Strict driver test", "test@rovik.invalid").unwrap();
+    let head = repository
+        .commit(Some("HEAD"), &signature, &signature, "baseline", &tree, &[])
+        .unwrap();
+    let index_before = std::fs::read(h.project.join(".git/index")).unwrap();
+    let (root, dialog) = (h.project.clone(), h.dialog_id.clone());
+    let project_id = h
+        .core
+        .db
+        .write(move |db| {
+            let id = crate::chat_db::projects::open_project(db, &root)?
+                .project
+                .id;
+            store::set_dialog_project(db, &dialog, Some(&id))?;
+            Ok(id)
+        })
+        .await
+        .unwrap();
+    let project = IdeProject::open_for_project(
+        &h.core.paths.data_dir.join("harness"),
+        &h.project,
+        &project_id,
+    )
+    .unwrap();
+    let ledger = project.ledger().unwrap();
+    let baseline = project.integration().unwrap().snapshot(&ledger).unwrap();
+    let mut setup = fixtures::quota_rust(
+        &ledger,
+        "strict-driver-fixture",
+        Digest::of(b"pinned-but-unavailable-image"),
+        &baseline.base_revision,
+    )
+    .unwrap();
+    setup.repository_id = project.repository_id.clone();
+    assert_eq!(setup.base.digest().unwrap(), baseline.digest().unwrap());
+    let summary = project.register_setup(setup).unwrap();
+    let configuration = Configuration {
+        setup_id: Digest::parse(summary["id"].as_str().unwrap()).unwrap(),
+        engine: Engine {
+            kind: EngineKind::Docker,
+            executable: h
+                ._dir
+                .0
+                .join("removed-container-client")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        snapshot_digest: Digest::parse(
+            project.inspect(Default::default()).unwrap()["snapshotDigest"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap(),
+    };
+    // This is a persisted reviewed selection whose executable is now missing,
+    // not a successful capability probe or verifier. Every acceptance path
+    // remains real, and readiness must reject it on every supported platform.
+    rusqlite::Connection::open(project.state.join("ide.sqlite3"))
+        .unwrap()
+        .execute(
+            "INSERT INTO configuration(singleton,value) VALUES(1,?1)",
+            [serde_json::to_string(&configuration).unwrap()],
+        )
+        .unwrap();
+    let selected = VerifiedDeliverySettings {
+        setup_id: configuration.setup_id.to_string(),
+        configuration_digest: Digest::of_json(&configuration).unwrap().to_string(),
+        untracked: vec![],
+        rates: ModelRates {
+            input: 1_000_000,
+            cached_input: 1_000_000,
+            output: 1_000_000,
+        },
+    };
+    let plan = "# Repair exact-capacity reservations\n\nAllow a reservation equal to the remaining capacity.\n\n## Criteria\n\n1. Reserving exactly the remaining capacity succeeds and leaves zero.\n2. A reservation larger than the remaining capacity fails without changing it.\n\n**Out of scope**: Public API changes.\n\n**Assumptions**: The selected protected quota cases define acceptance.\n\n## Steps\n\n1. **Fix the boundary**\n   - Files: `implementations/quota/lib.rs`\n   - Reject only requests strictly greater than the remaining capacity.\n2. **Validate**\n   - Files: `implementations/quota/lib.rs` (read)\n   - Compile the module and use the protected verification gate for behavioral acceptance.\n\n## Validation\n- `rustc --edition=2021 --crate-type=lib implementations/quota/lib.rs`\n";
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Usage(
+                100,
+                10,
+                Box::new(Reply::Text("## Findings\n\nNone.")),
+            )],
+        )],
+        vec![
+            Reply::Usage(
+                100,
+                20,
+                Box::new(Reply::Call {
+                    id: "strict-plan",
+                    name: "submit_plan",
+                    args: json!({"plan":plan}),
+                }),
+            ),
+            Reply::Usage(100, 10, Box::new(Reply::Text("Saved the plan."))),
+            Reply::Call {
+                id: "forbidden-ordinary-implementation",
+                name: "write",
+                args: json!({"path":source,"content":"ordinary implementation must never run"}),
+            },
+            Reply::Text("Ordinary implementation must never run."),
+        ],
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.start = autopilot_send("Fix quota reservations at exactly the remaining capacity.");
+    let config = request.config.as_mut().unwrap();
+    config.autopilot.require_verified_delivery = true;
+    config.autopilot.verified_delivery = Some(selected.clone());
+    config.autopilot.budget.max_cost = Some(5.0);
+    config.autopilot.budget.max_tokens = Some(100_000);
+    assert!(h.start(request).await.is_some());
+    quiet(&h).await;
+
+    let records = stages(&h).await;
+    assert_eq!(
+        names(&records),
+        vec![
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Done),
+            (Stage::Prepare, Status::Running)
+        ],
+        "{records:#?}"
+    );
+    let frozen = records[0]
+        .strict_task
+        .clone()
+        .expect("first Plan owns the strict task");
+    assert_eq!(frozen.configuration, selected);
+    assert_eq!(frozen.project_id, project_id);
+    assert_eq!(frozen.model, "m");
+    assert_eq!(frozen.endpoint, format!("{url}/chat/completions"));
+    let blocked = records.last().unwrap().summary.as_deref().unwrap();
+    assert!(
+        blocked.starts_with("Prepared assets need review:"),
+        "{blocked}"
+    );
+    assert!(
+        blocked.contains("container client is missing") || blocked.contains("requires Linux"),
+        "{blocked}"
+    );
+    let spent = records[0].spent.expect("real planning usage was settled");
+    assert_eq!(spent.tokens, 340);
+    assert_eq!(spent.uncosted, 0);
+    assert!((spent.cost - 0.00034).abs() < 1e-12, "{spent:?}");
+    let messages = h.messages().await;
+    let saved = messages
+        .iter()
+        .find(|m| Some(&m.id) == records[0].reference.as_ref())
+        .unwrap();
+    let path = saved.meta.as_ref().unwrap()["planFile"].as_str().unwrap();
+    assert_eq!(h.file(path).as_deref(), Some(plan));
+    let calls = seen.lock().unwrap().len();
+    assert_eq!(
+        calls, 3,
+        "only the planning carrier and its reviewer called the model"
+    );
+
+    // No synthesized stage rows: reopen the actual persisted task with the
+    // setting off and use the ordinary RPC resume/retry entry points.
+    crate::agent_run::agent_configure(&h.core, AgentConfig::default());
+    let reopened = Core::open(
+        crate::core::Paths::new(h._dir.0.join("data"), h._dir.0.join("config")),
+        Arc::new(crate::testing::Recorder(Arc::new(Mutex::new(Vec::new())))),
+    )
+    .unwrap();
+    for kind in [
+        StartKind::Resume,
+        StartKind::Retry,
+        StartKind::ContinueRun,
+        StartKind::ContinueReply,
+    ] {
+        let request = h.request(&url, kind, Permissions::default());
+        assert!(
+            !request
+                .config
+                .as_ref()
+                .unwrap()
+                .autopilot
+                .require_verified_delivery
+        );
+        assert_eq!(agent_start(&reopened, request).await.unwrap(), None);
+        assert!(!reopened.agents.is_running(&h.dialog_id));
+        let resumed = super::autopilot::load(&reopened, &h.dialog_id)
+            .await
+            .unwrap();
+        let resumed: Vec<_> = resumed.into_iter().map(|r| r.record).collect();
+        assert_eq!(
+            resumed, records,
+            "readiness retry cannot replace or downgrade this task"
+        );
+        assert!(task_stages(&reopened, &h.dialog_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(seen.lock().unwrap().len(), calls);
+    }
+    assert_eq!(h.file(source).as_deref(), Some(original.as_str()));
+    assert_eq!(
+        std::fs::read(h.project.join(".git/index")).unwrap(),
+        index_before
+    );
+    assert_eq!(repository.head().unwrap().target(), Some(head));
+    assert!(project.inspect(Default::default()).unwrap()["runs"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
 /// A02: a stage record is a row of the chat, shown as it's added and as it
 /// ends; read back from the database it's the same, also by a core opened
 /// afresh on the same data (an app that reopens), and also when hundreds of

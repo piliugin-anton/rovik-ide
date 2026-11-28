@@ -24,6 +24,8 @@ export default function ToolCallGroup(props: {
   result: (call: ChatToolCall) => ChatMessage | undefined;
   /** True while the agent loop is still running. */
   running: boolean;
+  /** Groups can fold historical calls together with the current tool step. */
+  isCallRunning?: (call: ChatToolCall) => boolean;
   /** Earlier checklist snapshots: history, dimmed. */
   superseded?: boolean;
   /** One call's own block; expanded when it's the only one. */
@@ -32,7 +34,9 @@ export default function ToolCallGroup(props: {
   const [userOpen, setUserOpen] = createSignal(false);
 
   const states = createMemo(() =>
-    props.calls.map((call) => callStatus(props.result(call), props.running))
+    props.calls.map((call) =>
+      callStatus(props.result(call), props.running && (props.isCallRunning?.(call) ?? true))
+    )
   );
   const active = () => states().includes('running');
   const failed = () => states().filter((s) => s === 'error').length;
@@ -178,7 +182,7 @@ export default function ToolCallGroup(props: {
         </Show>
       </div>
       <Show when={open()}>
-        <div class="tool-group-calls">
+        <div class="tool-group-calls" tabIndex={0}>
           <For each={props.calls}>{(call) => props.renderCall(call, props.calls.length === 1)}</For>
         </div>
       </Show>

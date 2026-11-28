@@ -35,6 +35,7 @@ test('project loading covers the window but chat loading stays inside the AI Cha
       case 'vfs_status':
       case 'sandbox_status':
       case 'browser_status':
+      case 'docker_status':
         throw new Error('Not supported in this test');
       case 'shared_state_read':
       case 'shared_state_start':
