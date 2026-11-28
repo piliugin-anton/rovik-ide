@@ -22,7 +22,7 @@ fn item(ledger: &Ledger, id: &str, text: &str, mandatory: bool) -> ContextItem {
 #[test]
 fn many_omitted_files_leave_room_for_ranked_source_and_an_exact_omission_record() {
     let dir = tempfile::tempdir().unwrap();
-    let ledger = Ledger::open(dir.path()).unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
     let required = item(
         &ledger,
         "contract",
@@ -67,7 +67,7 @@ fn many_omitted_files_leave_room_for_ranked_source_and_an_exact_omission_record(
 #[test]
 fn small_omission_lists_keep_their_v1_encoding_and_fit_the_exact_byte_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let ledger = Ledger::open(dir.path()).unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
     let policy = item(&ledger, "contract", "Keep the approved scope.", true);
     let first = item(&ledger, "source:selected.rs", "quoted \"source\"\n", false);
     let other = item(
@@ -98,7 +98,7 @@ fn small_omission_lists_keep_their_v1_encoding_and_fit_the_exact_byte_limit() {
 #[test]
 fn limits_that_cannot_fit_required_inputs_or_the_smallest_omission_record_explain_why() {
     let dir = tempfile::tempdir().unwrap();
-    let ledger = Ledger::open(dir.path()).unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
     let mandatory = item(&ledger, "contract", "Approved requirements", true);
     let bundle = build(&ledger, vec![mandatory.clone()], 1024).unwrap();
     let size = wire::canonical(&bundle).unwrap().len();
@@ -117,7 +117,7 @@ fn limits_that_cannot_fit_required_inputs_or_the_smallest_omission_record_explai
 #[test]
 fn an_optional_file_larger_than_the_wire_limit_can_be_skipped_but_its_provenance_is_checked() {
     let dir = tempfile::tempdir().unwrap();
-    let ledger = Ledger::open(dir.path()).unwrap();
+    let ledger = Ledger::open(&dir.path().join("state")).unwrap();
     // Quotes double in size when serialized, even though the source blob fits.
     let mut large = item(
         &ledger,
