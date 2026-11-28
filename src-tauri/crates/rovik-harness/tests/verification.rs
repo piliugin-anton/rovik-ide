@@ -61,11 +61,7 @@ fn offline_provider_never_reserves_or_spends_a_model_attempt() {
         role: Role::Implementer,
         request_id: "offline-attempt".into(),
         provider_model_id: "unused".into(),
-        context: rovik_harness::context::ContextBundle {
-            schema_version: 1,
-            items: vec![],
-            omitted: vec![],
-        },
+        context: rovik_harness::context::ContextBundle::default(),
         snapshot_digest: setup.base.digest().unwrap(),
         maximum_output_tokens: 1,
         timeout_ms: 1000,

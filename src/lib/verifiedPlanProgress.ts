@@ -110,7 +110,10 @@ export function implementationProgress(run: HarnessRun) {
     .slice()
     .reverse()
     .find((check) => ['fail', 'error', 'timeout', 'unsupported'].includes(check.status));
-  return [run.reason || run.reasons?.[0], failed && checkSummary(failed)]
-    .filter(Boolean)
-    .join(' · ');
+  const reason = run.reason || run.reasons?.[0];
+  const message =
+    reason === 'context omission metadata exceeds budget'
+      ? 'The list of skipped files was too long. Resume with the updated backend.'
+      : reason;
+  return [message, failed && checkSummary(failed)].filter(Boolean).join(' · ');
 }

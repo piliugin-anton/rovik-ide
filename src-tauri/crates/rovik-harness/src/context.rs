@@ -35,6 +35,21 @@ pub struct ContextItem {
     pub text: String,
 }
 
+/// Omitted item IDs are inline when they fit, or recorded in full in the ledger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum ContextOmissions {
+    /// The original v1 representation, also used when nothing was omitted.
+    Inline(Vec<String>),
+    /// A compact reference to the ordered JSON array of all omitted IDs.
+    Manifest {
+        /// Number of IDs in the manifest.
+        count: usize,
+        /// Content address of the manifest in the controller's artifact store.
+        manifest_digest: Digest,
+    },
+}
+
 /// Immutable provider context with explicit omissions and byte accounting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +59,17 @@ pub struct ContextBundle {
     /// Ordered mandatory inputs followed by selected observations.
     pub items: Vec<ContextItem>,
     /// Optional items omitted due to the context budget.
-    pub omitted: Vec<String>,
+    pub omitted: ContextOmissions,
+}
+
+impl Default for ContextBundle {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            items: Vec::new(),
+            omitted: ContextOmissions::Inline(Vec::new()),
+        }
+    }
 }
 
 /// Rank exact source observations by explicit citations, writable ownership and task terms.
@@ -136,10 +161,18 @@ pub(crate) fn check_feedback(
     }))
 }
 
+// Canonical JSON sorts object keys, which preserves these types' encoded lengths.
+// Measure candidates before applying the wire limit so oversized optional text can be omitted.
+fn json_bytes(value: &impl Serialize) -> Result<usize> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|e| Error::new(format!("cannot size context: {e}")))
+}
+
 /// Resolve every item from the trusted artifact store, retaining exact mandatory text.
 pub fn build(
     ledger: &Ledger,
-    mut items: Vec<ContextItem>,
+    items: Vec<ContextItem>,
     maximum_bytes: usize,
 ) -> Result<ContextBundle> {
     crate::unique(items.iter().map(|i| i.item_id.as_str()))?;
@@ -155,34 +188,76 @@ pub fn build(
             "authoritative context cannot be optional",
         )?;
     }
-    items.sort_by_key(|i| !i.mandatory);
+    let (mandatory, optional): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.mandatory);
     let mut bundle = ContextBundle {
-        schema_version: 1,
-        items: Vec::new(),
-        omitted: Vec::new(),
+        items: mandatory,
+        ..ContextBundle::default()
     };
-    for item in items {
-        let mandatory = item.mandatory;
-        let label = item.item_id.clone();
-        bundle.items.push(item);
-        if crate::wire::canonical(&bundle)?.len() > maximum_bytes {
-            bundle.items.pop();
-            if mandatory {
-                return Err(Error::new(
-                    "mandatory context exceeds budget; split the task or approve a compact view"
-                        .into(),
-                ));
+    let budget = maximum_bytes.min(crate::wire::MAX_JSON_BYTES);
+    let mandatory_bytes = json_bytes(&bundle)?;
+    let mut remaining = budget.checked_sub(mandatory_bytes).ok_or_else(|| {
+        Error::new(format!(
+            "Required verification inputs need {mandatory_bytes} bytes. The limit is {budget} bytes. \
+             Split the plan into smaller tasks and prepare it again."
+        ))
+    })?;
+    let Some(first) = optional.first() else {
+        return Ok(bundle);
+    };
+
+    // Reserve the cheaper of the remaining names and a ledger reference. All
+    // digests have the same width and the count can only shrink as items fit.
+    let reference_bytes = json_bytes(&ContextOmissions::Manifest {
+        count: optional.len(),
+        manifest_digest: first.artifact_digest.clone(),
+    })? - b"[]".len();
+    let label_sizes = optional
+        .iter()
+        .map(|item| json_bytes(&item.item_id).map(|n| n + 1))
+        .collect::<Result<Vec<_>>>()?;
+    // Each size includes a comma. An inline list needs one fewer comma than IDs.
+    let mut label_bytes: usize = label_sizes.iter().sum();
+    let mut omitted = Vec::new();
+    for (item, label_size) in optional.into_iter().zip(label_sizes) {
+        let other_labels = label_bytes - label_size;
+        let reserve = other_labels.saturating_sub(1).min(reference_bytes);
+        let separator = usize::from(!bundle.items.is_empty());
+        let available = remaining.saturating_sub(reserve + separator);
+        if item.text.len() <= available {
+            let size = json_bytes(&item)?;
+            if size <= available {
+                remaining -= size + separator;
+                label_bytes = other_labels;
+                bundle.items.push(item);
+                continue;
             }
-            bundle.omitted.push(label);
         }
+        omitted.push(item.item_id);
     }
-    require(
-        crate::wire::canonical(&bundle)?.len() <= maximum_bytes,
-        "context omission metadata exceeds budget",
-    )?;
+    let inline_bytes = label_bytes.saturating_sub(1);
+    bundle.omitted = if inline_bytes <= remaining {
+        ContextOmissions::Inline(omitted)
+    } else {
+        if reference_bytes > remaining {
+            let minimum = inline_bytes.min(reference_bytes);
+            return Err(Error::new(format!(
+                "Required verification inputs leave {remaining} bytes for the list of skipped files. \
+                 Its smallest record needs {minimum} bytes. Split the plan into smaller tasks and prepare it again."
+            )));
+        }
+        let record = ledger.store_json("context", &omitted, crate::runner::now_ms()?)?;
+        ContextOmissions::Manifest {
+            count: omitted.len(),
+            manifest_digest: record.digest,
+        }
+    };
     Ok(bundle)
 }
 
 #[cfg(test)]
 #[path = "context_read_tests.rs"]
 mod read_tests;
+
+#[cfg(test)]
+#[path = "context_budget_tests.rs"]
+mod budget_tests;

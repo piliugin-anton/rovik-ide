@@ -409,13 +409,7 @@ export default function PolyglotPlanImplementation(props: {
               ]
             : [],
       };
-    if (
-      current.canResume &&
-      !current.canRecover &&
-      !current.pendingApprovals.length &&
-      !providerProblem() &&
-      rates()
-    )
+    if (current.canResume && !current.pendingApprovals.length && !providerProblem() && rates())
       return {
         title: 'Implementation paused',
         attention: true,
@@ -427,7 +421,6 @@ export default function PolyglotPlanImplementation(props: {
               {
                 label: 'Resume',
                 primary: true,
-
                 run: () =>
                   void runAction({
                     action: 'resumeImplementation',
@@ -435,6 +428,7 @@ export default function PolyglotPlanImplementation(props: {
                     provider: provider(),
                   }),
               },
+              { label: 'View details', run: () => setDetails(true) },
             ],
       };
     if (shownStatus() === 'applied' && current.applicationReceipt?.deliveredLocally)

@@ -412,11 +412,7 @@ printf '%s\n' '{image}'
             role: Role::Implementer,
             request_id: "paid-attempt".into(),
             provider_model_id: provider.profile.model.clone(),
-            context: ContextBundle {
-                schema_version: 1,
-                items: vec![],
-                omitted: vec![],
-            },
+            context: ContextBundle::default(),
             snapshot_digest: Digest::parse(first["snapshotDigest"].as_str().unwrap()).unwrap(),
             maximum_output_tokens: 1,
             timeout_ms: 60_000,

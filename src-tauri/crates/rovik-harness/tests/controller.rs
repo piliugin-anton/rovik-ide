@@ -131,6 +131,103 @@ fn missing_approval_blocks_before_a_model_or_native_command_can_run() {
     );
 }
 
+fn task_with_many_reference_files(c: &Controller, image: Digest) -> TaskSetup {
+    let mut task = setup(c, image);
+    let docs = fixtures::snapshot(
+        &c.ledger,
+        "fixture-base",
+        &[("note.txt", "Reference note.")],
+    )
+    .unwrap();
+    // The names alone exceed the IDE's 60 KiB context payload.
+    let folder = "verification-reference/".repeat(5);
+    for index in 0..520 {
+        task.base.files.insert(
+            format!("{folder}entry-{index:04}.txt"),
+            docs.files["note.txt"].clone(),
+        );
+    }
+    task.negative_control = task.base.clone();
+    task.design.existing_code_considered[0].source_revision = task.base.digest().unwrap();
+    task.plan.design_digest = Digest::of_json(&task.design).unwrap();
+    task
+}
+
+#[test]
+fn a_saved_run_blocked_by_omission_metadata_resumes_and_admits_the_workers_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let mut c = controller(&state_dir);
+    let task = task_with_many_reference_files(&c, Digest::of(b"fixture-image"));
+    let now = runner::now_ms().unwrap();
+    let run = c.create(&task, now).unwrap();
+    approve(&c, &task);
+
+    // Reopen the same checkpoint and approvals an older backend left on disk.
+    let blocked = serde_json::json!({
+        "kind": "blocked",
+        "reason": "context omission metadata exceeds budget",
+        "restart": State::Implement,
+    });
+    let event = c.ledger.store_json("event", &blocked, now).unwrap();
+    c.ledger
+        .transition(
+            &run,
+            State::Blocked,
+            &event.digest,
+            Some(State::Implement),
+            now,
+        )
+        .unwrap();
+    drop(c);
+    let mut resumed = controller(&state_dir);
+    resumed
+        .resume(&Principal::current().unwrap(), &run.run_id)
+        .unwrap();
+    assert_eq!(
+        resumed.ledger.run(&run.run_id).unwrap().state,
+        State::Implement
+    );
+
+    struct OneEdit(Worker);
+    impl Provider for OneEdit {
+        fn generate(
+            &mut self,
+            request: &ModelRequest,
+            cancel: &Cancellation,
+        ) -> Result<ModelResponse> {
+            assert!(matches!(
+                request.context.omitted,
+                context::ContextOmissions::Manifest { .. }
+            ));
+            assert!(wire::canonical(request)?.len() <= 65_536);
+            let response = self.0.generate(request, cancel)?;
+            // Stop after this proposal so the test needs no native runner or model service.
+            cancel.cancel();
+            Ok(response)
+        }
+    }
+    let mut worker = OneEdit(Worker { calls: 0 });
+    resumed
+        .execute(
+            &run.run_id,
+            &mut worker,
+            &Repository,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    let candidate = resumed.current_candidate(&run.run_id).unwrap().unwrap();
+    let edit = &candidate.files["implementations/quota/lib.rs"]
+        .content
+        .digest;
+    assert_eq!(resumed.ledger.read(edit).unwrap(), QUOTA_RUST.as_bytes());
+    assert_eq!(worker.0.calls, 1);
+    assert_eq!(
+        resumed.ledger.budgets(&run.run_id).unwrap()["model_calls"].spent,
+        1
+    );
+}
+
 #[test]
 fn cancellation_and_expired_deadlines_stop_before_any_work_is_dispatched() {
     for expired in [false, true] {
@@ -370,7 +467,7 @@ fn actual_rust_patch_passes_the_full_clean_gate_after_rejecting_a_mutant() {
     assert_eq!(std::env::var("ROVIK_HARNESS_DOCKER").unwrap(), "1");
     let dir = tempfile::tempdir().unwrap();
     let mut c = controller(&dir.path().join("state"));
-    let setup = setup(
+    let setup = task_with_many_reference_files(
         &c,
         Digest::parse(&std::env::var("ROVIK_HARNESS_IMAGE").unwrap()).unwrap(),
     );

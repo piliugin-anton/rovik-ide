@@ -594,6 +594,41 @@ async function automaticRun(result: ReturnType<typeof implementationRun>) {
   return root;
 }
 
+test('a saved context failure offers Resume in its chat when the backend can continue', async () => {
+  reset();
+  const result = implementationRun('blocked');
+  result.canRecover = true;
+  result.reason = 'context omission metadata exceeds budget';
+  respond = (request) =>
+    request.action === 'resumeImplementation' ? implementationRun('running') : result;
+  const root = await automaticRun(result);
+  assert.match(root.textContent!, /Implementation paused/);
+  assert.match(root.textContent!, /list of skipped files was too long/);
+  assert.deepEqual(
+    calls.map((entry) => entry.args.request.action),
+    ['status']
+  );
+  button(root, 'Resume').click();
+  await flush();
+  const resume = calls.at(-1)!.args;
+  assert.equal(resume.dialogId, 'chat');
+  assert.equal(resume.request.action, 'resumeImplementation');
+  assert.equal(resume.request.runId, result.runId);
+  assert.match(root.textContent!, /Implementing/);
+});
+
+test('an interrupted operation still needs recovery before the chat can offer Resume', async () => {
+  reset();
+  const result = implementationRun('blocked');
+  result.canResume = false;
+  result.canRecover = true;
+  respond = () => result;
+  const root = await automaticRun(result);
+  assert.doesNotMatch(root.textContent!, /Resume/);
+  button(root, 'View details').click();
+  assert.ok(button(root, 'Recover interrupted implementation'));
+});
+
 test('design approval opens the candidate diff and approves only the reviewed candidate', async () => {
   reset();
   const result = implementationRun();

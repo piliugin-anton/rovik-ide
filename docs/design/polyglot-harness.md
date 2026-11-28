@@ -210,6 +210,12 @@ After implementation starts, **Recover interrupted implementation** and
 **Cancel implementation** operate on its durable run and accounting. Any additional
 required approval remains an explicit blocked decision.
 
+If a verified implementation stopped with `context omission metadata exceeds budget`,
+update and restart the backend on the host that ran it. Open the implementation chat
+and select **Resume**. This continues the saved run with its existing approvals and
+remaining budget. If the project or saved plan has changed, or the run's deadline has
+passed, start a new implementation from the saved plan.
+
 Project read restrictions apply to preparation context, implementation context and
 worker read/search tools. Restricted source remains in the immutable verification
 snapshot, while opaque diagnostics and graph details that might quote it are kept
@@ -504,9 +510,12 @@ validation; provider-native tools cannot execute.
 The broker reads immutable source, retrieves literal matches and lexical symbol
 locations, exposes admitted diagnostics, and requests only registered advisory
 checks. Proposals must map every invariant and pass complete-tree admission.
-Context retains exact mandatory policy, contract, design and target profiles;
-repository text remains attributed data. Insufficient context space blocks the
-task rather than dropping mandatory constraints.
+The worker receives the full mandatory policy, contract, design and target profiles,
+then as much ranked source as the request allows. Small lists of omitted files
+travel in the request. When the list would crowd out source or exceed the byte
+limit, the controller stores it in the run's artifact ledger and sends its count
+and digest. The byte limit and model budget still apply. If the mandatory inputs
+alone exceed the limit, the error reports their size and the available space.
 
 The controller advances every mandatory state. Before implementation it executes
 a relevant negative control and requires the expected behavioral case to fail.

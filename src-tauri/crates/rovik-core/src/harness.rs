@@ -393,11 +393,7 @@ mod tests {
             role: rovik_harness::provider::Role::Implementer,
             request_id: "request".into(),
             provider_model_id: "fixture".into(),
-            context: ContextBundle {
-                schema_version: 1,
-                items: vec![],
-                omitted: vec![],
-            },
+            context: ContextBundle::default(),
             snapshot_digest: Digest::of(b"source"),
             maximum_output_tokens: 100,
             timeout_ms: 2000,
