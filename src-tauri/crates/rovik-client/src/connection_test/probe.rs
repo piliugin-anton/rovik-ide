@@ -798,6 +798,11 @@ socket=no
         }
     }
 
+    #[test]
+    fn the_embedded_probe_uses_unix_line_endings() {
+        assert!(!PROBE.contains('\r'));
+    }
+
     /// The script parses as POSIX sh, as this machine's runs it.
     #[cfg(unix)]
     #[test]
